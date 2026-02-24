@@ -173,6 +173,7 @@ async function fixPR(opts: {
       cwd: projectPath,
       worktree,
       timeoutMs,
+      inactivityMs: config.executor.inactivity_timeout_minutes * 60 * 1000,
       model: config.executor.model,
       mcpServers: {
         linear: {
