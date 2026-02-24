@@ -17,7 +17,7 @@ import { runAudit, shouldRunAudit } from "./auditor";
 import { fillSlots } from "./executor";
 import { loadConfig, resolveProjectPath } from "./lib/config";
 import { detectRepo } from "./lib/github";
-import { resolveLinearIds } from "./lib/linear";
+import { resolveLinearIds, updateIssue } from "./lib/linear";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
 import { WebhookTrigger } from "./lib/webhooks";
 import { checkOpenPRs } from "./monitor";
@@ -137,6 +137,20 @@ const state = new AppState();
 const webhookTrigger = config.webhooks?.enabled ? new WebhookTrigger() : undefined;
 const app = createApp(
   state,
+  {
+    triggerAudit: () => {
+      runAudit({
+        config,
+        projectPath,
+        linearIds,
+        state,
+        shutdownSignal: shutdownController.signal,
+      });
+    },
+    retryIssue: async (linearIssueId: string) => {
+      await updateIssue(linearIssueId, { stateId: linearIds.states.ready });
+    },
+  },
   webhookTrigger && config.webhooks
     ? {
         trigger: webhookTrigger,
