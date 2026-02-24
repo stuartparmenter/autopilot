@@ -108,46 +108,29 @@ export async function getPRStatus(
 
   const sha = pr.head.sha;
 
-  // Fetch both Status API and Checks API in parallel
-  const [statusResult, checksResult] = await Promise.all([
-    octokit.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha }),
-    octokit.rest.checks.listForRef({ owner, repo, ref: sha }),
-  ]);
+  const { data } = await octokit.rest.checks.listForRef({
+    owner,
+    repo,
+    ref: sha,
+  });
+  const checks = data.check_runs;
 
-  // Aggregate CI status from both APIs.
-  // Only report "failure" once everything has settled — otherwise a fast-failing
-  // check would trigger a fixer while slower checks are still running.
-  const statusState = statusResult.data.state; // "success" | "failure" | "pending"
-  const checks = checksResult.data.check_runs;
-  const failureDetails: string[] = [];
-
-  const allStatusesFinal = statusResult.data.statuses.every(
-    (s) => s.state !== "pending",
-  );
-  const allChecksComplete = checks.every((c) => c.status === "completed");
-  const allSettled = allStatusesFinal && allChecksComplete;
+  // Only report failure once all checks have finished — otherwise a
+  // fast-failing check would trigger a fixer while slower checks still run.
+  const allComplete = checks.every((c) => c.status === "completed");
 
   let ciStatus: PRStatus["ciStatus"] = "pending";
+  const failureDetails: string[] = [];
 
-  if (!allSettled) {
-    // Something is still running — wait for next poll
+  if (checks.length === 0 || !allComplete) {
     ciStatus = "pending";
   } else {
-    const hasStatusFailure =
-      statusState === "failure" || statusState === "error";
-    const hasCheckFailure = checks.some(
+    const hasFailed = checks.some(
       (c) => c.conclusion === "failure" || c.conclusion === "timed_out",
     );
 
-    if (hasStatusFailure || hasCheckFailure) {
+    if (hasFailed) {
       ciStatus = "failure";
-      for (const status of statusResult.data.statuses) {
-        if (status.state === "failure" || status.state === "error") {
-          failureDetails.push(
-            `${status.context}: ${status.description ?? "failed"}`,
-          );
-        }
-      }
       for (const check of checks) {
         if (
           check.conclusion === "failure" ||
@@ -159,10 +142,6 @@ export async function getPRStatus(
     } else {
       ciStatus = "success";
     }
-  }
-
-  if (ciStatus === "failure" && failureDetails.length === 0) {
-    failureDetails.push("CI checks failed (see PR for details)");
   }
 
   return {
