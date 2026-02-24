@@ -5,6 +5,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ActivityEntry } from "../state";
 import { info, warn } from "./logger";
+import { createWorktree, removeWorktree } from "./worktree";
 
 // Stagger agent spawns to avoid race conditions on ~/.claude.json.
 // Each query() call waits for the previous one to finish starting up.
@@ -29,6 +30,7 @@ export interface ClaudeResult {
   durationMs?: number;
   numTurns?: number;
   timedOut: boolean;
+  inactivityTimedOut: boolean;
   error?: string;
 }
 
@@ -70,6 +72,7 @@ export async function runClaude(opts: {
   cwd: string;
   worktree?: string;
   timeoutMs?: number;
+  inactivityMs?: number;
   model?: string;
   mcpServers?: Record<string, unknown>;
   parentSignal?: AbortSignal;
@@ -107,7 +110,15 @@ export async function runClaude(opts: {
   const result: ClaudeResult = {
     result: "",
     timedOut: false,
+    inactivityTimedOut: false,
   };
+
+  // Hoist variables shared across try/catch/finally
+  let worktreeCreated = false;
+  let inactivityTimedOut = false;
+  let loopCompleted = false;
+  let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
+  let inactivityInterval: ReturnType<typeof setInterval> | undefined;
 
   try {
     const queryOpts: Record<string, unknown> = {
@@ -130,84 +141,147 @@ export async function runClaude(opts: {
     if (opts.model) {
       queryOpts.model = opts.model;
     }
+    // Self-managed worktrees: create before spawning, clean up in finally
     if (opts.worktree) {
-      queryOpts.extraArgs = { worktree: opts.worktree };
+      const wtPath = createWorktree(opts.cwd, opts.worktree);
+      queryOpts.cwd = wtPath;
+      worktreeCreated = true;
+    }
+
+    // Check for shutdown before proceeding
+    if (opts.parentSignal?.aborted) {
+      if (worktreeCreated && opts.worktree) {
+        removeWorktree(opts.cwd, opts.worktree);
+      }
+      result.error = "Aborted before start";
+      return result;
     }
 
     // Wait for any prior agent to finish starting before we spawn
     await acquireSpawnSlot();
 
-    for await (const message of query({
-      prompt: opts.prompt,
-      options: queryOpts,
-    })) {
-      // Capture session ID on init
-      if (message.type === "system" && message.subtype === "init") {
-        result.sessionId = message.session_id;
-        emit?.({
-          timestamp: Date.now(),
-          type: "status",
-          summary: "Agent started",
-        });
-      }
+    // Inactivity watchdog: reset on every SDK message
+    let lastActivityAt = Date.now();
+    inactivityInterval = opts.inactivityMs
+      ? setInterval(() => {
+          if (inactivityTimedOut) return; // already fired
+          if (Date.now() - lastActivityAt > opts.inactivityMs!) {
+            inactivityTimedOut = true;
+            warn(
+              `Agent inactive for ${Math.round(opts.inactivityMs! / 1000)}s, aborting`,
+            );
+            controller.abort();
+          }
+        }, 30_000)
+      : undefined;
 
-      // Emit activity for tool use
-      if (message.type === "assistant" && message.message) {
-        const { content } = (message as SDKAssistantMessage).message;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === "tool_use" && "name" in block) {
-              emit?.({
-                timestamp: Date.now(),
-                type: "tool_use",
-                summary: summarizeToolUse(block.name, block.input),
-              });
-            } else if (block.type === "text" && "text" in block) {
-              emit?.({
-                timestamp: Date.now(),
-                type: "text",
-                summary: block.text.slice(0, 200),
-                detail: block.text,
-              });
+    // Capture query object so we can call close() as a hard kill
+    const q = query({ prompt: opts.prompt, options: queryOpts });
+
+    const runSdkLoop = async () => {
+      for await (const message of q) {
+        // Reset inactivity watchdog on every message
+        lastActivityAt = Date.now();
+
+        // Capture session ID on init
+        if (message.type === "system" && message.subtype === "init") {
+          result.sessionId = message.session_id;
+          emit?.({
+            timestamp: Date.now(),
+            type: "status",
+            summary: "Agent started",
+          });
+        }
+
+        // Emit activity for tool use
+        if (message.type === "assistant" && message.message) {
+          const { content } = (message as SDKAssistantMessage).message;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === "tool_use" && "name" in block) {
+                emit?.({
+                  timestamp: Date.now(),
+                  type: "tool_use",
+                  summary: summarizeToolUse(block.name, block.input),
+                });
+              } else if (block.type === "text" && "text" in block) {
+                emit?.({
+                  timestamp: Date.now(),
+                  type: "text",
+                  summary: block.text.slice(0, 200),
+                  detail: block.text,
+                });
+              }
             }
           }
         }
-      }
 
-      // Emit activity for tool results
-      if (message.type === "result") {
-        if (message.subtype === "success") {
-          result.result = message.result;
-          result.costUsd = message.total_cost_usd;
-          result.durationMs = message.duration_ms;
-          result.numTurns = message.num_turns;
-          emit?.({
-            timestamp: Date.now(),
-            type: "result",
-            summary: "Agent completed successfully",
-          });
-        } else {
-          const errResult = message as SDKResultError;
-          const errSummary = errResult.errors?.length
-            ? errResult.errors.join("; ")
-            : errResult.subtype;
-          result.error = errSummary;
-          emit?.({
-            timestamp: Date.now(),
-            type: "error",
-            summary: `Agent error: ${errSummary.slice(0, 200)}`,
-          });
+        // Capture result messages
+        if (message.type === "result") {
+          if (message.subtype === "success") {
+            result.result = message.result;
+            result.costUsd = message.total_cost_usd;
+            result.durationMs = message.duration_ms;
+            result.numTurns = message.num_turns;
+            emit?.({
+              timestamp: Date.now(),
+              type: "result",
+              summary: "Agent completed successfully",
+            });
+          } else {
+            const errResult = message as SDKResultError;
+            const errSummary = errResult.errors?.length
+              ? errResult.errors.join("; ")
+              : errResult.subtype;
+            result.error = errSummary;
+            emit?.({
+              timestamp: Date.now(),
+              type: "error",
+              summary: `Agent error: ${errSummary.slice(0, 200)}`,
+            });
+          }
         }
+      }
+      loopCompleted = true;
+    };
+
+    // Hard kill safety net: if abort doesn't break the loop, force-close
+    const effectiveTimeoutMs = Math.max(
+      opts.timeoutMs ?? 30 * 60 * 1000,
+      opts.inactivityMs ?? 10 * 60 * 1000,
+    );
+    const hardKillPromise = new Promise<"hard_kill">((resolve) => {
+      hardKillTimer = setTimeout(
+        () => resolve("hard_kill"),
+        effectiveTimeoutMs + 60_000,
+      );
+    });
+
+    const outcome = await Promise.race([
+      runSdkLoop().then(() => "completed" as const),
+      hardKillPromise,
+    ]);
+
+    if (outcome === "hard_kill") {
+      warn("Hard kill: SDK loop did not exit after abort, forcing close");
+      try {
+        q.close();
+      } catch {
+        // close() may throw if already dead
+      }
+      if (!result.error) {
+        result.error = "Hard kill: SDK unresponsive after abort";
       }
     }
   } catch (e: unknown) {
-    if (timedOut) {
-      result.timedOut = true;
-      result.error = "Timed out";
+    if (timedOut || inactivityTimedOut) {
+      result.error = inactivityTimedOut ? "Inactivity timeout" : "Timed out";
       emit?.({
         timestamp: Date.now(),
         type: "error",
-        summary: "Agent timed out",
+        summary: inactivityTimedOut
+          ? "Agent inactive, timed out"
+          : "Agent timed out",
       });
     } else {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -220,13 +294,25 @@ export async function runClaude(opts: {
       });
     }
   } finally {
+    if (hardKillTimer) clearTimeout(hardKillTimer);
+    if (inactivityInterval) clearInterval(inactivityInterval);
     if (timer) clearTimeout(timer);
+
+    if (worktreeCreated && opts.worktree) {
+      try {
+        removeWorktree(opts.cwd, opts.worktree);
+      } catch (e) {
+        warn(`Worktree cleanup failed for '${opts.worktree}': ${e}`);
+      }
+    }
   }
 
-  // The abort may end the stream without throwing, so ensure timedOut is captured
-  result.timedOut = timedOut;
+  // Only mark as timed out if the loop didn't complete successfully.
+  // Fixes race where timeout fires milliseconds after the agent finishes.
+  result.timedOut = (timedOut || inactivityTimedOut) && !loopCompleted;
+  result.inactivityTimedOut = inactivityTimedOut && !loopCompleted;
 
-  if (!timedOut && !result.error) {
+  if (!result.timedOut && !result.error) {
     info(
       `Claude Code finished` +
         (result.durationMs
