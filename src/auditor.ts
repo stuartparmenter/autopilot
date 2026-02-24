@@ -67,12 +67,20 @@ export async function runAudit(opts: {
     ? config.linear.states.ready
     : config.linear.states.triage;
 
+  const featureTargetState = config.linear.states.triage;
+
+  const brainstormDimensions = config.auditor.brainstorm_dimensions.join(", ");
+
   const prompt = buildAuditorPrompt({
     LINEAR_TEAM: config.linear.team,
     LINEAR_PROJECT: config.linear.project,
     TARGET_STATE: targetState,
     MAX_ISSUES_PER_RUN: String(config.auditor.max_issues_per_run),
     PROJECT_NAME: config.project.name,
+    BRAINSTORM_FEATURES: String(config.auditor.brainstorm_features),
+    BRAINSTORM_DIMENSIONS: brainstormDimensions,
+    MAX_IDEAS_PER_RUN: String(config.auditor.max_ideas_per_run),
+    FEATURE_TARGET_STATE: featureTargetState,
   });
 
   const result = await runClaude({
