@@ -65,7 +65,10 @@ export async function checkOpenPRs(opts: {
     }
 
     // Find the PR number from the issue's GitHub attachment
-    const attachments = await withRetry(() => issue.attachments(), "checkOpenPRs");
+    const attachments = await withRetry(
+      () => issue.attachments(),
+      "checkOpenPRs",
+    );
     const ghAttachment = attachments.nodes.find(
       (a) => a.sourceType === "github",
     );
