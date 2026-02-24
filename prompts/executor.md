@@ -88,8 +88,9 @@ Create a clean commit and PR.
    - Blank line
    - Body: brief explanation of the approach if non-obvious
 3. **Push** the branch with `git push -u origin worktree-{{ISSUE_ID}}`
-4. **Create PR**:
+4. **Create PR** using the GitHub MCP `create_pull_request` tool:
    - Title: `{{ISSUE_ID}}: <concise description>`
+   - Base branch: `main`
    - Body must include:
      - **Summary**: 1-3 sentences on what changed and why
      - **Changes**: Bullet list of specific changes
