@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AgentResult } from "../state";
 import { getAnalytics, getRecentRuns, insertAgentRun, openDb } from "./db";
@@ -55,7 +55,10 @@ describe("insertAgentRun and getRecentRuns", () => {
     for (let i = 0; i < 5; i++) {
       insertAgentRun(
         db,
-        makeResult(`a${i}`, { startedAt: i * 1000, finishedAt: i * 1000 + 500 }),
+        makeResult(`a${i}`, {
+          startedAt: i * 1000,
+          finishedAt: i * 1000 + 500,
+        }),
       );
     }
     const runs = getRecentRuns(db, 3);
@@ -83,7 +86,10 @@ describe("insertAgentRun and getRecentRuns", () => {
   });
 
   test("stores error field when set", () => {
-    insertAgentRun(db, makeResult("a1", { status: "failed", error: "timeout" }));
+    insertAgentRun(
+      db,
+      makeResult("a1", { status: "failed", error: "timeout" }),
+    );
     const run = getRecentRuns(db)[0];
     expect(run.status).toBe("failed");
     expect(run.error).toBe("timeout");
@@ -105,7 +111,10 @@ describe("insertAgentRun and getRecentRuns", () => {
     for (let i = 0; i < 60; i++) {
       insertAgentRun(
         db,
-        makeResult(`a${i}`, { startedAt: i * 1000, finishedAt: i * 1000 + 500 }),
+        makeResult(`a${i}`, {
+          startedAt: i * 1000,
+          finishedAt: i * 1000 + 500,
+        }),
       );
     }
     const runs = getRecentRuns(db);

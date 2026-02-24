@@ -6,6 +6,7 @@
  * Usage: bun run start <project-path> [--port 7890] [--host 127.0.0.1]
  */
 
+import { resolve } from "node:path";
 import {
   AuthenticationLinearError,
   FeatureNotAccessibleLinearError,
@@ -13,7 +14,6 @@ import {
   InvalidInputLinearError,
   RatelimitedLinearError,
 } from "@linear/sdk";
-import { resolve } from "node:path";
 import { runAudit, shouldRunAudit } from "./auditor";
 import { fillSlots } from "./executor";
 import { loadConfig, resolveProjectPath } from "./lib/config";
