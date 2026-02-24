@@ -46,6 +46,7 @@ export async function executeIssue(opts: {
       cwd: projectPath,
       worktree,
       timeoutMs,
+      inactivityMs: config.executor.inactivity_timeout_minutes * 60 * 1000,
       model: config.executor.model,
       mcpServers: {
         linear: {
@@ -66,6 +67,20 @@ export async function executeIssue(opts: {
       parentSignal: opts.shutdownSignal,
       onActivity: (entry) => state.addActivity(agentId, entry),
     });
+
+    if (result.inactivityTimedOut) {
+      warn(
+        `${issue.identifier} was inactive for ${config.executor.inactivity_timeout_minutes} minutes, returning to Ready`,
+      );
+      await updateIssue(issue.id, { stateId: linearIds.states.ready });
+      state.completeAgent(agentId, "timed_out", {
+        costUsd: result.costUsd,
+        durationMs: result.durationMs,
+        numTurns: result.numTurns,
+        error: "Inactivity timeout",
+      });
+      return false;
+    }
 
     if (result.timedOut) {
       warn(
