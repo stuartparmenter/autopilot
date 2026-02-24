@@ -125,7 +125,10 @@ export async function fillSlots(opts: {
 
   info(`Querying Linear for ready issues (${available} slots available)...`);
 
-  const allReady = await getReadyIssues(linearIds, available + activeIssueIds.size);
+  const allReady = await getReadyIssues(
+    linearIds,
+    available + activeIssueIds.size,
+  );
   const issues = allReady.filter((i) => !activeIssueIds.has(i.id));
 
   state.updateQueue(issues.length, running);

@@ -74,11 +74,9 @@ export async function runClaude(opts: {
     if (opts.parentSignal.aborted) {
       controller.abort();
     } else {
-      opts.parentSignal.addEventListener(
-        "abort",
-        () => controller.abort(),
-        { once: true },
-      );
+      opts.parentSignal.addEventListener("abort", () => controller.abort(), {
+        once: true,
+      });
     }
   }
 
