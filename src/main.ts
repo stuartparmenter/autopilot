@@ -6,11 +6,20 @@
  * Usage: bun run start <project-path> [--port 7890]
  */
 
+import {
+  AuthenticationLinearError,
+  FeatureNotAccessibleLinearError,
+  ForbiddenLinearError,
+  InvalidInputLinearError,
+  RatelimitedLinearError,
+} from "@linear/sdk";
 import { runAudit, shouldRunAudit } from "./auditor";
 import { fillSlots } from "./executor";
 import { loadConfig, resolveProjectPath } from "./lib/config";
+import { detectRepo } from "./lib/github";
 import { resolveLinearIds } from "./lib/linear";
-import { error, header, info, ok } from "./lib/logger";
+import { error, fatal, header, info, ok, warn } from "./lib/logger";
+import { checkOpenPRs } from "./monitor";
 import { createApp } from "./server";
 import { AppState } from "./state";
 
@@ -43,19 +52,28 @@ const projectPath = resolveProjectPath(projectArg);
 const config = loadConfig(projectPath);
 
 if (!config.linear.team)
-  error("linear.team is not set in .claude-autopilot.yml");
+  fatal("linear.team is not set in .claude-autopilot.yml");
 if (!config.linear.project)
-  error("linear.project is not set in .claude-autopilot.yml");
+  fatal("linear.project is not set in .claude-autopilot.yml");
 if (!config.project.name)
-  error("project.name is not set in .claude-autopilot.yml");
+  fatal("project.name is not set in .claude-autopilot.yml");
 
 // --- Check environment variables ---
 
 if (!process.env.LINEAR_API_KEY) {
-  error(
+  fatal(
     "LINEAR_API_KEY environment variable is not set.\n" +
       "Create one at: https://linear.app/settings/api\n" +
       "Then: export LINEAR_API_KEY=lin_api_...",
+  );
+}
+
+if (!process.env.GITHUB_TOKEN) {
+  error(
+    "GITHUB_TOKEN environment variable is not set.\n" +
+      "Create one at: https://github.com/settings/tokens\n" +
+      "Required scopes: repo (for PR monitoring and GitHub MCP).\n" +
+      "Then: export GITHUB_TOKEN=ghp_...",
   );
 }
 
@@ -87,6 +105,14 @@ info(`Max parallel: ${config.executor.parallel}`);
 info(
   `Model: ${config.executor.model} (planning: ${config.executor.planning_model})`,
 );
+
+// --- Detect GitHub repo ---
+
+const { owner: ghOwner, repo: ghRepo } = detectRepo(
+  projectPath,
+  config.github.repo || undefined,
+);
+ok(`GitHub repo: ${ghOwner}/${ghRepo}`);
 
 // --- Connect to Linear ---
 
@@ -132,10 +158,34 @@ function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
+// --- Error classification ---
+
+function isFatalError(e: unknown): boolean {
+  if (
+    e instanceof AuthenticationLinearError ||
+    e instanceof ForbiddenLinearError ||
+    e instanceof InvalidInputLinearError ||
+    e instanceof FeatureNotAccessibleLinearError
+  ) {
+    return true;
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  return (
+    msg.includes("not found in Linear") ||
+    msg.includes("not found for team") ||
+    msg.includes("Config file not found")
+  );
+}
+
 // --- Main loop ---
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const BASE_BACKOFF_MS = 10_000; // 10s
+const MAX_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_CONSECUTIVE_FAILURES = 5;
 const running = new Set<Promise<boolean>>();
+
+let consecutiveFailures = 0;
 
 info("Starting main loop (Ctrl+C to stop)...");
 console.log();
@@ -148,6 +198,21 @@ while (true) {
     }
 
     if (shuttingDown) break;
+
+    // Check open PRs and spawn fixers for failures/conflicts
+    const fixerPromises = await checkOpenPRs({
+      owner: ghOwner,
+      repo: ghRepo,
+      config,
+      projectPath,
+      linearIds,
+      state,
+      shutdownSignal: shutdownController.signal,
+    });
+    for (const p of fixerPromises) {
+      const tracked = p.finally(() => running.delete(tracked));
+      running.add(tracked);
+    }
 
     // Fill executor slots
     const newPromises = await fillSlots({
@@ -184,6 +249,9 @@ while (true) {
       }
     }
 
+    // Reset failure counter after a successful iteration
+    consecutiveFailures = 0;
+
     // Wait for any agent to finish or poll interval to elapse
     if (running.size > 0) {
       const pollTimer = Bun.sleep(POLL_INTERVAL_MS).then(() => "poll" as const);
@@ -195,9 +263,40 @@ while (true) {
       await Bun.sleep(POLL_INTERVAL_MS);
     }
   } catch (e) {
+    const stack = e instanceof Error ? (e.stack ?? e.message) : String(e);
     const msg = e instanceof Error ? e.message : String(e);
-    info(`Loop error: ${msg}`);
-    info("Retrying in 60 seconds...");
-    await Bun.sleep(60_000);
+
+    if (isFatalError(e)) {
+      fatal(`Fatal error — check your API key and config: ${msg}\n${stack}`);
+    }
+
+    consecutiveFailures++;
+    info(`Stack trace: ${stack}`);
+
+    if (e instanceof RatelimitedLinearError) {
+      const retryAfterMs =
+        e.retryAfter != null
+          ? Math.min(e.retryAfter * 1000, MAX_BACKOFF_MS)
+          : BASE_BACKOFF_MS;
+      warn(
+        `Rate limited by Linear. Retrying in ${Math.round(retryAfterMs / 1000)}s...`,
+      );
+      await Bun.sleep(retryAfterMs);
+    } else {
+      const backoffMs = Math.min(
+        BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1),
+        MAX_BACKOFF_MS,
+      );
+      warn(
+        `Loop error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${msg}`,
+      );
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        fatal(
+          `${MAX_CONSECUTIVE_FAILURES} consecutive failures — exiting. Last error: ${msg}`,
+        );
+      }
+      info(`Retrying in ${Math.round(backoffMs / 1000)}s...`);
+      await Bun.sleep(backoffMs);
+    }
   }
 }
