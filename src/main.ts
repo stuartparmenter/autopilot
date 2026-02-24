@@ -305,9 +305,14 @@ while (!shuttingDown) {
           linearIds,
           state,
           shutdownSignal: shutdownController.signal,
-        }).finally(() => {
-          auditorPromise = null;
-        });
+        })
+          .catch((e) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            warn(`Auditor error: ${msg}`);
+          })
+          .finally(() => {
+            auditorPromise = null;
+          });
       }
     }
 
