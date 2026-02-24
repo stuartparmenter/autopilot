@@ -6,6 +6,7 @@ import {
   type WorkflowState,
 } from "@linear/sdk";
 import type { LinearConfig, LinearIds } from "./config";
+import { warn } from "./logger";
 
 let _client: LinearClient | null = null;
 
