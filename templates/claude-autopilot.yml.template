@@ -1,0 +1,42 @@
+# claude-autopilot configuration
+# Copy this file to your project root as `.claude-autopilot.yml` and fill in the values.
+# See docs/adding-a-project.md for the full setup guide.
+#
+# Project-specific details (tech stack, test commands, conventions, protected files)
+# belong in your project's CLAUDE.md, not here. This file is for orchestration config only.
+
+# ─── Linear Integration ────────────────────────────────────────────────────────
+# Connect to your Linear workspace so the executor and auditor can manage issues.
+
+linear:
+  team: ""                      # Team key, e.g., "ENG" — find it in Linear team settings URL
+  project: ""                   # Project name — must match a Linear project exactly
+  states:
+    triage: "Triage"            # Auditor files new issues here for human review
+    ready: "Todo"               # Executor picks up issues from this state
+    in_progress: "In Progress"  # Executor moves issues here while working
+    done: "Done"                # Executor moves issues here on success
+    blocked: "Backlog"          # Executor moves issues here if it gets stuck
+
+# ─── Executor ──────────────────────────────────────────────────────────────────
+# The executor agent picks up Ready issues, implements them, and opens PRs.
+
+executor:
+  parallel: 3                   # Max concurrent agents (start low, increase with trust)
+  timeout_minutes: 30           # Kill agent after this long
+  model: "sonnet"               # Model for executor agents
+  planning_model: "opus"        # Model for auditor/planning
+
+# ─── Auditor ───────────────────────────────────────────────────────────────────
+# The auditor agent scans the codebase and files improvement issues to Triage.
+
+auditor:
+  schedule: "when_idle"         # "when_idle" | "daily" | "manual"
+  min_ready_threshold: 5        # Only audit when fewer than N issues are in Ready
+  max_issues_per_run: 10        # Cap on issues filed per audit run
+
+# ─── Project ──────────────────────────────────────────────────────────────────
+# Minimal metadata used by the orchestrator. Everything else goes in CLAUDE.md.
+
+project:
+  name: ""                      # Human-readable project name, e.g., "Acme API"
