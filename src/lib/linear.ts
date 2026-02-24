@@ -159,7 +159,7 @@ export async function countIssuesInState(
   stateId: string,
 ): Promise<number> {
   const client = getLinearClient();
-  const result = await client.issues({
+  let result = await client.issues({
     filter: {
       team: { id: { eq: linearIds.teamId } },
       state: { id: { eq: stateId } },
@@ -167,6 +167,11 @@ export async function countIssuesInState(
     },
     first: 250,
   });
+
+  while (result.pageInfo.hasNextPage) {
+    result = await result.fetchNext();
+  }
+
   return result.nodes.length;
 }
 
