@@ -72,6 +72,7 @@ function makeConfig(skipTriage = true): AutopilotConfig {
       model: "sonnet",
       planning_model: "opus",
       max_retries: 3,
+      poll_interval_minutes: 5,
     },
     auditor: {
       schedule: "when_idle",
