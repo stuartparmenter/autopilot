@@ -13,9 +13,11 @@ import {
   InvalidInputLinearError,
   RatelimitedLinearError,
 } from "@linear/sdk";
+import { resolve } from "node:path";
 import { runAudit, shouldRunAudit } from "./auditor";
 import { fillSlots } from "./executor";
 import { loadConfig, resolveProjectPath } from "./lib/config";
+import { openDb } from "./lib/db";
 import { detectRepo } from "./lib/github";
 import { resolveLinearIds } from "./lib/linear";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
@@ -133,6 +135,14 @@ ok(`Connected - team ${config.linear.team}, project ${config.linear.project}`);
 // --- Init state and server ---
 
 const state = new AppState();
+
+if (config.persistence.enabled) {
+  const dbPath = resolve(projectPath, config.persistence.db_path);
+  const db = openDb(dbPath);
+  state.setDb(db);
+  ok(`Persistence: ${dbPath}`);
+}
+
 const app = createApp(state);
 
 const isLocalhost =
