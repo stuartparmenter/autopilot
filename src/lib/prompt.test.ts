@@ -138,4 +138,9 @@ describe("buildAuditorPrompt", () => {
     const result = buildAuditorPrompt({});
     expect(result).toContain("# Reference: Subagent Prompts");
   });
+
+  test("contains product manager subagent section", () => {
+    const result = buildAuditorPrompt({});
+    expect(result).toContain("## Product Manager Subagent Prompt");
+  });
 });
