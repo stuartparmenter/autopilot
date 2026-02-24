@@ -56,6 +56,135 @@ describe("escapeHtml", () => {
   });
 });
 
+describe("auth", () => {
+  const TOKEN = "test-secret-token";
+
+  test("without authToken: GET / returns 200 (backwards compatible)", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/");
+    expect(res.status).toBe(200);
+  });
+
+  test("without authToken: GET /api/status returns 200", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/api/status");
+    expect(res.status).toBe(200);
+  });
+
+  test("with authToken: GET / without cookie returns 401 with login form", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/");
+    expect(res.status).toBe(401);
+    const body = await res.text();
+    expect(body).toContain("Dashboard Token");
+    expect(body).toContain("/auth/login");
+  });
+
+  test("with authToken: GET /api/status without auth returns 401 JSON", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/status");
+    expect(res.status).toBe(401);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe("Unauthorized");
+  });
+
+  test("with authToken: GET /partials/agents without auth returns 401 JSON", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/partials/agents");
+    expect(res.status).toBe(401);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe("Unauthorized");
+  });
+
+  test("with authToken: GET /api/status with valid Bearer token returns 200", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/status", {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("with authToken: GET / with valid cookie returns 200 dashboard", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/", {
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("claude-autopilot");
+    expect(body).toContain("htmx");
+  });
+
+  test("with authToken: POST /auth/login with correct token sets cookie and redirects", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `token=${encodeURIComponent(TOKEN)}`,
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/");
+    const setCookie = res.headers.get("Set-Cookie");
+    expect(setCookie).toContain("autopilot_token=");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Strict");
+  });
+
+  test("with authToken: POST /auth/login with wrong token returns 401 with error", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "token=wrong-token",
+    });
+    expect(res.status).toBe(401);
+    const body = await res.text();
+    expect(body).toContain("Invalid token");
+  });
+
+  test("with authToken: POST /auth/logout clears cookie and redirects", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/auth/logout", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/");
+    const setCookie = res.headers.get("Set-Cookie");
+    expect(setCookie).toContain("autopilot_token=");
+    expect(setCookie).toContain("Max-Age=0");
+  });
+
+  test("with authToken: dashboard shows Logout button", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/", {
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    const body = await res.text();
+    expect(body).toContain("/auth/logout");
+    expect(body).toContain("Logout");
+  });
+
+  test("without authToken: dashboard does not show Logout button", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/");
+    const body = await res.text();
+    expect(body).not.toContain("/auth/logout");
+  });
+});
+
 describe("routes", () => {
   let state: AppState;
   let app: ReturnType<typeof createApp>;

@@ -28,10 +28,14 @@ import { AppState } from "./state";
 const args = process.argv.slice(2);
 let projectArg: string | undefined;
 let port = 7890;
+let host = "127.0.0.1";
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--port" && args[i + 1]) {
     port = Number.parseInt(args[i + 1], 10);
+    i++;
+  } else if (args[i] === "--host" && args[i + 1]) {
+    host = args[i + 1];
     i++;
   } else if (!args[i].startsWith("-")) {
     projectArg = args[i];
@@ -39,12 +43,17 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (!projectArg) {
-  console.log("Usage: bun run start <project-path> [--port 7890]");
+  console.log(
+    "Usage: bun run start <project-path> [--port 7890] [--host 127.0.0.1]",
+  );
   console.log();
   console.log("Start the claude-autopilot loop with a web dashboard.");
   console.log();
   console.log("Options:");
-  console.log("  --port <number>  Dashboard port (default: 7890)");
+  console.log("  --port <number>   Dashboard port (default: 7890)");
+  console.log(
+    "  --host <address>  Dashboard bind address (default: 127.0.0.1)",
+  );
   process.exit(1);
 }
 
@@ -97,6 +106,18 @@ if (
   console.log();
 }
 
+const dashboardToken = process.env.AUTOPILOT_DASHBOARD_TOKEN || undefined;
+const isLocalhost =
+  host === "127.0.0.1" || host === "localhost" || host === "::1";
+
+if (!isLocalhost && !dashboardToken) {
+  error(
+    `AUTOPILOT_DASHBOARD_TOKEN must be set when binding dashboard to non-localhost.\n` +
+      `Set: export AUTOPILOT_DASHBOARD_TOKEN=<your-secret-token>\n` +
+      `Or bind to localhost only (omit --host).`,
+  );
+}
+
 header("claude-autopilot v0.2.0");
 
 info(`Project: ${projectPath}`);
@@ -123,14 +144,20 @@ ok(`Connected - team ${config.linear.team}, project ${config.linear.project}`);
 // --- Init state and server ---
 
 const state = new AppState();
-const app = createApp(state);
+const app = createApp(state, { authToken: dashboardToken });
 
 const server = Bun.serve({
   port,
+  hostname: host,
   fetch: app.fetch,
 });
 
-ok(`Dashboard: http://localhost:${server.port}`);
+if (dashboardToken) {
+  ok("Dashboard authentication enabled");
+} else {
+  info("Dashboard authentication disabled (localhost-only)");
+}
+ok(`Dashboard: http://${isLocalhost ? "localhost" : host}:${server.port}`);
 console.log();
 
 // --- Graceful shutdown ---
