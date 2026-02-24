@@ -561,7 +561,7 @@ export function createApp(state: AppState): Hono {
   return app;
 }
 
-function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
@@ -571,7 +571,7 @@ function formatDuration(seconds: number): string {
   return `${s}s`;
 }
 
-function escapeHtml(str: string): string {
+export function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
