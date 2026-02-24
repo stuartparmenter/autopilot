@@ -2,6 +2,26 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { info, warn } from "./logger";
 
+function worktreePath(projectPath: string, name: string): string {
+  return resolve(projectPath, ".claude", "worktrees", name);
+}
+
+/** Run a git command synchronously. Returns stderr text on failure, undefined on success. */
+function gitSync(projectPath: string, args: string[]): string | undefined {
+  const result = Bun.spawnSync(["git", ...args], {
+    cwd: projectPath,
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) {
+    return result.stderr.toString().trim();
+  }
+  return undefined;
+}
+
+function gitPrune(projectPath: string): void {
+  gitSync(projectPath, ["worktree", "prune"]);
+}
+
 /**
  * Create an isolated git worktree for an agent.
  * If a stale worktree with the same name exists, removes it first.
@@ -15,17 +35,13 @@ export function createWorktree(
   name: string,
   fromBranch?: string,
 ): string {
-  const wtPath = resolve(projectPath, ".claude", "worktrees", name);
+  const wtPath = worktreePath(projectPath, name);
 
-  // Prune stale worktree references first — if a worktree directory was
+  // Prune stale worktree references first -- if a worktree directory was
   // deleted without `git worktree remove`, git still thinks the branch is
   // checked out there and refuses to delete it.
-  Bun.spawnSync(["git", "worktree", "prune"], {
-    cwd: projectPath,
-    stderr: "pipe",
-  });
+  gitPrune(projectPath);
 
-  // Clean up stale worktree directory from a previous crash
   if (existsSync(wtPath)) {
     warn(`Stale worktree found at ${wtPath}, removing...`);
     removeWorktree(projectPath, name, { keepBranch: !!fromBranch });
@@ -33,21 +49,12 @@ export function createWorktree(
 
   if (fromBranch) {
     // Fixer mode: check out an existing PR branch into the worktree.
-    // Fetch latest so we have the remote's HEAD for this branch.
-    Bun.spawnSync(["git", "fetch", "origin", fromBranch], {
-      cwd: projectPath,
-      stderr: "pipe",
-    });
+    gitSync(projectPath, ["fetch", "origin", fromBranch]);
 
     info(`Creating worktree: ${name} (from branch ${fromBranch})`);
-    const result = Bun.spawnSync(
-      ["git", "worktree", "add", wtPath, fromBranch],
-      { cwd: projectPath, stderr: "pipe" },
-    );
-
-    if (result.exitCode !== 0) {
-      const stderr = result.stderr.toString().trim();
-      throw new Error(`Failed to create worktree '${name}': ${stderr}`);
+    const err = gitSync(projectPath, ["worktree", "add", wtPath, fromBranch]);
+    if (err) {
+      throw new Error(`Failed to create worktree '${name}': ${err}`);
     }
   } else {
     // Executor mode: create a fresh branch from HEAD.
@@ -55,20 +62,12 @@ export function createWorktree(
 
     // Branch might exist without the worktree directory (partial cleanup,
     // or leftover from old SDK --worktree flag). Delete it so we can recreate.
-    Bun.spawnSync(["git", "branch", "-D", branch], {
-      cwd: projectPath,
-      stderr: "pipe",
-    });
+    gitSync(projectPath, ["branch", "-D", branch]);
 
     info(`Creating worktree: ${name}`);
-    const result = Bun.spawnSync(
-      ["git", "worktree", "add", wtPath, "-b", branch],
-      { cwd: projectPath, stderr: "pipe" },
-    );
-
-    if (result.exitCode !== 0) {
-      const stderr = result.stderr.toString().trim();
-      throw new Error(`Failed to create worktree '${name}': ${stderr}`);
+    const err = gitSync(projectPath, ["worktree", "add", wtPath, "-b", branch]);
+    if (err) {
+      throw new Error(`Failed to create worktree '${name}': ${err}`);
     }
   }
 
@@ -77,7 +76,7 @@ export function createWorktree(
 
 /**
  * Remove a worktree and (optionally) its local branch.
- * Best-effort — logs errors but never throws.
+ * Best-effort -- logs errors but never throws.
  *
  * @param keepBranch - If true, only remove the worktree directory, don't
  *   delete the branch. Used for fixer worktrees where the branch is the PR branch.
@@ -87,35 +86,22 @@ export function removeWorktree(
   name: string,
   opts?: { keepBranch?: boolean },
 ): void {
-  const wtPath = resolve(projectPath, ".claude", "worktrees", name);
+  const wtPath = worktreePath(projectPath, name);
 
   info(`Removing worktree: ${name}`);
 
-  const wtResult = Bun.spawnSync(
-    ["git", "worktree", "remove", wtPath, "--force"],
-    { cwd: projectPath, stderr: "pipe" },
-  );
-  if (wtResult.exitCode !== 0) {
-    const stderr = wtResult.stderr.toString().trim();
-    warn(`Failed to remove worktree '${name}': ${stderr}`);
+  const wtErr = gitSync(projectPath, ["worktree", "remove", wtPath, "--force"]);
+  if (wtErr) {
+    warn(`Failed to remove worktree '${name}': ${wtErr}`);
   }
 
-  // Prune so git doesn't think the branch is still checked out
-  Bun.spawnSync(["git", "worktree", "prune"], {
-    cwd: projectPath,
-    stderr: "pipe",
-  });
+  gitPrune(projectPath);
 
   if (!opts?.keepBranch) {
     const branch = `worktree-${name}`;
-    const brResult = Bun.spawnSync(["git", "branch", "-D", branch], {
-      cwd: projectPath,
-      stderr: "pipe",
-    });
-    if (brResult.exitCode !== 0) {
-      const stderr = brResult.stderr.toString().trim();
-      // Branch may not exist — not critical
-      warn(`Failed to delete branch '${branch}': ${stderr}`);
+    const brErr = gitSync(projectPath, ["branch", "-D", branch]);
+    if (brErr) {
+      warn(`Failed to delete branch '${branch}': ${brErr}`);
     }
   }
 }

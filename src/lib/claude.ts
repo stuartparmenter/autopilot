@@ -34,33 +34,33 @@ export interface ClaudeResult {
   error?: string;
 }
 
+/** Maps tool names to the input field used in their activity summary. */
+const TOOL_SUMMARY_FIELDS: Record<string, string> = {
+  Read: "file_path",
+  Write: "file_path",
+  Edit: "file_path",
+  Bash: "command",
+  Glob: "pattern",
+  Grep: "pattern",
+  WebFetch: "url",
+  WebSearch: "query",
+};
+
 function summarizeToolUse(toolName: string, input: unknown): string {
   const inp =
     input !== null && typeof input === "object"
       ? (input as Record<string, unknown>)
       : {};
-  switch (toolName) {
-    case "Read":
-      return `Read ${inp.file_path ?? "file"}`;
-    case "Write":
-      return `Write ${inp.file_path ?? "file"}`;
-    case "Edit":
-      return `Edit ${inp.file_path ?? "file"}`;
-    case "Bash":
-      return `Bash: ${String(inp.command ?? "").slice(0, 80)}`;
-    case "Glob":
-      return `Glob: ${inp.pattern ?? ""}`;
-    case "Grep":
-      return `Grep: ${inp.pattern ?? ""}`;
-    case "WebFetch":
-      return `WebFetch: ${inp.url ?? ""}`;
-    case "WebSearch":
-      return `WebSearch: ${inp.query ?? ""}`;
-    case "Task":
-      return `Task: ${inp.description ?? inp.subagent_type ?? "subagent"}`;
-    default:
-      return `Tool: ${toolName}`;
+
+  const field = TOOL_SUMMARY_FIELDS[toolName];
+  if (field) {
+    const value = String(inp[field] ?? "").slice(0, 80);
+    return `${toolName}: ${value}`;
   }
+  if (toolName === "Task") {
+    return `Task: ${inp.description ?? inp.subagent_type ?? "subagent"}`;
+  }
+  return `Tool: ${toolName}`;
 }
 
 /**
@@ -81,19 +81,17 @@ export async function runClaude(opts: {
 }): Promise<ClaudeResult> {
   info(`Running Claude Code agent (cwd: ${opts.cwd})...`);
 
-  // Set up abort controller for timeout and graceful shutdown
   const controller = new AbortController();
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   if (opts.timeoutMs) {
+    const timeoutMs = opts.timeoutMs;
     timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-      warn(
-        `Claude Code timed out after ${Math.round((opts.timeoutMs ?? 0) / 1000)}s`,
-      );
-    }, opts.timeoutMs);
+      warn(`Claude Code timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }, timeoutMs);
   }
 
   // If a parent signal fires (e.g. Ctrl+C), abort this agent too
@@ -114,45 +112,43 @@ export async function runClaude(opts: {
     inactivityTimedOut: false,
   };
 
-  // Hoist variables shared across try/catch/finally
-  let worktreeCreated = false;
+  let worktreeName: string | undefined;
   let inactivityTimedOut = false;
   let loopCompleted = false;
   let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
   let inactivityInterval: ReturnType<typeof setInterval> | undefined;
 
+  const keepBranch = !!opts.worktreeBranch;
+
   try {
+    // Build query options declaratively
     const queryOpts: Record<string, unknown> = {
       cwd: opts.cwd,
       abortController: controller,
-      // Use the full Claude Code toolkit and system prompt
       tools: { type: "preset", preset: "claude_code" },
       systemPrompt: { type: "preset", preset: "claude_code" },
-      // Load project settings (.claude/settings.json, CLAUDE.md)
       settingSources: ["project"],
-      // Bypass all permission prompts for headless execution
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
-      // Capture stderr so we can diagnose startup failures (e.g. exit code 3)
       stderr: (data: string) => warn(`[stderr] ${data.trimEnd()}`),
+      ...(opts.mcpServers && { mcpServers: opts.mcpServers }),
+      ...(opts.model && { model: opts.model }),
     };
-    if (opts.mcpServers) {
-      queryOpts.mcpServers = opts.mcpServers;
-    }
-    if (opts.model) {
-      queryOpts.model = opts.model;
-    }
+
     // Self-managed worktrees: create before spawning, clean up in finally
     if (opts.worktree) {
-      const wtPath = createWorktree(opts.cwd, opts.worktree, opts.worktreeBranch);
-      queryOpts.cwd = wtPath;
-      worktreeCreated = true;
+      queryOpts.cwd = createWorktree(
+        opts.cwd,
+        opts.worktree,
+        opts.worktreeBranch,
+      );
+      worktreeName = opts.worktree;
     }
 
     // Check for shutdown before proceeding
     if (opts.parentSignal?.aborted) {
-      if (worktreeCreated && opts.worktree) {
-        removeWorktree(opts.cwd, opts.worktree, { keepBranch: !!opts.worktreeBranch });
+      if (worktreeName) {
+        removeWorktree(opts.cwd, worktreeName, { keepBranch });
       }
       result.error = "Aborted before start";
       return result;
@@ -163,28 +159,26 @@ export async function runClaude(opts: {
 
     // Inactivity watchdog: reset on every SDK message
     let lastActivityAt = Date.now();
-    inactivityInterval = opts.inactivityMs
-      ? setInterval(() => {
-          if (inactivityTimedOut) return; // already fired
-          if (Date.now() - lastActivityAt > opts.inactivityMs!) {
-            inactivityTimedOut = true;
-            warn(
-              `Agent inactive for ${Math.round(opts.inactivityMs! / 1000)}s, aborting`,
-            );
-            controller.abort();
-          }
-        }, 30_000)
-      : undefined;
+    if (opts.inactivityMs) {
+      const inactivityMs = opts.inactivityMs;
+      inactivityInterval = setInterval(() => {
+        if (inactivityTimedOut) return;
+        if (Date.now() - lastActivityAt > inactivityMs) {
+          inactivityTimedOut = true;
+          warn(
+            `Agent inactive for ${Math.round(inactivityMs / 1000)}s, aborting`,
+          );
+          controller.abort();
+        }
+      }, 30_000);
+    }
 
-    // Capture query object so we can call close() as a hard kill
     const q = query({ prompt: opts.prompt, options: queryOpts });
 
     const runSdkLoop = async () => {
       for await (const message of q) {
-        // Reset inactivity watchdog on every message
         lastActivityAt = Date.now();
 
-        // Capture session ID on init
         if (message.type === "system" && message.subtype === "init") {
           result.sessionId = message.session_id;
           emit?.({
@@ -194,7 +188,6 @@ export async function runClaude(opts: {
           });
         }
 
-        // Emit activity for tool use
         if (message.type === "assistant" && message.message) {
           const { content } = (message as SDKAssistantMessage).message;
           if (Array.isArray(content)) {
@@ -217,7 +210,6 @@ export async function runClaude(opts: {
           }
         }
 
-        // Capture result messages
         if (message.type === "result") {
           if (message.subtype === "success") {
             result.result = message.result;
@@ -246,16 +238,16 @@ export async function runClaude(opts: {
       loopCompleted = true;
     };
 
-    // Hard kill safety net: if abort doesn't break the loop, force-close
-    const effectiveTimeoutMs = Math.max(
-      opts.timeoutMs ?? 30 * 60 * 1000,
-      opts.inactivityMs ?? 10 * 60 * 1000,
-    );
+    // Hard kill safety net: if abort doesn't break the loop within 60s, force-close.
+    // Use the larger of the two timeouts as baseline so the hard kill fires last.
+    const hardKillDelayMs =
+      Math.max(
+        opts.timeoutMs ?? 30 * 60 * 1000,
+        opts.inactivityMs ?? 10 * 60 * 1000,
+      ) + 60_000;
+
     const hardKillPromise = new Promise<"hard_kill">((resolve) => {
-      hardKillTimer = setTimeout(
-        () => resolve("hard_kill"),
-        effectiveTimeoutMs + 60_000,
-      );
+      hardKillTimer = setTimeout(() => resolve("hard_kill"), hardKillDelayMs);
     });
 
     const outcome = await Promise.race([
@@ -299,11 +291,11 @@ export async function runClaude(opts: {
     if (inactivityInterval) clearInterval(inactivityInterval);
     if (timer) clearTimeout(timer);
 
-    if (worktreeCreated && opts.worktree) {
+    if (worktreeName) {
       try {
-        removeWorktree(opts.cwd, opts.worktree, { keepBranch: !!opts.worktreeBranch });
+        removeWorktree(opts.cwd, worktreeName, { keepBranch });
       } catch (e) {
-        warn(`Worktree cleanup failed for '${opts.worktree}': ${e}`);
+        warn(`Worktree cleanup failed for '${worktreeName}': ${e}`);
       }
     }
   }

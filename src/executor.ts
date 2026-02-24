@@ -68,15 +68,19 @@ export async function executeIssue(opts: {
       onActivity: (entry) => state.addActivity(agentId, entry),
     });
 
+    const metrics = {
+      costUsd: result.costUsd,
+      durationMs: result.durationMs,
+      numTurns: result.numTurns,
+    };
+
     if (result.inactivityTimedOut) {
       warn(
         `${issue.identifier} was inactive for ${config.executor.inactivity_timeout_minutes} minutes, returning to Ready`,
       );
       await updateIssue(issue.id, { stateId: linearIds.states.ready });
       state.completeAgent(agentId, "timed_out", {
-        costUsd: result.costUsd,
-        durationMs: result.durationMs,
-        numTurns: result.numTurns,
+        ...metrics,
         error: "Inactivity timeout",
       });
       return false;
@@ -91,9 +95,7 @@ export async function executeIssue(opts: {
         comment: `Executor timed out after ${config.executor.timeout_minutes} minutes.\n\nThe implementation may be partially complete. Check the \`worktree-${worktree}\` branch for any progress.`,
       });
       state.completeAgent(agentId, "timed_out", {
-        costUsd: result.costUsd,
-        durationMs: result.durationMs,
-        numTurns: result.numTurns,
+        ...metrics,
         error: "Timed out",
       });
       return false;
@@ -101,12 +103,9 @@ export async function executeIssue(opts: {
 
     if (result.error) {
       warn(`${issue.identifier} failed: ${result.error}`);
-      // Move back to Ready so it can be retried on next loop
       await updateIssue(issue.id, { stateId: linearIds.states.ready });
       state.completeAgent(agentId, "failed", {
-        costUsd: result.costUsd,
-        durationMs: result.durationMs,
-        numTurns: result.numTurns,
+        ...metrics,
         error: result.error,
       });
       return false;
@@ -114,11 +113,7 @@ export async function executeIssue(opts: {
 
     ok(`${issue.identifier} completed successfully`);
     if (result.costUsd) info(`Cost: $${result.costUsd.toFixed(4)}`);
-    state.completeAgent(agentId, "completed", {
-      costUsd: result.costUsd,
-      durationMs: result.durationMs,
-      numTurns: result.numTurns,
-    });
+    state.completeAgent(agentId, "completed", metrics);
     return true;
   } finally {
     activeIssueIds.delete(issue.id);
