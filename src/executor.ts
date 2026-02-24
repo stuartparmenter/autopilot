@@ -37,7 +37,7 @@ export async function executeIssue(opts: {
     PROJECT_NAME: config.project.name,
   });
 
-  const worktree = `autopilot/${issue.identifier}`;
+  const worktree = issue.identifier;
   const timeoutMs = config.executor.timeout_minutes * 60 * 1000;
 
   try {
@@ -66,7 +66,7 @@ export async function executeIssue(opts: {
       );
       await updateIssue(issue.id, {
         stateId: linearIds.states.blocked,
-        comment: `Executor timed out after ${config.executor.timeout_minutes} minutes.\n\nThe implementation may be partially complete. Check the \`${worktree}\` branch for any progress.`,
+        comment: `Executor timed out after ${config.executor.timeout_minutes} minutes.\n\nThe implementation may be partially complete. Check the \`worktree-${worktree}\` branch for any progress.`,
       });
       state.completeAgent(agentId, "timed_out", {
         costUsd: result.costUsd,
@@ -79,6 +79,8 @@ export async function executeIssue(opts: {
 
     if (result.error) {
       warn(`${issue.identifier} failed: ${result.error}`);
+      // Move back to Ready so it can be retried on next loop
+      await updateIssue(issue.id, { stateId: linearIds.states.ready });
       state.completeAgent(agentId, "failed", {
         costUsd: result.costUsd,
         durationMs: result.durationMs,
@@ -123,7 +125,10 @@ export async function fillSlots(opts: {
 
   info(`Querying Linear for ready issues (${available} slots available)...`);
 
-  const allReady = await getReadyIssues(linearIds, available + activeIssueIds.size);
+  const allReady = await getReadyIssues(
+    linearIds,
+    available + activeIssueIds.size,
+  );
   const issues = allReady.filter((i) => !activeIssueIds.has(i.id));
 
   state.updateQueue(issues.length, running);

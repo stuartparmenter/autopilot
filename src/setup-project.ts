@@ -17,10 +17,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { error, header, info, ok, warn } from "./lib/logger";
 
-const AUTOPILOT_ROOT = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
+const AUTOPILOT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const projectPath = process.argv[2];
 if (!projectPath) {
@@ -130,6 +127,7 @@ if (existsSync(settingsPath)) {
           "mcp-remote",
           "https://mcp.linear.app/mcp",
           "--header",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional literal for JSON output
           "Authorization: Bearer ${LINEAR_API_KEY}",
         ],
       },
@@ -178,7 +176,9 @@ console.log();
 console.log("  3. Set your Linear API key");
 console.log("     export LINEAR_API_KEY=lin_api_...");
 console.log("     Get one at: https://linear.app/settings/api");
-console.log("     The Linear MCP uses this key automatically (no OAuth needed).");
+console.log(
+  "     The Linear MCP uses this key automatically (no OAuth needed).",
+);
 console.log();
 console.log("  4. Start the loop");
 console.log(`     bun run start ${PROJECT_PATH}`);
