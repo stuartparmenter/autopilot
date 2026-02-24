@@ -8,6 +8,7 @@ const mockRunClaude = mock(
   (): Promise<ClaudeResult> =>
     Promise.resolve({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.05,
       durationMs: 500,
@@ -86,6 +87,7 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
     executor: {
       parallel: parallelSlots,
       timeout_minutes: 30,
+      inactivity_timeout_minutes: 10,
       auto_approve_labels: [],
       branch_pattern: "autopilot/{{id}}",
       commit_pattern: "{{id}}: {{title}}",
@@ -100,7 +102,7 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
       skip_triage: true,
       scan_dimensions: [],
     },
-    github: { repo: "" },
+    github: { repo: "", automerge: false },
     project: { name: "test-project" },
   };
 }
@@ -144,6 +146,7 @@ describe("checkOpenPRs — basic cases", () => {
     state = new AppState();
     mockRunClaude.mockResolvedValue({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.05,
       durationMs: 500,
@@ -216,6 +219,7 @@ describe("checkOpenPRs — fixer spawn conditions", () => {
     state = new AppState();
     mockRunClaude.mockResolvedValue({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.05,
       durationMs: 500,
@@ -298,6 +302,7 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
     state = new AppState();
     mockRunClaude.mockResolvedValue({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.05,
       durationMs: 500,
@@ -346,6 +351,7 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
       resolveFirst = () =>
         resolve({
           timedOut: false,
+          inactivityTimedOut: false,
           error: undefined,
           costUsd: 0,
           durationMs: 0,
@@ -381,6 +387,7 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
   test("continues processing subsequent issues when getPRStatus throws", async () => {
     mockRunClaude.mockResolvedValue({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.05,
       durationMs: 500,

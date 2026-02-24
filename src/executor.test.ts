@@ -8,6 +8,7 @@ const mockRunClaude = mock(
   (): Promise<ClaudeResult> =>
     Promise.resolve({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.1,
       durationMs: 1000,
@@ -62,6 +63,7 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
     executor: {
       parallel: parallelSlots,
       timeout_minutes: 30,
+      inactivity_timeout_minutes: 10,
       auto_approve_labels: [],
       branch_pattern: "autopilot/{{id}}",
       commit_pattern: "{{id}}: {{title}}",
@@ -76,7 +78,7 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
       skip_triage: true,
       scan_dimensions: [],
     },
-    github: { repo: "" },
+    github: { repo: "", automerge: false },
     project: { name: "test-project" },
   };
 }
@@ -121,6 +123,7 @@ describe("executeIssue — success path", () => {
     state = new AppState();
     mockRunClaude.mockResolvedValue({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.5,
       durationMs: 2000,
@@ -214,6 +217,8 @@ describe("executeIssue — success path", () => {
       IN_REVIEW_STATE: config.linear.states.in_review,
       BLOCKED_STATE: config.linear.states.blocked,
       PROJECT_NAME: config.project.name,
+      AUTOMERGE_INSTRUCTION:
+        "Skip — auto-merge is not enabled for this project.",
     });
   });
 });
@@ -225,6 +230,7 @@ describe("executeIssue — timeout path", () => {
     state = new AppState();
     mockRunClaude.mockResolvedValue({
       timedOut: true,
+      inactivityTimedOut: false,
       error: "Timed out",
       costUsd: undefined,
       durationMs: 1800000,
@@ -301,6 +307,7 @@ describe("executeIssue — error path", () => {
     state = new AppState();
     mockRunClaude.mockResolvedValue({
       timedOut: false,
+      inactivityTimedOut: false,
       error: "Claude crashed",
       costUsd: undefined,
       durationMs: 500,
@@ -365,6 +372,7 @@ describe("fillSlots", () => {
     mockUpdateIssue.mockResolvedValue(undefined);
     mockRunClaude.mockResolvedValue({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.1,
       durationMs: 500,
@@ -463,6 +471,7 @@ describe("fillSlots", () => {
         () =>
           resolve({
             timedOut: false,
+            inactivityTimedOut: false,
             error: undefined,
             costUsd: 0,
             durationMs: 0,
@@ -485,6 +494,7 @@ describe("fillSlots", () => {
     // Restore normal behavior for fillSlots → executeIssue calls
     mockRunClaude.mockResolvedValue({
       timedOut: false,
+      inactivityTimedOut: false,
       error: undefined,
       costUsd: 0.1,
       durationMs: 100,
