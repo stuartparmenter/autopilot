@@ -8,19 +8,29 @@ import { info, warn } from "./logger";
 import { createWorktree, removeWorktree } from "./worktree";
 
 // Stagger agent spawns to avoid race conditions on ~/.claude.json.
-// Each query() call waits for the previous one to finish starting up.
-const SPAWN_DELAY_MS = 2000;
+// Each query() waits for the previous agent to signal it has started (init
+// message) before spawning. If the agent crashes before init, the finally
+// block in runClaude releases the slot.
 let spawnGate: Promise<void> = Promise.resolve();
 
-function acquireSpawnSlot(): Promise<void> {
+/**
+ * Wait for the previous agent to finish starting, then reserve the slot.
+ * Returns a release function — call it when the agent emits its init message,
+ * or in the finally block if the agent never starts.
+ */
+function acquireSpawnSlot(): { ready: Promise<void>; release: () => void } {
   const previous = spawnGate;
-  let release: () => void;
-  spawnGate = new Promise((r) => {
-    release = r;
+  let release!: () => void;
+  let released = false;
+  spawnGate = new Promise<void>((r) => {
+    release = () => {
+      if (!released) {
+        released = true;
+        r();
+      }
+    };
   });
-  return previous.then(() => {
-    setTimeout(() => release(), SPAWN_DELAY_MS);
-  });
+  return { ready: previous, release };
 }
 
 export interface ClaudeResult {
@@ -117,6 +127,7 @@ export async function runClaude(opts: {
   let loopCompleted = false;
   let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
   let inactivityInterval: ReturnType<typeof setInterval> | undefined;
+  let releaseSpawnSlot: (() => void) | undefined;
 
   const keepBranch = !!opts.worktreeBranch;
 
@@ -155,7 +166,9 @@ export async function runClaude(opts: {
     }
 
     // Wait for any prior agent to finish starting before we spawn
-    await acquireSpawnSlot();
+    const spawnSlot = acquireSpawnSlot();
+    releaseSpawnSlot = spawnSlot.release;
+    await spawnSlot.ready;
 
     // Inactivity watchdog: reset on every SDK message
     let lastActivityAt = Date.now();
@@ -181,6 +194,8 @@ export async function runClaude(opts: {
 
         if (message.type === "system" && message.subtype === "init") {
           result.sessionId = message.session_id;
+          // Agent is up and done touching ~/.claude.json — let the next one spawn
+          releaseSpawnSlot?.();
           emit?.({
             timestamp: Date.now(),
             type: "status",
@@ -287,6 +302,8 @@ export async function runClaude(opts: {
       });
     }
   } finally {
+    // Ensure the spawn slot is released even if we never got to init
+    releaseSpawnSlot?.();
     if (hardKillTimer) clearTimeout(hardKillTimer);
     if (inactivityInterval) clearInterval(inactivityInterval);
     if (timer) clearTimeout(timer);
