@@ -105,7 +105,9 @@ async function isIssueBlocked(issue: Issue): Promise<boolean> {
       const related = await relation.relatedIssue;
       if (!related) return false;
       const state = await related.state;
-      return state ? state.type !== "completed" && state.type !== "canceled" : false;
+      return state
+        ? state.type !== "completed" && state.type !== "canceled"
+        : false;
     }),
   );
   return results.some(Boolean);
