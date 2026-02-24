@@ -449,11 +449,7 @@ describe("fillSlots", () => {
     const activeIssue = makeIssue();
     const freshIssue = makeIssue();
 
-    const hangingRunClaude = new Promise<
-      typeof mockRunClaude extends (...args: any[]) => Promise<infer R>
-        ? R
-        : never
-    >((resolve) => {
+    const hangingRunClaude = new Promise<ClaudeResult>((resolve) => {
       setTimeout(
         () =>
           resolve({
@@ -468,7 +464,7 @@ describe("fillSlots", () => {
         10000,
       );
     });
-    mockRunClaude.mockReturnValue(hangingRunClaude as any);
+    mockRunClaude.mockReturnValue(hangingRunClaude);
 
     const execPromise = executeIssue({
       issue: activeIssue,

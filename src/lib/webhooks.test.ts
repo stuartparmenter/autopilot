@@ -1,11 +1,11 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import {
-  WebhookTrigger,
   parseGitHubEventType,
   parseLinearEventType,
   verifyGitHubSignature,
   verifyLinearSignature,
+  WebhookTrigger,
 } from "./webhooks";
 
 // ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ describe("verifyLinearSignature", () => {
 
   test("returns false for a tampered body", () => {
     const sig = sign(secret, body);
-    expect(verifyLinearSignature(secret, body + "tampered", sig)).toBe(false);
+    expect(verifyLinearSignature(secret, `${body}tampered`, sig)).toBe(false);
   });
 
   test("returns false for a wrong secret", () => {
@@ -58,9 +58,7 @@ describe("verifyGitHubSignature", () => {
   const body = JSON.stringify({ action: "completed" });
 
   function sign(s: string, b: string): string {
-    return (
-      "sha256=" + createHmac("sha256", s).update(b, "utf-8").digest("hex")
-    );
+    return `sha256=${createHmac("sha256", s).update(b, "utf-8").digest("hex")}`;
   }
 
   test("returns true for a valid sha256= signature", () => {
@@ -70,7 +68,7 @@ describe("verifyGitHubSignature", () => {
 
   test("returns false for a tampered body", () => {
     const sig = sign(secret, body);
-    expect(verifyGitHubSignature(secret, body + "x", sig)).toBe(false);
+    expect(verifyGitHubSignature(secret, `${body}x`, sig)).toBe(false);
   });
 
   test("returns false for a wrong secret", () => {
