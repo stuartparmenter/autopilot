@@ -244,6 +244,24 @@ export function createApp(state: AppState): Hono {
                 overflow: hidden;
                 text-overflow: ellipsis;
               }
+              .pause-btn {
+                padding: 4px 12px;
+                border-radius: 4px;
+                border: 1px solid var(--border);
+                background: var(--bg-card);
+                color: var(--text);
+                font-family: inherit;
+                font-size: 12px;
+                cursor: pointer;
+              }
+              .pause-btn:hover {
+                background: var(--border);
+              }
+              .pause-btn.paused {
+                background: var(--yellow);
+                color: var(--bg);
+                border-color: var(--yellow);
+              }
               .auditor-badge {
                 display: inline-block;
                 font-size: 10px;
@@ -266,6 +284,12 @@ export function createApp(state: AppState): Hono {
               >
                 Loading...
               </div>
+              <div
+                id="pause-btn"
+                hx-get="/partials/pause-button"
+                hx-trigger="load, every 5s"
+                hx-swap="innerHTML"
+              ></div>
               <div
                 class="stats-bar"
                 hx-get="/partials/stats"
@@ -310,7 +334,27 @@ export function createApp(state: AppState): Hono {
     return c.json(state.toJSON());
   });
 
+  app.post("/api/pause", (c) => {
+    const paused = state.togglePause();
+    return c.json({ paused });
+  });
+
   // --- Partials for htmx ---
+
+  app.get("/partials/pause-button", (c) => {
+    const paused = state.isPaused();
+    return c.html(
+      html`<button
+        class="pause-btn ${paused ? "paused" : ""}"
+        hx-post="/api/pause"
+        hx-target="#pause-btn"
+        hx-swap="innerHTML"
+        hx-select="button"
+      >
+        ${paused ? "Paused" : "Pause"}
+      </button>`,
+    );
+  });
 
   app.get("/partials/header-meta", (c) => {
     const uptime = Math.round((Date.now() - state.startedAt) / 1000);

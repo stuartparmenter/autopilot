@@ -46,6 +46,7 @@ export interface AuditorStatus {
 }
 
 export interface AppStateSnapshot {
+  paused: boolean;
   agents: AgentState[];
   history: AgentResult[];
   queue: QueueInfo;
@@ -65,6 +66,7 @@ export class AppState {
     lastChecked: 0,
   };
   private auditor: AuditorStatus = { running: false };
+  private paused = false;
   readonly startedAt = Date.now();
 
   addAgent(id: string, issueId: string, issueTitle: string): void {
@@ -151,8 +153,18 @@ export class AppState {
     return this.auditor;
   }
 
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  togglePause(): boolean {
+    this.paused = !this.paused;
+    return this.paused;
+  }
+
   toJSON(): AppStateSnapshot {
     return {
+      paused: this.paused,
       agents: this.getRunningAgents(),
       history: this.history,
       queue: this.queue,

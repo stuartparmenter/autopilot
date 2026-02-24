@@ -117,6 +117,11 @@ console.log();
 
 while (true) {
   try {
+    if (state.isPaused()) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+
     // Fill executor slots
     const newPromises = await fillSlots({
       config,
