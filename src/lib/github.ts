@@ -114,47 +114,52 @@ export async function getPRStatus(
     octokit.rest.checks.listForRef({ owner, repo, ref: sha }),
   ]);
 
-  // Aggregate CI status from both APIs
+  // Aggregate CI status from both APIs.
+  // Only report "failure" once everything has settled — otherwise a fast-failing
+  // check would trigger a fixer while slower checks are still running.
   const statusState = statusResult.data.state; // "success" | "failure" | "pending"
   const checks = checksResult.data.check_runs;
-
-  let ciStatus: PRStatus["ciStatus"] = "pending";
   const failureDetails: string[] = [];
 
-  // Check legacy status API
-  if (statusState === "failure") {
-    ciStatus = "failure";
-    for (const status of statusResult.data.statuses) {
-      if (status.state === "failure" || status.state === "error") {
-        failureDetails.push(
-          `${status.context}: ${status.description ?? "failed"}`,
-        );
-      }
-    }
-  }
-
-  // Check Checks API
-  const hasFailedCheck = checks.some(
-    (c) => c.conclusion === "failure" || c.conclusion === "timed_out",
+  const allStatusesFinal = statusResult.data.statuses.every(
+    (s) => s.state !== "pending",
   );
   const allChecksComplete = checks.every((c) => c.status === "completed");
-  const allChecksPass = checks.every(
-    (c) =>
-      c.status === "completed" &&
-      (c.conclusion === "success" || c.conclusion === "skipped"),
-  );
+  const allSettled = allStatusesFinal && allChecksComplete;
 
-  if (hasFailedCheck) {
-    ciStatus = "failure";
-    for (const check of checks) {
-      if (check.conclusion === "failure" || check.conclusion === "timed_out") {
-        failureDetails.push(`${check.name}: ${check.conclusion}`);
+  let ciStatus: PRStatus["ciStatus"] = "pending";
+
+  if (!allSettled) {
+    // Something is still running — wait for next poll
+    ciStatus = "pending";
+  } else {
+    const hasStatusFailure =
+      statusState === "failure" || statusState === "error";
+    const hasCheckFailure = checks.some(
+      (c) => c.conclusion === "failure" || c.conclusion === "timed_out",
+    );
+
+    if (hasStatusFailure || hasCheckFailure) {
+      ciStatus = "failure";
+      for (const status of statusResult.data.statuses) {
+        if (status.state === "failure" || status.state === "error") {
+          failureDetails.push(
+            `${status.context}: ${status.description ?? "failed"}`,
+          );
+        }
       }
+      for (const check of checks) {
+        if (
+          check.conclusion === "failure" ||
+          check.conclusion === "timed_out"
+        ) {
+          failureDetails.push(`${check.name}: ${check.conclusion}`);
+        }
+      }
+    } else {
+      ciStatus = "success";
     }
-  } else if (statusState === "success" && allChecksComplete && allChecksPass) {
-    ciStatus = "success";
   }
-  // Otherwise stays "pending"
 
   if (ciStatus === "failure" && failureDetails.length === 0) {
     failureDetails.push("CI checks failed (see PR for details)");
