@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import YAML from "yaml";
+import { error } from "./logger";
 
 export interface LinearConfig {
   team: string;
@@ -165,13 +166,11 @@ export function loadConfig(projectPath: string): AutopilotConfig {
 
 export function resolveProjectPath(arg?: string): string {
   if (!arg) {
-    console.error("Usage: bun run <script> <project-path>");
-    process.exit(1);
+    error("Usage: bun run <script> <project-path>");
   }
   const resolved = resolve(arg);
   if (!existsSync(resolved)) {
-    console.error(`Project path does not exist: ${resolved}`);
-    process.exit(1);
+    error(`Project path does not exist: ${resolved}`);
   }
   return resolved;
 }
