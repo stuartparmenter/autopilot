@@ -31,7 +31,11 @@ function sleepMs(ms: number): void {
  * Try to remove a directory, retrying on failure (e.g. Windows file locks).
  * Uses git worktree remove first, falls back to rmSync.
  */
-function forceRemoveDir(projectPath: string, wtPath: string, name: string): void {
+function forceRemoveDir(
+  projectPath: string,
+  wtPath: string,
+  name: string,
+): void {
   const MAX_RETRIES = 3;
   const RETRY_DELAYS = [1000, 3000, 5000];
 
@@ -45,7 +49,9 @@ function forceRemoveDir(projectPath: string, wtPath: string, name: string): void
 
     // On last attempt, try brute-force rmSync
     if (attempt === MAX_RETRIES) {
-      warn(`git worktree remove failed after ${MAX_RETRIES} retries, trying rmSync`);
+      warn(
+        `git worktree remove failed after ${MAX_RETRIES} retries, trying rmSync`,
+      );
       try {
         rmSync(wtPath, { recursive: true, force: true });
       } catch (e) {
@@ -124,9 +130,7 @@ export function createWorktree(
     gitSync(projectPath, ["branch", "-D", branch]);
 
     info(`Creating worktree: ${name}`);
-    const err = gitSync(projectPath, [
-      "worktree", "add", wtPath, "-b", branch,
-    ]);
+    const err = gitSync(projectPath, ["worktree", "add", wtPath, "-b", branch]);
     if (err) {
       throw new Error(`Failed to create worktree '${name}': ${err}`);
     }
