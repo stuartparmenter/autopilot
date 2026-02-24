@@ -96,23 +96,6 @@ export async function findOrCreateLabel(
   return label;
 }
 
-async function isIssueBlocked(issue: Issue): Promise<boolean> {
-  const relations = await issue.relations();
-  const blockingRelations = relations.nodes.filter((r) => r.type === "blocks");
-  if (blockingRelations.length === 0) return false;
-  const results = await Promise.all(
-    blockingRelations.map(async (relation) => {
-      const related = await relation.relatedIssue;
-      if (!related) return false;
-      const state = await related.state;
-      return state
-        ? state.type !== "completed" && state.type !== "canceled"
-        : false;
-    }),
-  );
-  return results.some(Boolean);
-}
-
 /**
  * Get ready, unblocked issues for a team+project, sorted by priority.
  */
@@ -136,9 +119,36 @@ export async function getReadyIssues(
     (a, b) => (a.priority ?? 4) - (b.priority ?? 4),
   );
 
-  // Filter out issues that are blocked by incomplete issues (parallel across issues)
-  const blockedFlags = await Promise.all(sorted.map(isIssueBlocked));
-  return sorted.filter((_, i) => !blockedFlags[i]);
+  // Filter out issues that are blocked by incomplete issues
+  const unblocked: Issue[] = [];
+
+  for (const issue of sorted) {
+    const relations = await issue.relations();
+    let isBlocked = false;
+
+    for (const relation of relations.nodes) {
+      if (relation.type === "blocks") {
+        const related = await relation.relatedIssue;
+        if (related) {
+          const state = await related.state;
+          if (
+            state &&
+            state.type !== "completed" &&
+            state.type !== "canceled"
+          ) {
+            isBlocked = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!isBlocked) {
+      unblocked.push(issue);
+    }
+  }
+
+  return unblocked;
 }
 
 /**
@@ -149,7 +159,7 @@ export async function countIssuesInState(
   stateId: string,
 ): Promise<number> {
   const client = getLinearClient();
-  const result = await client.issues({
+  let result = await client.issues({
     filter: {
       team: { id: { eq: linearIds.teamId } },
       state: { id: { eq: stateId } },
@@ -157,6 +167,11 @@ export async function countIssuesInState(
     },
     first: 250,
   });
+
+  while (result.pageInfo.hasNextPage) {
+    result = await result.fetchNext();
+  }
+
   return result.nodes.length;
 }
 
