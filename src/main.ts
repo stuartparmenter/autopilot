@@ -127,9 +127,7 @@ const server = Bun.serve({
   fetch: app.fetch,
 });
 
-ok(
-  `Dashboard: http://${isLocalhost ? "localhost" : host}:${server.port}`,
-);
+ok(`Dashboard: http://${isLocalhost ? "localhost" : host}:${server.port}`);
 console.log();
 
 // --- Graceful shutdown ---
