@@ -143,4 +143,19 @@ describe("buildAuditorPrompt", () => {
     const result = buildAuditorPrompt({});
     expect(result).toContain("## Product Manager Subagent Prompt");
   });
+
+  test("substitutes brainstorm variables", () => {
+    const result = buildAuditorPrompt({
+      BRAINSTORM_FEATURES: "true",
+      BRAINSTORM_DIMENSIONS: "user-facing-features, developer-experience",
+      MAX_IDEAS_PER_RUN: "5",
+      FEATURE_TARGET_STATE: "Triage",
+    });
+    expect(result).toContain("Triage");
+    expect(result).not.toContain("{{FEATURE_TARGET_STATE}}");
+    expect(result).not.toContain("{{MAX_IDEAS_PER_RUN}}");
+    expect(result).not.toContain("{{BRAINSTORM_FEATURES}}");
+    expect(result).toContain("Phase 1.5: Brainstorm Features");
+    expect(result).toContain("auto-feature-idea");
+  });
 });
