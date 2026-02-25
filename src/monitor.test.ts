@@ -171,6 +171,12 @@ function makeConfig(
       network_restricted: false,
       extra_allowed_domains: [],
     },
+    budget: {
+      daily_limit_usd: 0,
+      monthly_limit_usd: 0,
+      per_agent_limit_usd: 0,
+      warn_at_percent: 80,
+    },
   };
 }
 
