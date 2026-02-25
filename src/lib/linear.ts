@@ -177,7 +177,9 @@ export async function linkProjectToInitiative(
 }
 
 /**
- * Get ready, unblocked issues for a team+project, sorted by priority.
+ * Get ready, unblocked leaf issues across the team, sorted by priority.
+ * Queries by team (not project) so issues in dynamically-created projects
+ * are visible. Skips parent issues that have children.
  */
 export async function getReadyIssues(
   linearIds: LinearIds,
@@ -191,7 +193,6 @@ export async function getReadyIssues(
         filter: {
           team: { id: { eq: linearIds.teamId } },
           state: { id: { eq: linearIds.states.ready } },
-          project: { id: { eq: linearIds.projectId } },
         },
         first: limit,
       }),
@@ -248,13 +249,31 @@ export async function getReadyIssues(
     }
   }
 
-  return unblocked;
+  // Skip parent issues that have children — only leaf issues are work units
+  const leafIssues: Issue[] = [];
+  for (const issue of unblocked) {
+    try {
+      const children = await withRetry(
+        () => issue.children(),
+        "getReadyIssues",
+      );
+      if (children.nodes.length > 0) continue;
+      leafIssues.push(issue);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      warn(
+        `Skipping issue ${issue.identifier}: failed to check children — ${msg}`,
+      );
+    }
+  }
+
+  return leafIssues;
 }
 
 const MAX_PAGES = 100;
 
 /**
- * Count issues in a given state for the configured project.
+ * Count issues in a given state across the team.
  */
 export async function countIssuesInState(
   linearIds: LinearIds,
@@ -267,7 +286,6 @@ export async function countIssuesInState(
         filter: {
           team: { id: { eq: linearIds.teamId } },
           state: { id: { eq: stateId } },
-          project: { id: { eq: linearIds.projectId } },
         },
         first: 250,
       }),
