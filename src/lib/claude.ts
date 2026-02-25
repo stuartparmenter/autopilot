@@ -7,6 +7,25 @@ import type { ActivityEntry } from "../state";
 import { info, warn } from "./logger";
 import { createWorktree, removeWorktree } from "./worktree";
 
+// Active Query handles — used by closeAllAgents() to forcefully kill
+// child processes on shutdown (sync SIGTERM + 5s SIGKILL escalation).
+const activeQueries = new Set<{ close(): void }>();
+
+/**
+ * Synchronously close all running agent subprocesses.
+ * Call this from process signal handlers — close() is sync and sends
+ * SIGTERM immediately, escalating to SIGKILL after 5s.
+ */
+export function closeAllAgents(): void {
+  for (const q of activeQueries) {
+    try {
+      q.close();
+    } catch {
+      // close() may throw if already dead
+    }
+  }
+}
+
 // Stagger agent spawns to avoid race conditions on ~/.claude.json.
 // Each query() waits for the previous agent's init message before spawning.
 // If the agent crashes before init, the finally block releases the slot.
@@ -155,6 +174,7 @@ export async function runClaude(opts: {
   let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
   let inactivityInterval: ReturnType<typeof setInterval> | undefined;
   let releaseSpawnSlot: (() => void) | undefined;
+  let activeQuery: { close(): void } | undefined;
 
   const keepBranch = !!opts.worktreeBranch;
 
@@ -214,6 +234,26 @@ export async function runClaude(opts: {
     }
 
     const q = query({ prompt: opts.prompt, options: queryOpts });
+    activeQuery = q;
+    activeQueries.add(q);
+
+    // If the parent signal fires after q exists, close() directly —
+    // this sends SIGTERM and escalates to SIGKILL after 5s, unlike
+    // abort() which only asks the SDK to stop politely.
+    const onParentAbort = () => {
+      try {
+        q.close();
+      } catch {
+        // already dead
+      }
+    };
+    if (opts.parentSignal?.aborted) {
+      onParentAbort();
+    } else {
+      opts.parentSignal?.addEventListener("abort", onParentAbort, {
+        once: true,
+      });
+    }
 
     const runSdkLoop = async () => {
       for await (const message of q) {
@@ -283,16 +323,18 @@ export async function runClaude(opts: {
       loopCompleted = true;
     };
 
-    // Hard kill safety net: if abort doesn't break the loop within 60s, force-close.
-    // Use the larger of the two timeouts as baseline so the hard kill fires last.
-    const hardKillDelayMs =
-      Math.max(
-        opts.timeoutMs ?? 30 * 60 * 1000,
-        opts.inactivityMs ?? 10 * 60 * 1000,
-      ) + 60_000;
-
+    // Hard kill safety net: if the SDK async iterator doesn't exit
+    // within 15s of an abort/close, force-close and break the loop.
+    // This only arms once the controller is actually aborted.
     const hardKillPromise = new Promise<"hard_kill">((resolve) => {
-      hardKillTimer = setTimeout(() => resolve("hard_kill"), hardKillDelayMs);
+      const arm = () => {
+        hardKillTimer = setTimeout(() => resolve("hard_kill"), 15_000);
+      };
+      if (controller.signal.aborted) {
+        arm();
+      } else {
+        controller.signal.addEventListener("abort", arm, { once: true });
+      }
     });
 
     const outcome = await Promise.race([
@@ -339,6 +381,7 @@ export async function runClaude(opts: {
       });
     }
   } finally {
+    if (activeQuery) activeQueries.delete(activeQuery);
     // Ensure the spawn slot is released even if we never got to init
     releaseSpawnSlot?.();
     if (hardKillTimer) clearTimeout(hardKillTimer);
