@@ -88,6 +88,8 @@ The classification guides your investigation, not a rigid gate. Use judgment.
 
 ### Investigation Guidelines
 
+- **You are a coordinator, not an investigator.** Do NOT read source code files, run tests, or browse the codebase yourself. That is what your specialists are for. Your tools are: reading specialist reports, asking follow-up questions, and spawning new specialists. If you catch yourself opening a source file, stop — you should be sending a message to a specialist instead.
+- **While waiting for specialists**, review the briefing summary, plan your next investigation moves, identify dedup targets against the backlog, and decide which specialists to spawn next. Do not fill idle time by reading code.
 - **Spawn 1-2 specialists at a time**, not all at once. Read their reports before deciding next steps.
 - **Ask follow-ups** when findings are ambiguous. Use SendMessage to ask a team member to dig deeper.
 - **Be adversarial.** Push back on surface-level findings. "Is this actually a problem or just a preference?" "What's the evidence?" "Could this break something?"
