@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
 import { DASHBOARD_CSS } from "./dashboard-styles";
+import type { AutopilotConfig } from "./lib/config";
 import type { AppState } from "./state";
 
 const ACTIVITY_SAYINGS = [
@@ -26,6 +27,7 @@ export interface DashboardOptions {
   authToken?: string;
   triggerAudit?: () => void;
   retryIssue?: (linearIssueId: string) => Promise<void>;
+  config?: AutopilotConfig;
 }
 
 function safeCompare(a: string, b: string): boolean {
@@ -230,6 +232,12 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
                 hx-trigger="every 5s"
                 hx-swap="innerHTML"
               ></div>
+              <div
+                class="budget-bar"
+                hx-get="/partials/budget"
+                hx-trigger="load, every 30s"
+                hx-swap="innerHTML"
+              ></div>
             </header>
             <div class="layout">
               <div class="sidebar">
@@ -279,6 +287,14 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
       return c.json({ enabled: false });
     }
     return c.json({ enabled: true, ...analytics });
+  });
+
+  app.get("/api/budget", (c) => {
+    if (!options?.config) {
+      return c.json({ enabled: false });
+    }
+    const snapshot = state.getBudgetSnapshot(options.config);
+    return c.json({ enabled: true, ...snapshot });
   });
 
   app.post("/api/audit", (c) => {
@@ -547,6 +563,35 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
           .join(""),
       )}`,
     );
+  });
+
+  app.get("/partials/budget", (c) => {
+    if (!options?.config) {
+      return c.html(html`<div></div>`);
+    }
+    const snap = state.getBudgetSnapshot(options.config);
+    if (snap.dailyLimit <= 0 && snap.monthlyLimit <= 0) {
+      return c.html(html`<div></div>`);
+    }
+    let colorStyle = "";
+    if (snap.exhausted) {
+      colorStyle = "color: var(--red)";
+    } else if (snap.warning) {
+      colorStyle = "color: var(--yellow)";
+    }
+    const parts: string[] = [];
+    if (snap.dailyLimit > 0) {
+      parts.push(
+        `Daily: $${snap.dailySpend.toFixed(2)} / $${snap.dailyLimit.toFixed(2)}`,
+      );
+    }
+    if (snap.monthlyLimit > 0) {
+      parts.push(
+        `Monthly: $${snap.monthlySpend.toFixed(2)} / $${snap.monthlyLimit.toFixed(2)}`,
+      );
+    }
+    const text = parts.join("  |  ");
+    return c.html(html`<span style="${colorStyle}">${text}</span>`);
   });
 
   app.get("/partials/analytics", (c) => {

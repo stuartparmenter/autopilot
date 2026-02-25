@@ -81,6 +81,13 @@ export interface PersistenceConfig {
   db_path: string;
 }
 
+export interface BudgetConfig {
+  daily_limit_usd: number;
+  monthly_limit_usd: number;
+  per_agent_limit_usd: number;
+  warn_at_percent: number;
+}
+
 export interface AutopilotConfig {
   linear: LinearConfig;
   executor: ExecutorConfig;
@@ -89,6 +96,7 @@ export interface AutopilotConfig {
   project: ProjectConfig;
   persistence: PersistenceConfig;
   sandbox: SandboxConfig;
+  budget: BudgetConfig;
 }
 
 export const DEFAULTS: AutopilotConfig = {
@@ -159,6 +167,12 @@ export const DEFAULTS: AutopilotConfig = {
     auto_allow_bash: true,
     network_restricted: false,
     extra_allowed_domains: [],
+  },
+  budget: {
+    daily_limit_usd: 0,
+    monthly_limit_usd: 0,
+    per_agent_limit_usd: 0,
+    warn_at_percent: 80,
   },
 };
 
@@ -246,17 +260,6 @@ export function loadConfig(projectPath: string): AutopilotConfig {
   }
 
   if (
-    typeof config.auditor.min_interval_minutes !== "number" ||
-    Number.isNaN(config.auditor.min_interval_minutes) ||
-    config.auditor.min_interval_minutes < 0 ||
-    config.auditor.min_interval_minutes > 1440
-  ) {
-    throw new Error(
-      "Config validation error: auditor.min_interval_minutes must be a number between 0 and 1440",
-    );
-  }
-
-  if (
     typeof config.executor.parallel !== "number" ||
     Number.isNaN(config.executor.parallel) ||
     !Number.isInteger(config.executor.parallel) ||
@@ -299,6 +302,17 @@ export function loadConfig(projectPath: string): AutopilotConfig {
   ) {
     throw new Error(
       "Config validation error: executor.inactivity_timeout_minutes must be a number between 1 and 120",
+    );
+  }
+
+  if (
+    typeof config.auditor.min_interval_minutes !== "number" ||
+    Number.isNaN(config.auditor.min_interval_minutes) ||
+    config.auditor.min_interval_minutes < 0 ||
+    config.auditor.min_interval_minutes > 1440
+  ) {
+    throw new Error(
+      "Config validation error: auditor.min_interval_minutes must be a number between 0 and 1440",
     );
   }
 

@@ -154,6 +154,7 @@ if (config.persistence.enabled) {
 
 const app = createApp(state, {
   authToken: dashboardToken,
+  config,
   triggerAudit: () => {
     runAudit({
       config,
