@@ -75,6 +75,7 @@ const INVESTIGATOR_TOOLS = [
   "Grep",
   "Bash",
   "Task",
+  "Skill",
   "WebFetch",
   "WebSearch",
 ];
