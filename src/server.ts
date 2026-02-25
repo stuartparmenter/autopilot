@@ -1,4 +1,6 @@
+import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
 import { DASHBOARD_CSS } from "./dashboard-styles";
 import type { AppState } from "./state";
@@ -20,16 +22,159 @@ function randomSaying(): string {
   return ACTIVITY_SAYINGS[Math.floor(Math.random() * ACTIVITY_SAYINGS.length)];
 }
 
-export interface DashboardActions {
+export interface DashboardOptions {
+  authToken?: string;
   triggerAudit?: () => void;
   retryIssue?: (linearIssueId: string) => Promise<void>;
 }
 
-export function createApp(state: AppState, actions?: DashboardActions): Hono {
+function safeCompare(a: string, b: string): boolean {
+  const aBytes = Buffer.from(a);
+  const bBytes = Buffer.from(b);
+  if (aBytes.length !== bBytes.length) return false;
+  return timingSafeEqual(aBytes, bBytes);
+}
+
+function loginPage(error?: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>claude-autopilot</title>
+    <style>
+      ${DASHBOARD_CSS}
+      .login-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        gap: 24px;
+      }
+      .login-form {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 32px;
+        width: 320px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .login-form label {
+        font-size: 12px;
+        color: var(--text-dim);
+        display: block;
+        margin-bottom: 4px;
+      }
+      .login-form input[type="password"] {
+        width: 100%;
+        padding: 8px 12px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--text);
+        font-family: inherit;
+        font-size: 13px;
+      }
+      .login-form input[type="password"]:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .login-submit {
+        padding: 8px 16px;
+        background: var(--accent);
+        border: none;
+        border-radius: 4px;
+        color: var(--bg);
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        width: 100%;
+      }
+      .login-error {
+        color: var(--red);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="login-wrap">
+      <h1>claude-autopilot</h1>
+      <form method="POST" action="/auth/login" class="login-form">
+        <div>
+          <label for="token">Dashboard Token</label>
+          <input
+            type="password"
+            id="token"
+            name="token"
+            autofocus
+            placeholder="Enter your token"
+          />
+        </div>
+        ${error ? `<div class="login-error">${escapeHtml(error)}</div>` : ""}
+        <button type="submit" class="login-submit">Login</button>
+      </form>
+    </div>
+  </body>
+</html>`;
+}
+
+export function createApp(state: AppState, options?: DashboardOptions): Hono {
   const app = new Hono();
+
+  if (options?.authToken) {
+    const authToken = options.authToken;
+
+    app.use("*", async (c, next) => {
+      if (c.req.path.startsWith("/auth/")) {
+        return next();
+      }
+      const authHeader = c.req.header("Authorization");
+      const bearerToken = authHeader?.startsWith("Bearer ")
+        ? authHeader.slice(7)
+        : null;
+      const cookieToken = getCookie(c, "autopilot_token") ?? null;
+      const tokenToCheck = bearerToken ?? cookieToken;
+
+      if (tokenToCheck !== null && safeCompare(tokenToCheck, authToken)) {
+        return next();
+      }
+
+      if (
+        c.req.path.startsWith("/api/") ||
+        c.req.path.startsWith("/partials/")
+      ) {
+        return c.json({ error: "Unauthorized" }, 401);
+      }
+      return c.html(loginPage(), 401);
+    });
+
+    app.post("/auth/login", async (c) => {
+      const body = await c.req.parseBody();
+      const submitted = String(body.token ?? "");
+      if (safeCompare(submitted, authToken)) {
+        setCookie(c, "autopilot_token", authToken, {
+          httpOnly: true,
+          sameSite: "Strict",
+          path: "/",
+        });
+        return c.redirect("/");
+      }
+      return c.html(loginPage("Invalid token"), 401);
+    });
+
+    app.post("/auth/logout", (c) => {
+      deleteCookie(c, "autopilot_token", { path: "/" });
+      return c.redirect("/");
+    });
+  }
 
   // --- HTML Shell ---
   app.get("/", (c) => {
+    const authEnabled = !!options?.authToken;
     return c.html(
       html`<!doctype html>
         <html lang="en">
@@ -61,6 +206,13 @@ export function createApp(state: AppState, actions?: DashboardActions): Hono {
                 hx-trigger="load, every 5s"
                 hx-swap="innerHTML"
               ></div>
+              ${
+                authEnabled
+                  ? html`<form method="POST" action="/auth/logout">
+                    <button type="submit" class="pause-btn">Logout</button>
+                  </form>`
+                  : ""
+              }
               <div
                 id="audit-btn"
                 hx-get="/partials/audit-button"
@@ -128,7 +280,7 @@ export function createApp(state: AppState, actions?: DashboardActions): Hono {
     if (state.getAuditorStatus().running) {
       return c.json({ error: "Audit already running" }, 409);
     }
-    actions?.triggerAudit?.();
+    options?.triggerAudit?.();
     return c.json({ triggered: true });
   });
 
@@ -159,8 +311,8 @@ export function createApp(state: AppState, actions?: DashboardActions): Hono {
     if (!hist.linearIssueId) {
       return c.json({ error: "No Linear issue ID available for retry" }, 400);
     }
-    if (actions?.retryIssue) {
-      await actions.retryIssue(hist.linearIssueId);
+    if (options?.retryIssue) {
+      await options.retryIssue(hist.linearIssueId);
     }
     return c.json({ retried: true });
   });

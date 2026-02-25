@@ -109,6 +109,18 @@ if (
   console.log();
 }
 
+const dashboardToken = process.env.AUTOPILOT_DASHBOARD_TOKEN || undefined;
+const isLocalhost =
+  host === "127.0.0.1" || host === "localhost" || host === "::1";
+
+if (!isLocalhost && !dashboardToken) {
+  error(
+    `AUTOPILOT_DASHBOARD_TOKEN must be set when binding dashboard to non-localhost.\n` +
+      `Set: export AUTOPILOT_DASHBOARD_TOKEN=<your-secret-token>\n` +
+      `Or bind to localhost only (omit --host).`,
+  );
+}
+
 header("claude-autopilot v0.2.0");
 
 info(`Project: ${projectPath}`);
@@ -145,6 +157,7 @@ if (config.persistence.enabled) {
 }
 
 const app = createApp(state, {
+  authToken: dashboardToken,
   triggerAudit: () => {
     runAudit({
       config,
@@ -158,9 +171,6 @@ const app = createApp(state, {
     await updateIssue(linearIssueId, { stateId: linearIds.states.ready });
   },
 });
-
-const isLocalhost =
-  host === "127.0.0.1" || host === "localhost" || host === "::1";
 
 if (!isLocalhost) {
   warn(`Dashboard bound to ${host}:${port} — accessible from the network.`);
@@ -178,6 +188,11 @@ const server = Bun.serve({
   fetch: app.fetch,
 });
 
+if (dashboardToken) {
+  ok("Dashboard authentication enabled");
+} else {
+  info("Dashboard authentication disabled (localhost-only)");
+}
 ok(`Dashboard: http://${isLocalhost ? "localhost" : host}:${server.port}`);
 console.log();
 
