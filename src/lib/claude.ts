@@ -117,7 +117,7 @@ function summarizeToolUse(
 export function buildMcpServers(): Record<string, unknown> {
   const autoMergeTool = tool(
     "enable_auto_merge",
-    "Enable auto-merge on a GitHub pull request. The repository's default merge strategy will be used. Requires the repo to have auto-merge enabled and branch protection rules configured.",
+    "Enable auto-merge on a GitHub pull request. Automatically detects the repo's allowed merge method. Requires the repo to have auto-merge enabled and branch protection rules configured.",
     {
       owner: z.string().describe("Repository owner (e.g. 'octocat')"),
       repo: z.string().describe("Repository name (e.g. 'hello-world')"),
@@ -255,8 +255,10 @@ export async function runClaude(opts: {
           allowWrite: [
             // Git worktrees share the parent repo's .git directory
             resolve(opts.cwd, ".git"),
-            // Agent temp directory for Claude Code internals + CLI tools
-            agentTmpDir,
+            // Allow /tmp for Claude Code internals, git, bun, ssh-keygen, etc.
+            // Per-agent TMPDIR scoping is blocked by SDK overriding env vars:
+            // https://github.com/anthropics/claude-code/issues/15700
+            "/tmp",
           ],
         },
       };
