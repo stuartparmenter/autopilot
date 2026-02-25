@@ -1,8 +1,9 @@
+import { handleAgentResult } from "./lib/agent-result";
 import { buildMcpServers, runClaude } from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
 import { getPRStatus } from "./lib/github";
 import { getLinearClient } from "./lib/linear";
-import { info, ok, warn } from "./lib/logger";
+import { info, warn } from "./lib/logger";
 import { buildPrompt } from "./lib/prompt";
 import { withRetry } from "./lib/retry";
 import type { AppState } from "./state";
@@ -65,10 +66,14 @@ export async function checkOpenPRs(opts: {
     }
 
     // Find the PR number from the issue's GitHub attachment
-    const attachments = await withRetry(
-      () => issue.attachments(),
-      "checkOpenPRs",
-    );
+    let attachments: Awaited<ReturnType<(typeof issue)["attachments"]>>;
+    try {
+      attachments = await issue.attachments();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      warn(`Failed to get attachments for ${issue.identifier}: ${msg}`);
+      continue;
+    }
     const ghAttachment = attachments.nodes.find(
       (a) => a.sourceType === "github",
     );
@@ -190,43 +195,13 @@ async function fixPR(opts: {
       onActivity: (entry) => state.addActivity(agentId, entry),
     });
 
-    const metrics = {
-      costUsd: result.costUsd,
-      durationMs: result.durationMs,
-      numTurns: result.numTurns,
-    };
-
-    if (result.inactivityTimedOut) {
-      warn(`Fixer for ${issueIdentifier} inactive, timed out`);
-      state.completeAgent(agentId, "timed_out", {
-        ...metrics,
-        error: "Inactivity timeout",
-      });
-      return false;
-    }
-
-    if (result.timedOut) {
-      warn(`Fixer for ${issueIdentifier} timed out`);
-      state.completeAgent(agentId, "timed_out", {
-        ...metrics,
-        error: "Timed out",
-      });
-      return false;
-    }
-
-    if (result.error) {
-      warn(`Fixer for ${issueIdentifier} failed: ${result.error}`);
-      state.completeAgent(agentId, "failed", {
-        ...metrics,
-        error: result.error,
-      });
-      return false;
-    }
-
-    ok(`Fixer for ${issueIdentifier} completed successfully`);
-    if (result.costUsd) info(`Cost: $${result.costUsd.toFixed(4)}`);
-    state.completeAgent(agentId, "completed", metrics);
-    return true;
+    const { status } = handleAgentResult(
+      result,
+      state,
+      agentId,
+      `Fixer for ${issueIdentifier}`,
+    );
+    return status === "completed";
   } finally {
     activeFixerIssues.delete(issueId);
   }

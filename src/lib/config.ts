@@ -72,6 +72,11 @@ export interface WebhooksConfig {
   github_secret: string;
 }
 
+export interface PersistenceConfig {
+  enabled: boolean;
+  db_path: string;
+}
+
 export interface AutopilotConfig {
   linear: LinearConfig;
   executor: ExecutorConfig;
@@ -79,6 +84,7 @@ export interface AutopilotConfig {
   github: GithubConfig;
   project: ProjectConfig;
   webhooks?: WebhooksConfig;
+  persistence: PersistenceConfig;
 }
 
 export const DEFAULTS: AutopilotConfig = {
@@ -141,6 +147,10 @@ export const DEFAULTS: AutopilotConfig = {
     enabled: false,
     linear_secret: "",
     github_secret: "",
+  },
+  persistence: {
+    enabled: true,
+    db_path: ".claude/autopilot.db",
   },
 };
 

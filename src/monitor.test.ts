@@ -3,8 +3,9 @@ import type { ClaudeResult } from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
 import { AppState } from "./state";
 
-// Set a fake token so getGitHubClient() doesn't throw during tests
+// Set fake tokens so clients don't throw during tests
 process.env.GITHUB_TOKEN = "test-token-monitor";
+process.env.LINEAR_API_KEY = "test-key-monitor-linear";
 
 // ---------------------------------------------------------------------------
 // Mock functions — created once, re-wired per test via beforeEach
@@ -44,22 +45,27 @@ const mockChecksListForRef = mock(() =>
 );
 
 import { resetClient } from "./lib/github";
+import { resetClient as resetLinearClient } from "./lib/linear";
 import { checkOpenPRs } from "./monitor";
 
 // Wire module mocks before each test and restore afterwards to prevent
 // leaking into other test files in Bun's single-process test runner.
-// NOTE: We mock "octokit" (npm package) instead of "./lib/github" so that
-// github.test.ts can test the real getPRStatus without interference.
+// NOTE: We mock npm packages ("octokit", "@linear/sdk") instead of local
+// modules ("./lib/github", "./lib/linear") so that github.test.ts and
+// linear.test.ts can test the real implementations without interference.
 // We intentionally do NOT mock ./lib/prompt — the real buildPrompt reads
 // from prompts/ on disk and doesn't leak across test files.
 beforeEach(() => {
   resetClient();
+  resetLinearClient();
   mock.module("./lib/claude", () => ({
     runClaude: mockRunClaude,
     buildMcpServers: () => ({}),
   }));
-  mock.module("./lib/linear", () => ({
-    getLinearClient: () => ({ issues: mockIssuesQuery }),
+  mock.module("@linear/sdk", () => ({
+    LinearClient: class MockLinearClient {
+      issues = mockIssuesQuery;
+    },
   }));
   mock.module("octokit", () => ({
     Octokit: class MockOctokit {
@@ -80,7 +86,10 @@ beforeEach(() => {
   mockPullsGet.mockImplementation(() => Promise.resolve({ data: prData }));
 });
 
-afterEach(() => mock.restore());
+afterEach(() => {
+  mock.restore();
+  resetLinearClient();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,6 +157,7 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
     },
     github: { repo: "", automerge: false },
     project: { name: "test-project" },
+    persistence: { enabled: false, db_path: ".claude/autopilot.db" },
   };
 }
 
@@ -417,6 +427,49 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
 
     resolveFirst?.();
     await Promise.all(firstResult);
+  });
+
+  test("retries client.issues() on transient 503 error", async () => {
+    let callCount = 0;
+    mockIssuesQuery.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.reject(
+          Object.assign(new Error("Service Unavailable"), { status: 503 }),
+        );
+      }
+      return Promise.resolve({ nodes: [] });
+    });
+
+    const result = await checkOpenPRs(makeOpts(state));
+
+    expect(result).toHaveLength(0);
+    expect(callCount).toBe(2);
+  });
+
+  test("continues processing subsequent issues when attachments() throws", async () => {
+    const failingIssue = makeIssue(
+      "fail-attach",
+      "https://github.com/o/r/pull/90",
+    );
+    const goodIssue = makeIssue(
+      "good-attach",
+      "https://github.com/o/r/pull/91",
+    );
+
+    // Make the first issue's attachments throw
+    failingIssue.attachments = () =>
+      Promise.reject(new Error("Network error")) as ReturnType<
+        (typeof failingIssue)["attachments"]
+      >;
+
+    mockIssuesQuery.mockResolvedValue({ nodes: [failingIssue, goodIssue] });
+
+    const result = await checkOpenPRs(makeOpts(state));
+
+    // goodIssue should be processed despite the first one's attachments failing
+    expect(result).toHaveLength(1);
+    await Promise.all(result);
   });
 
   test("continues processing subsequent issues when getPRStatus throws", async () => {
