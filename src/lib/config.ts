@@ -57,6 +57,11 @@ export interface AuditorConfig {
   max_ideas_per_run: number;
 }
 
+export interface MonitorConfig {
+  respond_to_reviews: boolean;
+  review_responder_timeout_minutes: number;
+}
+
 export interface GithubConfig {
   repo: string; // "owner/repo" override — empty = auto-detect from git remote
   automerge: boolean; // Enable auto-merge on PRs created by the executor
@@ -82,6 +87,7 @@ export interface AutopilotConfig {
   linear: LinearConfig;
   executor: ExecutorConfig;
   auditor: AuditorConfig;
+  monitor: MonitorConfig;
   github: GithubConfig;
   project: ProjectConfig;
   persistence: PersistenceConfig;
@@ -136,6 +142,10 @@ export const DEFAULTS: AutopilotConfig = {
       "scalability",
     ],
     max_ideas_per_run: 5,
+  },
+  monitor: {
+    respond_to_reviews: false,
+    review_responder_timeout_minutes: 20,
   },
   github: {
     repo: "",

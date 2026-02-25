@@ -106,6 +106,10 @@ function makeConfig(skipTriage = true): AutopilotConfig {
       brainstorm_dimensions: [],
       max_ideas_per_run: 5,
     },
+    monitor: {
+      respond_to_reviews: false,
+      review_responder_timeout_minutes: 20,
+    },
     github: { repo: "", automerge: false },
     project: { name: "test-project" },
     persistence: { enabled: true, db_path: ".claude/autopilot.db" },
