@@ -72,6 +72,13 @@ export interface WebhooksConfig {
   github_secret: string;
 }
 
+export interface SandboxConfig {
+  enabled: boolean;
+  auto_allow_bash: boolean;
+  network_restricted: boolean;
+  extra_allowed_domains: string[];
+}
+
 export interface PersistenceConfig {
   enabled: boolean;
   db_path: string;
@@ -85,6 +92,7 @@ export interface AutopilotConfig {
   project: ProjectConfig;
   webhooks?: WebhooksConfig;
   persistence: PersistenceConfig;
+  sandbox: SandboxConfig;
 }
 
 export const DEFAULTS: AutopilotConfig = {
@@ -151,6 +159,12 @@ export const DEFAULTS: AutopilotConfig = {
   persistence: {
     enabled: true,
     db_path: ".claude/autopilot.db",
+  },
+  sandbox: {
+    enabled: true,
+    auto_allow_bash: true,
+    network_restricted: false,
+    extra_allowed_domains: [],
   },
 };
 
