@@ -36,7 +36,6 @@ export async function checkOpenPRs(opts: {
         filter: {
           team: { id: { eq: linearIds.teamId } },
           state: { id: { eq: linearIds.states.in_review } },
-          project: { id: { eq: linearIds.projectId } },
         },
         first: 50,
       }),
