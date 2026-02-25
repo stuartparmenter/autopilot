@@ -50,7 +50,10 @@ let spawnGate: Promise<void> = Promise.resolve();
  * Returns a release function — call it when the agent emits its init message,
  * or in the finally block if the agent never starts.
  */
-function acquireSpawnSlot(): { ready: Promise<void>; release: () => void } {
+export function acquireSpawnSlot(): {
+  ready: Promise<void>;
+  release: () => void;
+} {
   const previous = spawnGate;
   let release!: () => void;
   let released = false;
@@ -63,6 +66,11 @@ function acquireSpawnSlot(): { ready: Promise<void>; release: () => void } {
     };
   });
   return { ready: previous, release };
+}
+
+/** Reset the spawn gate to its initial resolved state. For use in tests only. */
+export function resetSpawnGate(): void {
+  spawnGate = Promise.resolve();
 }
 
 export interface ClaudeResult {
@@ -88,7 +96,7 @@ const TOOL_SUMMARY_FIELDS: Record<string, string> = {
   WebSearch: "query",
 };
 
-function summarizeToolUse(
+export function summarizeToolUse(
   toolName: string,
   input: unknown,
   cwd?: string,
