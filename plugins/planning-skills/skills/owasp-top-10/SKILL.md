@@ -1,7 +1,7 @@
 ---
 name: OWASP Top 10
 description: Use when scanning for web security vulnerabilities. Provides the OWASP Top 10 checklist with specific code patterns to look for in each category.
-version: 1.0.0
+user-invocable: false
 ---
 
 # OWASP Top 10 Security Checklist

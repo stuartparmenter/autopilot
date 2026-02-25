@@ -1,7 +1,7 @@
 ---
 name: Dependency Health
 description: Use when assessing dependency health. Covers CVE checking, abandoned packages, version pinning, license compliance, and supply chain security.
-version: 1.0.0
+user-invocable: false
 ---
 
 # Dependency Health Checklist

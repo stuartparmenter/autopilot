@@ -1,7 +1,7 @@
 ---
 name: Database Patterns
 description: Use when analyzing database usage patterns. Covers N+1 queries, missing indexes, connection pooling, migration safety, and data integrity anti-patterns.
-version: 1.0.0
+user-invocable: false
 ---
 
 # Database Patterns Checklist
