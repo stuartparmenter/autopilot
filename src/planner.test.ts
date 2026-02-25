@@ -102,6 +102,12 @@ function makeConfig(): AutopilotConfig {
       max_issues_per_run: 5,
       timeout_minutes: 90,
     },
+    projects: {
+      enabled: true,
+      poll_interval_minutes: 10,
+      max_active_projects: 5,
+      timeout_minutes: 60,
+    },
     github: { repo: "", automerge: false },
     project: { name: "test-project" },
     persistence: { enabled: true, db_path: ".claude/autopilot.db" },

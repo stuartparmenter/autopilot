@@ -76,10 +76,18 @@ export interface PersistenceConfig {
   db_path: string;
 }
 
+export interface ProjectsConfig {
+  enabled: boolean;
+  poll_interval_minutes: number;
+  max_active_projects: number;
+  timeout_minutes: number;
+}
+
 export interface AutopilotConfig {
   linear: LinearConfig;
   executor: ExecutorConfig;
   planning: PlanningConfig;
+  projects: ProjectsConfig;
   github: GithubConfig;
   project: ProjectConfig;
   persistence: PersistenceConfig;
@@ -128,6 +136,12 @@ export const DEFAULTS: AutopilotConfig = {
   persistence: {
     enabled: true,
     db_path: ".claude/autopilot.db",
+  },
+  projects: {
+    enabled: true,
+    poll_interval_minutes: 10,
+    max_active_projects: 5,
+    timeout_minutes: 60,
   },
   sandbox: {
     enabled: true,

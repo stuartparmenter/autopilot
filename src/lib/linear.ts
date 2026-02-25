@@ -1,4 +1,5 @@
 import {
+  type Initiative,
   type Issue,
   type IssueLabel,
   LinearClient,
@@ -135,14 +136,14 @@ export async function findOrCreateLabel(
  */
 export async function findOrCreateInitiative(
   name: string,
-): Promise<{ id: string; name: string }> {
+): Promise<Initiative> {
   const client = getLinearClient();
   const initiatives = await withRetry(
     () => client.initiatives({ filter: { name: { eq: name } } }),
     "findOrCreateInitiative",
   );
   const existing = initiatives.nodes[0];
-  if (existing) return { id: existing.id, name: existing.name };
+  if (existing) return existing;
 
   info(`Creating initiative '${name}'...`);
   const payload = await withRetry(
@@ -151,7 +152,7 @@ export async function findOrCreateInitiative(
   );
   const initiative = await payload.initiative;
   if (!initiative) throw new Error(`Failed to create initiative '${name}'`);
-  return { id: initiative.id, name: initiative.name };
+  return initiative;
 }
 
 /**

@@ -11,6 +11,7 @@
 linear:
   team: ""                      # Team key, e.g., "ENG" — find it in Linear team settings URL
   project: ""                   # Project name — must match a Linear project exactly
+  initiative: ""                # Initiative name — ties projects together under a strategic theme (optional)
   states:
     triage: "Triage"            # Planning system files new issues here for human review
     ready: "Todo"               # Executor picks up issues from this state
@@ -35,6 +36,17 @@ planning:
   schedule: "when_idle"         # "when_idle" | "daily" | "manual"
   min_ready_threshold: 5        # Only plan when fewer than N issues are in Ready+Triage
   max_issues_per_run: 5         # Cap on issues filed per planning run
+
+# ─── Projects Loop ───────────────────────────────────────────────────────────
+# The projects loop manages project-level ownership: triaging issues, spawning
+# technical planners, and completing projects when all work is done.
+# Requires an initiative to be configured.
+
+# projects:
+#   enabled: true                 # Enable the projects loop (default: true)
+#   poll_interval_minutes: 10     # How often to check projects for triage issues
+#   max_active_projects: 5        # Cap on concurrent project owner agents
+#   timeout_minutes: 60           # Kill project owner agent after this long
 
 # ─── GitHub ───────────────────────────────────────────────────────────────────
 # GitHub integration for PR monitoring, CI checks, and the fixer agent.
