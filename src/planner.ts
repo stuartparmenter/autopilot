@@ -1,24 +1,30 @@
+import { resolve } from "node:path";
+import type { SdkPluginConfig } from "@anthropic-ai/claude-agent-sdk";
 import { handleAgentResult } from "./lib/agent-result";
 import { buildMcpServers, runClaude } from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
 import { countIssuesInState } from "./lib/linear";
 import { info, warn } from "./lib/logger";
-import { buildAuditorPrompt } from "./lib/prompt";
+import {
+  AUTOPILOT_ROOT,
+  buildCTOPrompt,
+  buildPlanningAgents,
+} from "./lib/prompt";
 import type { AppState } from "./state";
 
-const AUDITOR_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+const DEFAULT_PLANNING_TIMEOUT_MINUTES = 90;
 
 /**
- * Check whether the auditor should run based on the backlog threshold.
+ * Check whether the planning agent should run based on the backlog threshold.
  */
-export async function shouldRunAudit(opts: {
+export async function shouldRunPlanning(opts: {
   config: AutopilotConfig;
   linearIds: LinearIds;
   state: AppState;
 }): Promise<boolean> {
   const { config, linearIds, state } = opts;
 
-  if (config.auditor.schedule === "manual") {
+  if (config.planning.schedule === "manual") {
     return false;
   }
 
@@ -28,28 +34,28 @@ export async function shouldRunAudit(opts: {
   ]);
   const backlogCount = readyCount + triageCount;
 
-  state.updateAuditor({
+  state.updatePlanning({
     readyCount: backlogCount,
-    threshold: config.auditor.min_ready_threshold,
+    threshold: config.planning.min_ready_threshold,
   });
 
-  if (backlogCount >= config.auditor.min_ready_threshold) {
+  if (backlogCount >= config.planning.min_ready_threshold) {
     info(
-      `Backlog sufficient (${readyCount} ready + ${triageCount} triage = ${backlogCount} >= ${config.auditor.min_ready_threshold}), skipping audit`,
+      `Backlog sufficient (${readyCount} ready + ${triageCount} triage = ${backlogCount} >= ${config.planning.min_ready_threshold}), skipping planning`,
     );
     return false;
   }
 
   info(
-    `Backlog low (${readyCount} ready + ${triageCount} triage = ${backlogCount} < ${config.auditor.min_ready_threshold}), audit recommended`,
+    `Backlog low (${readyCount} ready + ${triageCount} triage = ${backlogCount} < ${config.planning.min_ready_threshold}), planning recommended`,
   );
   return true;
 }
 
 /**
- * Run the auditor agent to scan the codebase and file improvement issues.
+ * Run the planning agent to scan the codebase and file improvement issues.
  */
-export async function runAudit(opts: {
+export async function runPlanning(opts: {
   config: AutopilotConfig;
   projectPath: string;
   linearIds: LinearIds;
@@ -57,55 +63,65 @@ export async function runAudit(opts: {
   shutdownSignal?: AbortSignal;
 }): Promise<void> {
   const { config, projectPath, state } = opts;
-  const agentId = `audit-${Date.now()}`;
+  const agentId = `planning-${Date.now()}`;
 
-  state.addAgent(agentId, "auditor", "Codebase audit");
-  state.updateAuditor({ running: true });
+  state.addAgent(agentId, "planning", "Codebase planning");
+  state.updatePlanning({ running: true });
 
   try {
-    info("Starting auditor agent...");
+    info("Starting planning agent...");
 
-    const targetState = config.auditor.skip_triage
+    const targetState = config.planning.skip_triage
       ? config.linear.states.ready
       : config.linear.states.triage;
 
-    const prompt = buildAuditorPrompt({
+    const vars = {
       LINEAR_TEAM: config.linear.team,
       LINEAR_PROJECT: config.linear.project,
       TARGET_STATE: targetState,
-      MAX_ISSUES_PER_RUN: String(config.auditor.max_issues_per_run),
+      MAX_ISSUES_PER_RUN: String(config.planning.max_issues_per_run),
       PROJECT_NAME: config.project.name,
-      BRAINSTORM_FEATURES: String(config.auditor.brainstorm_features),
-      BRAINSTORM_DIMENSIONS: config.auditor.brainstorm_dimensions.join(", "),
-      MAX_IDEAS_PER_RUN: String(config.auditor.max_ideas_per_run),
-      FEATURE_TARGET_STATE: config.linear.states.triage,
-    });
+    };
+
+    const prompt = buildCTOPrompt(vars);
+    const agents = buildPlanningAgents(vars);
+    const plugins: SdkPluginConfig[] = [
+      {
+        type: "local",
+        path: resolve(AUTOPILOT_ROOT, "plugins/planning-skills"),
+      },
+    ];
 
     const result = await runClaude({
       prompt,
       cwd: projectPath,
-      label: "auditor",
-      timeoutMs: AUDITOR_TIMEOUT_MS,
+      label: "planning",
+      timeoutMs:
+        (config.planning.timeout_minutes ?? DEFAULT_PLANNING_TIMEOUT_MINUTES) *
+        60 *
+        1000,
       inactivityMs: config.executor.inactivity_timeout_minutes * 60 * 1000,
       model: config.executor.planning_model,
       sandbox: config.sandbox,
       mcpServers: buildMcpServers(),
+      agents,
+      plugins,
       parentSignal: opts.shutdownSignal,
       onControllerReady: (ctrl) => state.registerAgentController(agentId, ctrl),
       onActivity: (entry) => state.addActivity(agentId, entry),
     });
 
-    const { status } = handleAgentResult(result, state, agentId, "Auditor");
-    state.updateAuditor({
+    const { status } = handleAgentResult(result, state, agentId, "Planning");
+    state.updatePlanning({
       running: false,
       lastRunAt: Date.now(),
       lastResult: status,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    warn(`Auditor crashed: ${msg}`);
+    warn(`Planning agent crashed: ${msg}`);
     state.completeAgent(agentId, "failed", { error: msg });
-    state.updateAuditor({
+    state.updatePlanning({
       running: false,
       lastRunAt: Date.now(),
       lastResult: "failed",

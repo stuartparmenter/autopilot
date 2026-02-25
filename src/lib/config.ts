@@ -45,16 +45,13 @@ export interface ExecutorConfig {
   planning_model: string;
 }
 
-export interface AuditorConfig {
+export interface PlanningConfig {
   schedule: "when_idle" | "daily" | "manual";
   min_ready_threshold: number;
   max_issues_per_run: number;
+  timeout_minutes: number;
   use_agent_teams: boolean;
   skip_triage: boolean;
-  scan_dimensions: string[];
-  brainstorm_features: boolean;
-  brainstorm_dimensions: string[];
-  max_ideas_per_run: number;
 }
 
 export interface GithubConfig {
@@ -81,7 +78,7 @@ export interface PersistenceConfig {
 export interface AutopilotConfig {
   linear: LinearConfig;
   executor: ExecutorConfig;
-  auditor: AuditorConfig;
+  planning: PlanningConfig;
   github: GithubConfig;
   project: ProjectConfig;
   persistence: PersistenceConfig;
@@ -113,29 +110,13 @@ export const DEFAULTS: AutopilotConfig = {
     model: "sonnet",
     planning_model: "opus",
   },
-  auditor: {
+  planning: {
     schedule: "when_idle",
     min_ready_threshold: 5,
-    max_issues_per_run: 10,
+    max_issues_per_run: 5,
+    timeout_minutes: 90,
     use_agent_teams: true,
     skip_triage: true,
-    scan_dimensions: [
-      "test-coverage",
-      "error-handling",
-      "performance",
-      "security",
-      "code-quality",
-      "dependency-health",
-      "documentation",
-    ],
-    brainstorm_features: true,
-    brainstorm_dimensions: [
-      "user-facing-features",
-      "developer-experience",
-      "integrations",
-      "scalability",
-    ],
-    max_ideas_per_run: 5,
   },
   github: {
     repo: "",

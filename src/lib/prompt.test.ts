@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildAuditorPrompt,
+  buildCTOPrompt,
+  buildPlanningAgents,
   buildPrompt,
   loadPrompt,
   renderPrompt,
@@ -92,8 +93,8 @@ describe("loadPrompt", () => {
     expect(prompt).toContain("{{ISSUE_ID}}");
   });
 
-  test("loads the auditor prompt and it is non-empty", () => {
-    const prompt = loadPrompt("auditor");
+  test("loads the CTO prompt and it is non-empty", () => {
+    const prompt = loadPrompt("cto");
     expect(prompt.length).toBeGreaterThan(0);
   });
 
@@ -113,49 +114,88 @@ describe("buildPrompt", () => {
   });
 });
 
-describe("buildAuditorPrompt", () => {
+describe("buildCTOPrompt", () => {
   test("returns a non-empty string", () => {
-    const result = buildAuditorPrompt({});
+    const result = buildCTOPrompt({});
     expect(result.length).toBeGreaterThan(0);
   });
 
-  test("contains planner subagent section", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("## Planner Subagent Prompt");
+  test("substitutes PROJECT_NAME variable", () => {
+    const result = buildCTOPrompt({ PROJECT_NAME: "my-app" });
+    expect(result).toContain("my-app");
+    expect(result).not.toContain("{{PROJECT_NAME}}");
   });
 
-  test("contains verifier subagent section", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("## Verifier Subagent Prompt");
+  test("substitutes LINEAR_TEAM variable", () => {
+    const result = buildCTOPrompt({ LINEAR_TEAM: "ENG" });
+    expect(result).toContain("ENG");
   });
 
-  test("contains security reviewer subagent section", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("## Security Reviewer Subagent Prompt");
+  test("substitutes MAX_ISSUES_PER_RUN variable", () => {
+    const result = buildCTOPrompt({ MAX_ISSUES_PER_RUN: "5" });
+    expect(result).not.toContain("{{MAX_ISSUES_PER_RUN}}");
   });
 
-  test("contains the reference header for subagent prompts", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("# Reference: Subagent Prompts");
+  test("contains lifecycle classification rubric", () => {
+    const result = buildCTOPrompt({});
+    expect(result).toContain("EARLY");
+    expect(result).toContain("GROWTH");
+    expect(result).toContain("MATURE");
   });
 
-  test("contains product manager subagent section", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("## Product Manager Subagent Prompt");
+  test("contains phase structure", () => {
+    const result = buildCTOPrompt({});
+    expect(result).toContain("Phase 0");
+    expect(result).toContain("Phase 1");
+    expect(result).toContain("Phase 2");
+    expect(result).toContain("Phase 3");
+  });
+});
+
+describe("buildPlanningAgents", () => {
+  test("returns all expected agent definitions", () => {
+    const agents = buildPlanningAgents({});
+    expect(Object.keys(agents)).toContain("briefing-agent");
+    expect(Object.keys(agents)).toContain("scout");
+    expect(Object.keys(agents)).toContain("security-analyst");
+    expect(Object.keys(agents)).toContain("quality-engineer");
+    expect(Object.keys(agents)).toContain("architect");
+    expect(Object.keys(agents)).toContain("issue-planner");
   });
 
-  test("substitutes brainstorm variables", () => {
-    const result = buildAuditorPrompt({
-      BRAINSTORM_FEATURES: "true",
-      BRAINSTORM_DIMENSIONS: "user-facing-features, developer-experience",
-      MAX_IDEAS_PER_RUN: "5",
-      FEATURE_TARGET_STATE: "Triage",
+  test("each agent has description and prompt", () => {
+    const agents = buildPlanningAgents({});
+    for (const [_name, agent] of Object.entries(agents)) {
+      expect(agent.description).toBeTruthy();
+      expect(agent.prompt.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("briefing-agent and scout use sonnet model", () => {
+    const agents = buildPlanningAgents({});
+    expect(agents["briefing-agent"].model).toBe("sonnet");
+    expect(agents.scout.model).toBe("sonnet");
+  });
+
+  test("issue-planner prompt has template vars rendered", () => {
+    const agents = buildPlanningAgents({
+      LINEAR_TEAM: "ENG",
+      LINEAR_PROJECT: "my-project",
+      TARGET_STATE: "Ready",
     });
-    expect(result).toContain("Triage");
-    expect(result).not.toContain("{{FEATURE_TARGET_STATE}}");
-    expect(result).not.toContain("{{MAX_IDEAS_PER_RUN}}");
-    expect(result).not.toContain("{{BRAINSTORM_FEATURES}}");
-    expect(result).toContain("Phase 1.5: Brainstorm Features");
-    expect(result).toContain("auto-feature-idea");
+    const prompt = agents["issue-planner"].prompt;
+    expect(prompt).toContain("ENG");
+    expect(prompt).toContain("my-project");
+    expect(prompt).toContain("Ready");
+    expect(prompt).not.toContain("{{LINEAR_TEAM}}");
+  });
+
+  test("specialist prompts are raw (no template vars to render)", () => {
+    const agents = buildPlanningAgents({});
+    // Scout prompt should not have unsubstituted vars
+    expect(agents.scout.prompt).not.toContain("{{");
+    expect(agents["security-analyst"].prompt).not.toContain("{{");
+    expect(agents["quality-engineer"].prompt).not.toContain("{{");
+    expect(agents.architect.prompt).not.toContain("{{");
   });
 });

@@ -104,7 +104,7 @@ describe("loadConfig", () => {
     const config = loadConfig(tmpDir);
     expect(config.executor.parallel).toBe(5);
     expect(config.executor.timeout_minutes).toBe(60);
-    expect(config.auditor.schedule).toBe("when_idle");
+    expect(config.planning.schedule).toBe("when_idle");
   });
 
   test("empty YAML returns defaults", () => {
@@ -219,33 +219,27 @@ linear:
     expect(() => loadConfig(dir)).toThrow(/linear\.states\.ready/);
   });
 
-  test("brainstorm config defaults are set", () => {
+  test("planning timeout_minutes defaults to 90", () => {
     writeFileSync(join(tmpDir, ".claude-autopilot.yml"), "");
     const config = loadConfig(tmpDir);
-    expect(config.auditor.brainstorm_features).toBe(true);
-    expect(config.auditor.brainstorm_dimensions).toEqual([
-      "user-facing-features",
-      "developer-experience",
-      "integrations",
-      "scalability",
-    ]);
-    expect(config.auditor.max_ideas_per_run).toBe(5);
+    expect(config.planning.timeout_minutes).toBe(90);
   });
 
-  test("brainstorm config can be overridden", () => {
+  test("planning max_issues_per_run defaults to 5", () => {
+    writeFileSync(join(tmpDir, ".claude-autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.planning.max_issues_per_run).toBe(5);
+  });
+
+  test("planning config can be overridden", () => {
     const dir = writeConfig(`
-auditor:
-  brainstorm_features: false
-  max_ideas_per_run: 3
-  brainstorm_dimensions:
-    - user-facing-features
+planning:
+  timeout_minutes: 120
+  max_issues_per_run: 3
 `);
     const config = loadConfig(dir);
-    expect(config.auditor.brainstorm_features).toBe(false);
-    expect(config.auditor.max_ideas_per_run).toBe(3);
-    expect(config.auditor.brainstorm_dimensions).toEqual([
-      "user-facing-features",
-    ]);
+    expect(config.planning.timeout_minutes).toBe(120);
+    expect(config.planning.max_issues_per_run).toBe(3);
   });
 
   test("poll_interval_minutes defaults to 5", () => {

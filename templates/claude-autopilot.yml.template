@@ -6,13 +6,13 @@
 # belong in your project's CLAUDE.md, not here. This file is for orchestration config only.
 
 # ─── Linear Integration ────────────────────────────────────────────────────────
-# Connect to your Linear workspace so the executor and auditor can manage issues.
+# Connect to your Linear workspace so the executor and planning system can manage issues.
 
 linear:
   team: ""                      # Team key, e.g., "ENG" — find it in Linear team settings URL
   project: ""                   # Project name — must match a Linear project exactly
   states:
-    triage: "Triage"            # Auditor files new issues here for human review
+    triage: "Triage"            # Planning system files new issues here for human review
     ready: "Todo"               # Executor picks up issues from this state
     in_progress: "In Progress"  # Executor moves issues here while working
     done: "Done"                # Executor moves issues here on success
@@ -26,15 +26,15 @@ executor:
   timeout_minutes: 30           # Kill agent after this long
   poll_interval_minutes: 5      # How often to poll Linear/GitHub (0.5-60, default: 5)
   model: "sonnet"               # Model for executor agents
-  planning_model: "opus"        # Model for auditor/planning
+  planning_model: "opus"        # Model for planning agent
 
-# ─── Auditor ───────────────────────────────────────────────────────────────────
-# The auditor agent scans the codebase and files improvement issues to Triage.
+# ─── Planning ─────────────────────────────────────────────────────────────────
+# The planning system scans the codebase and files improvement issues to Triage.
 
-auditor:
+planning:
   schedule: "when_idle"         # "when_idle" | "daily" | "manual"
-  min_ready_threshold: 5        # Only audit when fewer than N issues are in Ready
-  max_issues_per_run: 10        # Cap on issues filed per audit run
+  min_ready_threshold: 5        # Only plan when fewer than N issues are in Ready
+  max_issues_per_run: 5         # Cap on issues filed per planning run
 
 # ─── GitHub ───────────────────────────────────────────────────────────────────
 # GitHub integration for PR monitoring, CI checks, and the fixer agent.

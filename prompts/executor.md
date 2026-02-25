@@ -131,7 +131,7 @@ Use the Linear MCP to update the issue.
 
 ## Core Principles
 
-1. **Stay in scope**. You are implementing ONE issue. Resist the urge to fix other problems you notice — that's the auditor's job.
+1. **Stay in scope**. You are implementing ONE issue. Resist the urge to fix other problems you notice — that's the planning system's job.
 2. **Acceptance criteria are non-negotiable**. Every single criterion must be satisfied for success.
 3. **When in doubt, block**. A blocked issue with a clear explanation is infinitely better than a bad implementation that breaks things.
 4. **Leave the codebase better than you found it** — but only within the scope of your issue.

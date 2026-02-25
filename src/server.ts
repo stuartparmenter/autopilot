@@ -24,7 +24,7 @@ function randomSaying(): string {
 
 export interface DashboardOptions {
   authToken?: string;
-  triggerAudit?: () => void;
+  triggerPlanning?: () => void;
   retryIssue?: (linearIssueId: string) => Promise<void>;
 }
 
@@ -219,8 +219,8 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
                   : ""
               }
               <div
-                id="audit-btn"
-                hx-get="/partials/audit-button"
+                id="planning-btn"
+                hx-get="/partials/planning-button"
                 hx-trigger="load, every 5s"
                 hx-swap="innerHTML"
               ></div>
@@ -281,15 +281,15 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
     return c.json({ enabled: true, ...analytics });
   });
 
-  app.post("/api/audit", (c) => {
-    if (state.getAuditorStatus().running) {
-      return c.json({ error: "Audit already running" }, 409);
+  app.post("/api/planning", (c) => {
+    if (state.getPlanningStatus().running) {
+      return c.json({ error: "Planning already running" }, 409);
     }
     try {
-      options?.triggerAudit?.();
+      options?.triggerPlanning?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return c.json({ error: `Audit trigger failed: ${msg}` }, 500);
+      return c.json({ error: `Planning trigger failed: ${msg}` }, 500);
     }
     return c.json({ triggered: true });
   });
@@ -349,18 +349,18 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
     );
   });
 
-  app.get("/partials/audit-button", (c) => {
-    const auditorRunning = state.getAuditorStatus().running;
+  app.get("/partials/planning-button", (c) => {
+    const planningRunning = state.getPlanningStatus().running;
     return c.html(
       html`<button
-        class="action-btn ${auditorRunning ? "disabled" : ""}"
-        hx-post="/api/audit"
-        hx-target="#audit-btn"
+        class="action-btn ${planningRunning ? "disabled" : ""}"
+        hx-post="/api/planning"
+        hx-target="#planning-btn"
         hx-swap="innerHTML"
         hx-select="button"
-        ${auditorRunning ? "disabled" : ""}
+        ${planningRunning ? "disabled" : ""}
       >
-        ${auditorRunning ? "Auditing..." : "Trigger Audit"}
+        ${planningRunning ? "Planning..." : "Trigger Planning"}
       </button>`,
     );
   });

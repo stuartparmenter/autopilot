@@ -8,7 +8,6 @@
 
 import { resolve } from "node:path";
 import { RatelimitedLinearError } from "@linear/sdk";
-import { runAudit, shouldRunAudit } from "./auditor";
 import { fillSlots } from "./executor";
 import { closeAllAgents } from "./lib/claude";
 import { loadConfig, resolveProjectPath } from "./lib/config";
@@ -18,6 +17,7 @@ import { detectRepo } from "./lib/github";
 import { resolveLinearIds, updateIssue } from "./lib/linear";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
 import { checkOpenPRs } from "./monitor";
+import { runPlanning, shouldRunPlanning } from "./planner";
 import { createApp } from "./server";
 import { AppState } from "./state";
 
@@ -153,8 +153,8 @@ if (config.persistence.enabled) {
 
 const app = createApp(state, {
   authToken: dashboardToken,
-  triggerAudit: () => {
-    runAudit({
+  triggerPlanning: () => {
+    runPlanning({
       config,
       projectPath,
       linearIds,
@@ -245,7 +245,7 @@ const BASE_BACKOFF_MS = 10_000; // 10s
 const MAX_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_CONSECUTIVE_FAILURES = 5;
 const running = new Set<Promise<boolean>>();
-let auditorPromise: Promise<void> | null = null;
+let planningPromise: Promise<void> | null = null;
 
 let consecutiveFailures = 0;
 
@@ -290,18 +290,18 @@ while (!shuttingDown) {
       running.add(tracked);
     }
 
-    // Check auditor (counts against parallel limit)
+    // Check planning (counts against parallel limit)
     if (
-      !state.getAuditorStatus().running &&
+      !state.getPlanningStatus().running &&
       state.getRunningCount() < config.executor.parallel
     ) {
-      const shouldAudit = await shouldRunAudit({
+      const shouldPlan = await shouldRunPlanning({
         config,
         linearIds,
         state,
       });
-      if (shouldAudit) {
-        auditorPromise = runAudit({
+      if (shouldPlan) {
+        planningPromise = runPlanning({
           config,
           projectPath,
           linearIds,
@@ -310,10 +310,10 @@ while (!shuttingDown) {
         })
           .catch((e) => {
             const msg = e instanceof Error ? e.message : String(e);
-            warn(`Auditor error: ${msg}`);
+            warn(`Planning error: ${msg}`);
           })
           .finally(() => {
-            auditorPromise = null;
+            planningPromise = null;
           });
       }
     }
@@ -376,7 +376,7 @@ while (!shuttingDown) {
 // --- Drain phase ---
 
 const drainablePromises: Promise<unknown>[] = [...running];
-if (auditorPromise) drainablePromises.push(auditorPromise);
+if (planningPromise) drainablePromises.push(planningPromise);
 
 if (drainablePromises.length > 0) {
   info(

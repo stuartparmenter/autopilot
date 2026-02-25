@@ -216,7 +216,7 @@ describe("routes", () => {
     expect(json).toHaveProperty("agents");
     expect(json).toHaveProperty("history");
     expect(json).toHaveProperty("queue");
-    expect(json).toHaveProperty("auditor");
+    expect(json).toHaveProperty("planning");
     expect(json).toHaveProperty("startedAt");
   });
 
@@ -278,7 +278,7 @@ describe("routes", () => {
   });
 });
 
-describe("POST /api/audit", () => {
+describe("POST /api/planning", () => {
   let state: AppState;
   let app: ReturnType<typeof createApp>;
 
@@ -287,40 +287,44 @@ describe("POST /api/audit", () => {
     app = createApp(state);
   });
 
-  test("returns 409 when audit is already running", async () => {
-    state.updateAuditor({ running: true });
-    const res = await app.request("/api/audit", { method: "POST" });
+  test("returns 409 when planning is already running", async () => {
+    state.updatePlanning({ running: true });
+    const res = await app.request("/api/planning", { method: "POST" });
     expect(res.status).toBe(409);
     const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Audit already running");
+    expect(json.error).toBe("Planning already running");
   });
 
-  test("triggers audit and returns triggered: true when not running", async () => {
-    const triggerAudit = mock(() => {});
-    const appWithActions = createApp(state, { triggerAudit });
-    const res = await appWithActions.request("/api/audit", { method: "POST" });
+  test("triggers planning and returns triggered: true when not running", async () => {
+    const triggerPlanning = mock(() => {});
+    const appWithActions = createApp(state, { triggerPlanning });
+    const res = await appWithActions.request("/api/planning", {
+      method: "POST",
+    });
     expect(res.status).toBe(200);
     const json = (await res.json()) as { triggered: boolean };
     expect(json.triggered).toBe(true);
-    expect(triggerAudit).toHaveBeenCalledTimes(1);
+    expect(triggerPlanning).toHaveBeenCalledTimes(1);
   });
 
   test("returns triggered: true even without actions configured", async () => {
-    const res = await app.request("/api/audit", { method: "POST" });
+    const res = await app.request("/api/planning", { method: "POST" });
     expect(res.status).toBe(200);
     const json = (await res.json()) as { triggered: boolean };
     expect(json.triggered).toBe(true);
   });
 
-  test("returns 500 with error key when triggerAudit throws", async () => {
-    const triggerAudit = mock(() => {
-      throw new Error("audit error");
+  test("returns 500 with error key when triggerPlanning throws", async () => {
+    const triggerPlanning = mock(() => {
+      throw new Error("planning error");
     });
-    const appWithActions = createApp(state, { triggerAudit });
-    const res = await appWithActions.request("/api/audit", { method: "POST" });
+    const appWithActions = createApp(state, { triggerPlanning });
+    const res = await appWithActions.request("/api/planning", {
+      method: "POST",
+    });
     expect(res.status).toBe(500);
     const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Audit trigger failed: audit error");
+    expect(json.error).toBe("Planning trigger failed: planning error");
   });
 });
 
@@ -452,7 +456,7 @@ describe("global onError handler", () => {
   });
 });
 
-describe("GET /partials/audit-button", () => {
+describe("GET /partials/planning-button", () => {
   let state: AppState;
   let app: ReturnType<typeof createApp>;
 
@@ -461,17 +465,17 @@ describe("GET /partials/audit-button", () => {
     app = createApp(state);
   });
 
-  test("shows 'Trigger Audit' when auditor is not running", async () => {
-    const res = await app.request("/partials/audit-button");
+  test("shows 'Trigger Planning' when planning is not running", async () => {
+    const res = await app.request("/partials/planning-button");
     const body = await res.text();
-    expect(body).toContain("Trigger Audit");
+    expect(body).toContain("Trigger Planning");
   });
 
-  test("shows 'Auditing...' and disabled when auditor is running", async () => {
-    state.updateAuditor({ running: true });
-    const res = await app.request("/partials/audit-button");
+  test("shows 'Planning...' and disabled when planning is running", async () => {
+    state.updatePlanning({ running: true });
+    const res = await app.request("/partials/planning-button");
     const body = await res.text();
-    expect(body).toContain("Auditing...");
+    expect(body).toContain("Planning...");
     expect(body).toContain("disabled");
   });
 });

@@ -14,7 +14,7 @@ An orchestration toolkit that creates a self-sustaining AI development loop usin
 
 ```bash
 bun install                  # Install dependencies
-bun run start <project-path> # Start executor + monitor + auditor + dashboard
+bun run start <project-path> # Start executor + monitor + planning + dashboard
 bun run setup <project-path> # Onboard a new project
 
 bun test                     # Run all tests (Bun test runner)
@@ -37,7 +37,7 @@ CI runs `typecheck`, `check`, and `bun test` on all PRs (`.github/workflows/lint
 
 2. **Monitor** (`src/monitor.ts`) — Checks "In Review" issues for CI failures or merge conflicts on their linked GitHub PRs. Spawns fixer agents to repair problems. Fixers check out the existing PR branch in a worktree and push fixes.
 
-3. **Auditor** (`src/auditor.ts`) — When the backlog drops below `min_ready_threshold`, scans the codebase and files improvement issues to Linear. Uses Agent Teams (planner + verifier + security reviewer subagents).
+3. **Planning** (`src/planner.ts`) — When the backlog drops below `min_ready_threshold`, a CTO agent leads a team of specialists (Scout, Security Analyst, Quality Engineer, Architect) to investigate the codebase, then spawns Issue Planner agents to file improvement issues to Linear.
 
 ### Linear Is the Source of Truth
 
@@ -47,7 +47,7 @@ Triage → Ready → In Progress → In Review → Done
                       ↓              ↓
                    Blocked       (fixer loop)
 ```
-The executor reads from Ready, moves to In Progress immediately (preventing double-pickup), then to In Review or Blocked. The monitor watches In Review. The auditor writes to Triage (or Ready if `skip_triage` is set).
+The executor reads from Ready, moves to In Progress immediately (preventing double-pickup), then to In Review or Blocked. The monitor watches In Review. The planning system writes to Triage (or Ready if `skip_triage` is set).
 
 ### Key Modules
 
@@ -58,7 +58,7 @@ The executor reads from Ready, moves to In Progress immediately (preventing doub
 - **`src/lib/prompt.ts`** — Loads `prompts/*.md` templates and substitutes `{{VARIABLE}}` placeholders with sanitized values.
 - **`src/lib/worktree.ts`** — Creates/removes git worktrees at `.claude/worktrees/<name>`. Handles stale cleanup, Windows file lock retries.
 - **`src/lib/retry.ts`** — `withRetry()` with exponential backoff + jitter, respects `Retry-After` headers.
-- **`src/state.ts`** — In-memory `AppState` class tracking running agents, activity feeds, history, queue info, auditor status.
+- **`src/state.ts`** — In-memory `AppState` class tracking running agents, activity feeds, history, queue info, planning status.
 - **`src/server.ts`** — Hono app serving the dashboard HTML shell and htmx partials. JSON API at `/api/status` and `/api/pause`.
 
 ### Agent Execution Flow

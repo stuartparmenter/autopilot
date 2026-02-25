@@ -1,9 +1,11 @@
 import { resolve } from "node:path";
 import {
+  type AgentDefinition,
   createSdkMcpServer,
   query,
   type SDKAssistantMessage,
   type SDKResultError,
+  type SdkPluginConfig,
   tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -163,6 +165,8 @@ export async function runClaude(opts: {
   inactivityMs?: number;
   model?: string;
   sandbox?: SandboxConfig;
+  agents?: Record<string, AgentDefinition>;
+  plugins?: SdkPluginConfig[];
   mcpServers?: Record<string, unknown>;
   parentSignal?: AbortSignal;
   onControllerReady?: (controller: AbortController) => void;
@@ -226,8 +230,11 @@ export async function runClaude(opts: {
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       stderr: (data: string) => warn(`${tag}[stderr] ${data.trimEnd()}`),
+      env: { ...process.env, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1" },
       ...(opts.mcpServers && { mcpServers: opts.mcpServers }),
       ...(opts.model && { model: opts.model }),
+      ...(opts.agents && { agents: opts.agents }),
+      ...(opts.plugins && { plugins: opts.plugins }),
       // NOTE: SDK Setup hooks don't fire reliably for programmatic callbacks,
       // so we release the spawn slot on the init stream message instead (below).
     };
