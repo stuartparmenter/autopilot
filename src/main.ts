@@ -15,6 +15,7 @@ import {
 } from "@linear/sdk";
 import { runAudit, shouldRunAudit } from "./auditor";
 import { fillSlots } from "./executor";
+import { closeAllAgents } from "./lib/claude";
 import { loadConfig, resolveProjectPath } from "./lib/config";
 import { detectRepo } from "./lib/github";
 import { resolveLinearIds, updateIssue } from "./lib/linear";
@@ -211,7 +212,11 @@ function shutdown() {
   }
   shuttingDown = true;
   console.log();
-  info("Shutting down - waiting for running agents to finish...");
+  info("Shutting down — killing agent subprocesses...");
+  // close() is synchronous: sends SIGTERM immediately, escalates to SIGKILL
+  // after 5s. Call this BEFORE abort() so processes are killed even if the
+  // async cleanup chain doesn't complete.
+  closeAllAgents();
   shutdownController.abort();
 }
 
@@ -227,6 +232,7 @@ process.on("uncaughtException", (err) => {
   // Must be synchronous only — the process is in undefined state after uncaught exception
   const msg = err instanceof Error ? err.message : String(err);
   process.stderr.write(`[ERROR] Uncaught exception: ${sanitizeMessage(msg)}\n`);
+  closeAllAgents();
   shutdownController.abort();
   process.exit(1);
 });
@@ -392,10 +398,13 @@ if (auditorPromise) drainablePromises.push(auditorPromise);
 
 if (drainablePromises.length > 0) {
   info(
-    `Waiting for ${drainablePromises.length} agent(s) to finish (up to 60s)...`,
+    `Waiting for ${drainablePromises.length} agent(s) to shut down (up to 60s)...`,
   );
+  // Wait at least 6s so the SDK's SIGKILL escalation timer (5s after close())
+  // has time to fire before we exit. This ensures SIGTERM-resistant children
+  // are forcefully killed rather than becoming orphans.
   await Promise.race([
-    Promise.allSettled(drainablePromises),
+    Promise.all([Promise.allSettled(drainablePromises), Bun.sleep(6_000)]),
     Bun.sleep(60_000),
   ]);
 }
