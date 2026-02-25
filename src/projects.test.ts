@@ -31,16 +31,16 @@ let mockProjects: Array<{
   id: string;
   name: string;
   state: string;
-  issues: (opts?: unknown) => Promise<{ nodes: Array<{ id: string; identifier: string; title: string }> }>;
+  issues: (opts?: unknown) => Promise<{
+    nodes: Array<{ id: string; identifier: string; title: string }>;
+  }>;
 }> = [];
 
 const mockInitiative = mock(() =>
   Promise.resolve({
     id: "init-1",
     name: "Test Initiative",
-    projects: mock(() =>
-      Promise.resolve({ nodes: mockProjects }),
-    ),
+    projects: mock(() => Promise.resolve({ nodes: mockProjects })),
   }),
 );
 
