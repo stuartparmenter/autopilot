@@ -95,6 +95,7 @@ export async function runPlanning(opts: {
     // CTO only coordinates — restrict to delegation tools so it can't
     // read source code, run tests, or investigate the codebase directly.
     const ctoTools = [
+      "Read",
       "Task",
       "TeamCreate",
       "TeamDelete",
