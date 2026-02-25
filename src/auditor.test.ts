@@ -111,7 +111,7 @@ function makeConfig(skipTriage = true): AutopilotConfig {
     },
     github: { repo: "", automerge: false },
     project: { name: "test-project" },
-    persistence: { enabled: false, db_path: ".claude/autopilot.db" },
+    persistence: { enabled: true, db_path: ".claude/autopilot.db" },
     sandbox: {
       enabled: true,
       auto_allow_bash: true,

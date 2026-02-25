@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import {
   query,
   type SDKAssistantMessage,
@@ -225,6 +226,11 @@ export async function runClaude(opts: {
         enabled: true,
         autoAllowBashIfSandboxed: opts.sandbox.auto_allow_bash ?? true,
         allowUnsandboxedCommands: false,
+        // Git worktrees need write access to the parent repo's .git directory
+        // (shared object store, refs, worktree metadata)
+        filesystem: {
+          allowWrite: [resolve(opts.cwd, ".git")],
+        },
       };
       if (opts.sandbox.network_restricted) {
         sandbox.network = {
