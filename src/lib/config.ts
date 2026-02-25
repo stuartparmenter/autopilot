@@ -21,8 +21,8 @@ export interface LinearConfig {
 export interface LinearIds {
   teamId: string;
   teamKey: string;
-  projectId: string;
-  projectName: string;
+  projectId?: string;
+  projectName?: string;
   initiativeId?: string;
   initiativeName?: string;
   states: {
@@ -195,6 +195,7 @@ function validateConfigStrings(config: AutopilotConfig): void {
   ];
 
   for (const [key, value] of fields) {
+    if (!value) continue;
     if (/[\r\n]/.test(value)) {
       throw new Error(
         `Config validation error: "${key}" must not contain newline characters`,

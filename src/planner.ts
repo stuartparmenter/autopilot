@@ -69,9 +69,9 @@ export async function runPlanning(opts: {
 
     const vars = {
       LINEAR_TEAM: config.linear.team,
-      LINEAR_PROJECT: config.linear.project,
+      LINEAR_PROJECT: config.linear.project || config.linear.initiative || config.linear.team,
       MAX_ISSUES_PER_RUN: String(config.planning.max_issues_per_run),
-      PROJECT_NAME: config.project.name,
+      PROJECT_NAME: config.project.name || config.linear.project || config.linear.initiative || config.linear.team,
       INITIATIVE_NAME: opts.linearIds.initiativeName || "Not configured",
       INITIATIVE_ID: opts.linearIds.initiativeId || "",
     };

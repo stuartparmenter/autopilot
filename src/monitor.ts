@@ -171,7 +171,7 @@ async function fixPR(opts: {
     BRANCH: branch,
     FAILURE_TYPE: failureType,
     PR_NUMBER: String(prNumber),
-    PROJECT_NAME: config.project.name,
+    PROJECT_NAME: config.project.name || config.linear.project || config.linear.initiative || config.linear.team,
     IN_REVIEW_STATE: config.linear.states.in_review,
     BLOCKED_STATE: config.linear.states.blocked,
   });

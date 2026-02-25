@@ -61,10 +61,6 @@ const config = loadConfig(projectPath);
 
 if (!config.linear.team)
   fatal("linear.team is not set in .claude-autopilot.yml");
-if (!config.linear.project)
-  fatal("linear.project is not set in .claude-autopilot.yml");
-if (!config.project.name)
-  fatal("project.name is not set in .claude-autopilot.yml");
 
 // --- Check environment variables ---
 
@@ -120,10 +116,10 @@ if (!isLocalhost && !dashboardToken) {
 header("claude-autopilot v0.2.0");
 
 info(`Project: ${projectPath}`);
-info(`Team: ${config.linear.team}, Project: ${config.linear.project}`);
-if (config.linear.initiative) {
-  info(`Initiative: ${config.linear.initiative}`);
-}
+const parts = [`Team: ${config.linear.team}`];
+if (config.linear.project) parts.push(`Project: ${config.linear.project}`);
+if (config.linear.initiative) parts.push(`Initiative: ${config.linear.initiative}`);
+info(parts.join(", "));
 info(`Max parallel: ${config.executor.parallel}`);
 info(`Poll interval: ${config.executor.poll_interval_minutes}m`);
 if (config.projects.enabled && config.linear.initiative) {
@@ -148,7 +144,8 @@ ok(`GitHub repo: ${ghOwner}/${ghRepo}`);
 info("Connecting to Linear...");
 const linearIds = await resolveLinearIds(config.linear);
 ok(
-  `Connected - team ${config.linear.team}, project ${config.linear.project}` +
+  `Connected - team ${config.linear.team}` +
+    (config.linear.project ? `, project ${config.linear.project}` : "") +
     (linearIds.initiativeName
       ? `, initiative ${linearIds.initiativeName}`
       : ""),

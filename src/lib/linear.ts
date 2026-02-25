@@ -406,10 +406,10 @@ export async function testConnection(): Promise<boolean> {
 export async function resolveLinearIds(
   config: LinearConfig,
 ): Promise<LinearIds> {
-  const [team, project] = await Promise.all([
-    findTeam(config.team),
-    findProject(config.project),
-  ]);
+  const team = await findTeam(config.team);
+  const project = config.project
+    ? await findProject(config.project)
+    : undefined;
 
   const [
     triageState,
@@ -433,14 +433,16 @@ export async function resolveLinearIds(
     const initiative = await findOrCreateInitiative(config.initiative);
     initiativeId = initiative.id;
     initiativeName = initiative.name;
-    await linkProjectToInitiative(initiative.id, project.id);
+    if (project) {
+      await linkProjectToInitiative(initiative.id, project.id);
+    }
   }
 
   return {
     teamId: team.id,
     teamKey: config.team,
-    projectId: project.id,
-    projectName: config.project,
+    projectId: project?.id,
+    projectName: config.project || undefined,
     initiativeId,
     initiativeName,
     states: {
