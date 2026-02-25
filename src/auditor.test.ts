@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { LinearClient } from "@linear/sdk";
 import type { ClaudeResult } from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
+import {
+  resetClient as resetLinearClient,
+  setClientForTesting,
+} from "./lib/linear";
 import { AppState } from "./state";
 
 // ---------------------------------------------------------------------------
@@ -21,28 +26,44 @@ const mockRunClaude = mock(
     }),
 );
 
-const mockCountIssuesInState = mock(
-  (_linearIds: LinearIds, _stateId: string): Promise<number> =>
-    Promise.resolve(0),
-);
+// Queue of node counts to return for sequential countIssuesInState calls.
+// Inject via setClientForTesting to avoid mock.module("./lib/linear") which
+// causes Bun 1.3.9 mock/restore cross-file interference.
+let issueNodeCounts: number[] = [];
+const mockIssues = mock(async () => {
+  const count = issueNodeCounts.shift() ?? 0;
+  return {
+    nodes: Array.from({ length: count }, (_, i) => ({ id: `issue-${i}` })),
+    pageInfo: { hasNextPage: false },
+    fetchNext: async () => {
+      throw new Error("unexpected fetchNext in auditor tests");
+    },
+  };
+});
 
 import { runAudit, shouldRunAudit } from "./auditor";
 
 // Wire module mocks before each test and restore afterwards to prevent
 // leaking into other test files in Bun's single-process test runner.
+// NOTE: We inject a mock LinearClient via setClientForTesting instead of
+// mocking ./lib/linear as a module, to avoid Bun 1.3.9 mock/restore
+// cross-file interference (same pattern as linear.test.ts and monitor.test.ts).
 // NOTE: We intentionally do NOT mock ./lib/prompt — the real buildAuditorPrompt
 // reads from prompts/ on disk and doesn't leak across test files.
 beforeEach(() => {
+  issueNodeCounts = [];
+  mockIssues.mockClear();
+  setClientForTesting({ issues: mockIssues } as unknown as LinearClient);
   mock.module("./lib/claude", () => ({
     runClaude: mockRunClaude,
     buildMcpServers: () => ({}),
   }));
-  mock.module("./lib/linear", () => ({
-    countIssuesInState: mockCountIssuesInState,
-  }));
 });
 
-afterEach(() => mock.restore());
+afterEach(() => {
+  mock.restore();
+  resetLinearClient();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,7 +142,7 @@ describe("shouldRunAudit — schedule checks", () => {
   test("returns false when schedule === 'manual'", async () => {
     const config = makeConfig();
     config.auditor.schedule = "manual";
-    mockCountIssuesInState.mockClear();
+    mockIssues.mockClear();
 
     const result = await shouldRunAudit({
       config,
@@ -131,7 +152,7 @@ describe("shouldRunAudit — schedule checks", () => {
 
     expect(result).toBe(false);
     // Short-circuits before any API call
-    expect(mockCountIssuesInState.mock.calls).toHaveLength(0);
+    expect(mockIssues.mock.calls).toHaveLength(0);
   });
 });
 
@@ -148,7 +169,7 @@ describe("shouldRunAudit — backlog threshold", () => {
 
   test("returns false when backlog >= threshold (exactly at threshold)", async () => {
     // readyCount=3, triageCount=2 → backlog=5, threshold=5 → false
-    mockCountIssuesInState.mockResolvedValueOnce(3).mockResolvedValueOnce(2);
+    issueNodeCounts = [3, 2];
 
     const result = await shouldRunAudit({
       config: makeConfig(),
@@ -161,7 +182,7 @@ describe("shouldRunAudit — backlog threshold", () => {
 
   test("returns true when backlog < threshold", async () => {
     // readyCount=2, triageCount=1 → backlog=3, threshold=5 → true
-    mockCountIssuesInState.mockResolvedValueOnce(2).mockResolvedValueOnce(1);
+    issueNodeCounts = [2, 1];
 
     const result = await shouldRunAudit({
       config: makeConfig(),
@@ -173,8 +194,8 @@ describe("shouldRunAudit — backlog threshold", () => {
   });
 
   test("calls countIssuesInState with ready and triage state IDs", async () => {
-    mockCountIssuesInState.mockClear();
-    mockCountIssuesInState.mockResolvedValue(0);
+    mockIssues.mockClear();
+    // issueNodeCounts stays empty — mockIssues defaults to 0 nodes per call
 
     const linearIds = makeLinearIds();
     await shouldRunAudit({
@@ -183,8 +204,11 @@ describe("shouldRunAudit — backlog threshold", () => {
       state,
     });
 
-    const calledStateIds = mockCountIssuesInState.mock.calls.map(
-      (call) => call[1],
+    // Verify the state IDs queried via the LinearClient filter
+    const calledStateIds = mockIssues.mock.calls.map(
+      (call: unknown[]) =>
+        (call[0] as { filter: { state: { id: { eq: string } } } })?.filter
+          ?.state?.id?.eq,
     );
     expect(calledStateIds).toContain("ready-id");
     expect(calledStateIds).toContain("triage-id");
