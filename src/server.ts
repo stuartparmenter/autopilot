@@ -122,10 +122,7 @@ function loginPage(error?: string): string {
 </html>`;
 }
 
-export function createApp(
-  state: AppState,
-  options?: DashboardOptions,
-): Hono {
+export function createApp(state: AppState, options?: DashboardOptions): Hono {
   const app = new Hono();
 
   if (options?.authToken) {
