@@ -79,6 +79,7 @@ For each category, report what you **find** — not what you think should exist.
 ## Rules
 
 - **Investigate, don't prescribe.** Report what exists. Don't recommend what should be added.
+- **Do NOT run tests, linters, builds, or any project commands.** Your job is to discover what tooling exists by reading config files, checking file counts, and examining project structure — not to execute anything. Running `bun test`, `npm test`, `pytest`, etc. wastes time and may fail due to sandbox restrictions.
 - **Be stack-agnostic.** Don't assume TypeScript or any specific framework. Discover what's there.
 - **Be concrete.** "3 test files covering src/api/" is better than "some tests exist."
 - **Check the filesystem.** Look at actual files, not just config. A configured linter with no rules is different from a well-tuned one.
