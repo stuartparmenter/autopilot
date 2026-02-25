@@ -18,6 +18,7 @@ import { resolveLinearIds, updateIssue } from "./lib/linear";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
 import { checkOpenPRs } from "./monitor";
 import { runPlanning, shouldRunPlanning } from "./planner";
+import { checkProjects } from "./projects";
 import { createApp } from "./server";
 import { AppState } from "./state";
 
@@ -120,8 +121,16 @@ header("claude-autopilot v0.2.0");
 
 info(`Project: ${projectPath}`);
 info(`Team: ${config.linear.team}, Project: ${config.linear.project}`);
+if (config.linear.initiative) {
+  info(`Initiative: ${config.linear.initiative}`);
+}
 info(`Max parallel: ${config.executor.parallel}`);
 info(`Poll interval: ${config.executor.poll_interval_minutes}m`);
+if (config.projects.enabled && config.linear.initiative) {
+  info(
+    `Projects loop: every ${config.projects.poll_interval_minutes}m, max ${config.projects.max_active_projects} owners`,
+  );
+}
 info(
   `Model: ${config.executor.model} (planning: ${config.executor.planning_model})`,
 );
@@ -138,7 +147,12 @@ ok(`GitHub repo: ${ghOwner}/${ghRepo}`);
 
 info("Connecting to Linear...");
 const linearIds = await resolveLinearIds(config.linear);
-ok(`Connected - team ${config.linear.team}, project ${config.linear.project}`);
+ok(
+  `Connected - team ${config.linear.team}, project ${config.linear.project}` +
+    (linearIds.initiativeName
+      ? `, initiative ${linearIds.initiativeName}`
+      : ""),
+);
 
 // --- Init state and server ---
 
@@ -241,11 +255,13 @@ process.on("uncaughtException", (err) => {
 // --- Main loop ---
 
 const POLL_INTERVAL_MS = config.executor.poll_interval_minutes * 60 * 1000;
+const PROJECTS_INTERVAL_MS = config.projects.poll_interval_minutes * 60 * 1000;
 const BASE_BACKOFF_MS = 10_000; // 10s
 const MAX_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_CONSECUTIVE_FAILURES = 5;
 const running = new Set<Promise<boolean>>();
 let planningPromise: Promise<void> | null = null;
+let lastProjectsCheckAt = 0;
 
 let consecutiveFailures = 0;
 
@@ -315,6 +331,26 @@ while (!shuttingDown) {
           .finally(() => {
             planningPromise = null;
           });
+      }
+    }
+
+    // Check projects loop
+    if (
+      config.projects.enabled &&
+      linearIds.initiativeId &&
+      Date.now() - lastProjectsCheckAt >= PROJECTS_INTERVAL_MS
+    ) {
+      lastProjectsCheckAt = Date.now();
+      const projectPromises = await checkProjects({
+        config,
+        projectPath,
+        linearIds,
+        state,
+        shutdownSignal: shutdownController.signal,
+      });
+      for (const p of projectPromises) {
+        const tracked = p.finally(() => running.delete(tracked));
+        running.add(tracked);
       }
     }
 
