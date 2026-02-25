@@ -30,13 +30,14 @@ const mockRunClaude = mock(
 // Inject via setClientForTesting to avoid mock.module("./lib/linear") which
 // causes Bun 1.3.9 mock/restore cross-file interference.
 let issueNodeCounts: number[] = [];
-const mockIssues = mock(async () => {
+const mockRawRequest = mock(async () => {
   const count = issueNodeCounts.shift() ?? 0;
   return {
-    nodes: Array.from({ length: count }, (_, i) => ({ id: `issue-${i}` })),
-    pageInfo: { hasNextPage: false },
-    fetchNext: async () => {
-      throw new Error("unexpected fetchNext in auditor tests");
+    data: {
+      issues: {
+        nodes: Array.from({ length: count }, (_, i) => ({ id: `issue-${i}` })),
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
     },
   };
 });
@@ -52,8 +53,10 @@ import { runAudit, shouldRunAudit } from "./auditor";
 // reads from prompts/ on disk and doesn't leak across test files.
 beforeEach(() => {
   issueNodeCounts = [];
-  mockIssues.mockClear();
-  setClientForTesting({ issues: mockIssues } as unknown as LinearClient);
+  mockRawRequest.mockClear();
+  setClientForTesting({
+    client: { rawRequest: mockRawRequest },
+  } as unknown as LinearClient);
   mock.module("./lib/claude", () => ({
     runClaude: mockRunClaude,
     buildMcpServers: () => ({}),
@@ -149,7 +152,7 @@ describe("shouldRunAudit — schedule checks", () => {
   test("returns false when schedule === 'manual'", async () => {
     const config = makeConfig();
     config.auditor.schedule = "manual";
-    mockIssues.mockClear();
+    mockRawRequest.mockClear();
 
     const result = await shouldRunAudit({
       config,
@@ -159,7 +162,7 @@ describe("shouldRunAudit — schedule checks", () => {
 
     expect(result).toBe(false);
     // Short-circuits before any API call
-    expect(mockIssues.mock.calls).toHaveLength(0);
+    expect(mockRawRequest.mock.calls).toHaveLength(0);
   });
 });
 
@@ -201,8 +204,8 @@ describe("shouldRunAudit — backlog threshold", () => {
   });
 
   test("calls countIssuesInState with ready and triage state IDs", async () => {
-    mockIssues.mockClear();
-    // issueNodeCounts stays empty — mockIssues defaults to 0 nodes per call
+    mockRawRequest.mockClear();
+    // issueNodeCounts stays empty — mockRawRequest defaults to 0 nodes per call
 
     const linearIds = makeLinearIds();
     await shouldRunAudit({
@@ -211,10 +214,10 @@ describe("shouldRunAudit — backlog threshold", () => {
       state,
     });
 
-    // Verify the state IDs queried via the LinearClient filter
-    const calledStateIds = mockIssues.mock.calls.map(
+    // Verify the state IDs queried via the rawRequest variables (second arg)
+    const calledStateIds = mockRawRequest.mock.calls.map(
       (call: unknown[]) =>
-        (call[0] as { filter: { state: { id: { eq: string } } } })?.filter
+        (call[1] as { filter: { state: { id: { eq: string } } } })?.filter
           ?.state?.id?.eq,
     );
     expect(calledStateIds).toContain("ready-id");
