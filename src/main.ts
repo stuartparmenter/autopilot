@@ -155,7 +155,7 @@ ok(
 
 // --- Init state and server ---
 
-const state = new AppState();
+const state = new AppState(config.executor.parallel);
 
 if (config.persistence.enabled) {
   const dbPath = resolve(projectPath, config.persistence.db_path);
@@ -317,7 +317,7 @@ while (!shuttingDown) {
     // Check planning (counts against parallel limit)
     if (
       !state.getPlanningStatus().running &&
-      state.getRunningCount() < config.executor.parallel
+      state.getRunningCount() < state.getMaxParallel()
     ) {
       const shouldPlan = await shouldRunPlanning({
         config,

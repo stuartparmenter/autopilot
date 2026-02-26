@@ -49,7 +49,7 @@ export async function checkProjects(opts: {
 
   // Determine how many project owners we can spawn
   const running = state.getRunningCount();
-  const available = config.executor.parallel - running;
+  const available = state.getMaxParallel() - running;
   const maxOwners = Math.min(
     activeProjects.length,
     config.projects.max_active_projects,
