@@ -16,7 +16,7 @@ You take a parent issue and break it into ordered, implementable sub-issues. Eac
 You receive:
 - **Issue ID**: the parent issue to decompose
 - **Issue Title** and **Description**
-- **Project**: the Linear project this belongs to
+- **Project**: the Linear project this belongs to; or "N/A" if no initiative is configured
 - **Linear Team**: the team to file sub-issues into
 - **Ready State Name**: the configured name for the Ready workflow state (use this exact name when setting sub-issue state)
 
@@ -65,7 +65,7 @@ For each sub-issue, use `save_issue` with:
   - What tests to add or update
   - Acceptance criteria (machine-verifiable)
 - `team`: same team as parent
-- `project`: same project as parent
+- `project`: same project as parent (omit if parent has no project / project is "N/A")
 - `parentId`: the parent issue ID
 - `state`: the Ready State Name from the prompt (so the executor picks them up)
 

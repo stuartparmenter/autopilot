@@ -15,7 +15,7 @@ You take a finding brief from the CTO and turn it into a fully-formed Linear iss
 
 You receive a **Finding Brief** in the Task prompt containing:
 - **Linear Team**: the Linear team to file into
-- **Project**: the Linear project to file into (name or ID)
+- **Project**: the Linear project to file into (name or ID); or "N/A" if no initiative is configured
 - **Triage State Name**: the configured name for the Triage workflow state (use this exact name when filing)
 - **Ready State Name**: the configured name for the Ready workflow state
 - **Title**: concise issue title
@@ -149,7 +149,7 @@ If the template is found, use its structure for the issue description. If not fo
 
 ### Step 7: File to Linear
 
-Create the issue via Linear MCP using the **Linear Team** and **Project** from the Finding Brief. Use the `project` parameter on `save_issue` to file into the correct project.
+Create the issue via Linear MCP using the **Linear Team** from the Finding Brief. If **Project** is a valid project name (not "N/A" or empty), set the `project` parameter on `save_issue`. If **Project** is "N/A" or empty, omit the `project` parameter — the labels applied in the filing rules ensure the issue is discoverable.
 
 ---
 
