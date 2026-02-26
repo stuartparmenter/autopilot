@@ -454,6 +454,46 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
           ? `${Math.round(hist.durationMs / 1000)}s`
           : "?";
         const costStr = hist.costUsd ? `$${hist.costUsd.toFixed(4)}` : "";
+        const savedLogs = state.getActivityLogsForRun(id);
+        if (savedLogs.length > 0) {
+          return c.html(html`
+            <div>
+              <div style="display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border)">
+                <div>
+                  <span class="status-dot ${hist.status}"></span>
+                  <strong>${hist.issueId}</strong> — ${hist.issueTitle}
+                </div>
+                <div class="meta">${durationStr} &middot; ${String(savedLogs.length)} activities${costStr ? ` &middot; ${costStr}` : ""}</div>
+              </div>
+              ${raw(
+                savedLogs
+                  .map((act) => {
+                    const time = new Date(act.timestamp).toLocaleTimeString(
+                      "en-US",
+                      { hour12: false },
+                    );
+                    let badgeHtml = `<span class="type-badge ${act.type}">${act.type}</span>`;
+                    let summaryText = act.summary;
+                    if (act.type === "tool_use") {
+                      const colonIdx = act.summary.indexOf(": ");
+                      if (colonIdx !== -1) {
+                        badgeHtml = `<span class="type-badge ${act.type}">${act.summary.slice(0, colonIdx)}</span>`;
+                        summaryText = act.summary.slice(colonIdx + 2);
+                      }
+                    } else if (act.type === "text") {
+                      badgeHtml = "";
+                    }
+                    return `<div class="activity-item">
+                      <span class="time">${time}</span>
+                      ${badgeHtml}
+                      ${escapeHtml(summaryText)}
+                    </div>`;
+                  })
+                  .join(""),
+              )}
+            </div>
+          `);
+        }
         return c.html(html`
           <div style="padding: 8px 0">
             <div>

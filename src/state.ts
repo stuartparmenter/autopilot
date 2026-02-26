@@ -1,7 +1,13 @@
 import type { Database } from "bun:sqlite";
 import type { AutopilotConfig } from "./lib/config";
 import type { AnalyticsResult } from "./lib/db";
-import { getAnalytics, getRecentRuns, insertAgentRun } from "./lib/db";
+import {
+  getActivityLogs,
+  getAnalytics,
+  getRecentRuns,
+  insertActivityLogs,
+  insertAgentRun,
+} from "./lib/db";
 import { sanitizeMessage } from "./lib/sanitize";
 
 export interface ActivityEntry {
@@ -151,6 +157,7 @@ export class AppState {
 
     if (this.db) {
       insertAgentRun(this.db, result);
+      insertActivityLogs(this.db, result.id, agent.activities);
     }
 
     if (meta?.costUsd && meta.costUsd > 0) {
@@ -206,6 +213,11 @@ export class AppState {
   getAnalytics(): AnalyticsResult | null {
     if (!this.db) return null;
     return getAnalytics(this.db);
+  }
+
+  getActivityLogsForRun(agentRunId: string): ActivityEntry[] {
+    if (!this.db) return [];
+    return getActivityLogs(this.db, agentRunId);
   }
 
   getAuditorStatus(): AuditorStatus {

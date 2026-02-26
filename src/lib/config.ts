@@ -79,6 +79,7 @@ export interface SandboxConfig {
 export interface PersistenceConfig {
   enabled: boolean;
   db_path: string;
+  retention_days: number;
 }
 
 export interface BudgetConfig {
@@ -161,6 +162,7 @@ export const DEFAULTS: AutopilotConfig = {
   persistence: {
     enabled: true,
     db_path: ".claude/autopilot.db",
+    retention_days: 30,
   },
   sandbox: {
     enabled: true,
