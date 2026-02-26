@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { SandboxConfig } from "./config";
 import { enableAutoMerge } from "./github";
 import { createProjectStatusUpdate } from "./linear";
+import { getCurrentLinearToken } from "./linear-oauth";
 
 /** Domains agents always need access to when network is restricted. */
 export const SANDBOX_BASE_DOMAINS = [
@@ -121,11 +122,14 @@ export function buildMcpServers(): Record<string, unknown> {
     },
   );
 
+  const linearToken =
+    getCurrentLinearToken() ?? process.env.LINEAR_API_KEY ?? "";
+
   return {
     linear: {
       type: "http",
       url: "https://mcp.linear.app/mcp",
-      headers: { Authorization: `Bearer ${process.env.LINEAR_API_KEY}` },
+      headers: { Authorization: `Bearer ${linearToken}` },
     },
     github: {
       type: "http",
