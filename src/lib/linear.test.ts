@@ -4,7 +4,6 @@ import type { LinearIds } from "./config";
 import {
   countIssuesInState,
   findOrCreateLabel,
-  findProject,
   findState,
   findTeam,
   getLinearClient,
@@ -24,8 +23,6 @@ import {
 const TEST_IDS: LinearIds = {
   teamId: "team-1",
   teamKey: "ENG",
-  projectId: "proj-1",
-  projectName: "test",
   states: {
     triage: "s1",
     ready: "s2",
@@ -38,7 +35,7 @@ const TEST_IDS: LinearIds = {
 
 const LINEAR_CONFIG = {
   team: "ENG",
-  project: "Test Project",
+  initiative: "Test Initiative",
   states: {
     triage: "Triage",
     ready: "Ready",
@@ -85,6 +82,7 @@ function makeIssue(opts: {
   priority?: number | undefined;
   relationsResult?: { nodes: unknown[] };
   relationsError?: Error;
+  childrenNodes?: unknown[];
 }): unknown {
   return {
     id: opts.id ?? "issue-1",
@@ -94,6 +92,7 @@ function makeIssue(opts: {
     relations: opts.relationsError
       ? () => Promise.reject(opts.relationsError)
       : () => Promise.resolve(opts.relationsResult ?? { nodes: [] }),
+    children: () => Promise.resolve({ nodes: opts.childrenNodes ?? [] }),
   };
 }
 
@@ -125,11 +124,15 @@ let mockProjectsNodes: unknown[] = [];
 let mockWorkflowStatesNodes: unknown[] = [];
 let mockIssuesNodes: unknown[] = [];
 let mockIssueLabelsNodes: unknown[] = [];
+let mockInitiativesNodes: unknown[] = [];
 let mockCreateIssueLabelData: unknown = null;
 let mockCreateIssueData: unknown = null;
 
 const mockTeams = mock(() => Promise.resolve({ nodes: mockTeamsNodes }));
 const mockProjects = mock(() => Promise.resolve({ nodes: mockProjectsNodes }));
+const mockInitiatives = mock(() =>
+  Promise.resolve({ nodes: mockInitiativesNodes }),
+);
 // Accepts an optional arg so mockImplementation callbacks can read filter args
 const mockWorkflowStates = mock((_args?: unknown) =>
   Promise.resolve({ nodes: mockWorkflowStatesNodes }),
@@ -158,6 +161,7 @@ function makeStandardClient(): LinearClient {
   return {
     teams: mockTeams,
     projects: mockProjects,
+    initiatives: mockInitiatives,
     workflowStates: mockWorkflowStates,
     issues: mockIssuesForReady,
     issueLabels: mockIssueLabels,
@@ -231,38 +235,6 @@ describe("findTeam", () => {
 
     await expect(findTeam("NONE")).rejects.toThrow(
       "Team 'NONE' not found in Linear",
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// findProject
-// ---------------------------------------------------------------------------
-
-describe("findProject", () => {
-  beforeEach(() => {
-    mockProjectsNodes = [];
-    mockProjects.mockClear();
-    setClientForTesting(makeStandardClient());
-  });
-
-  test("returns the project when found", async () => {
-    const project = { id: "proj-1", name: "My Project" };
-    mockProjectsNodes = [project];
-
-    const result = await findProject("My Project");
-
-    expect(result).toMatchObject(project);
-    expect(mockProjects).toHaveBeenCalledWith({
-      filter: { name: { eq: "My Project" } },
-    });
-  });
-
-  test("throws descriptive error when project not found", async () => {
-    mockProjectsNodes = [];
-
-    await expect(findProject("Missing")).rejects.toThrow(
-      "Project 'Missing' not found in Linear",
     );
   });
 });
@@ -387,7 +359,6 @@ describe("getReadyIssues", () => {
       filter: {
         team: { id: { eq: TEST_IDS.teamId } },
         state: { id: { eq: TEST_IDS.states.ready } },
-        project: { id: { eq: TEST_IDS.projectId } },
       },
       first: 5,
     });
@@ -629,7 +600,6 @@ describe("countIssuesInState", () => {
       filter: {
         team: { id: { eq: TEST_IDS.teamId } },
         state: { id: { eq: "state-xyz" } },
-        project: { id: { eq: TEST_IDS.projectId } },
       },
       first: 250,
     });
@@ -846,11 +816,13 @@ describe("resolveLinearIds", () => {
   beforeEach(() => {
     mockTeamsNodes = [{ id: "team-123", key: "ENG" }];
     mockProjectsNodes = [{ id: "project-456", name: "Test Project" }];
+    mockInitiativesNodes = [{ id: "init-789", name: "Test Initiative" }];
     mockWorkflowStatesNodes = [
       { id: "state-default", name: "State", type: "triage" },
     ];
     mockTeams.mockClear();
     mockProjects.mockClear();
+    mockInitiatives.mockClear();
     mockWorkflowStates.mockClear();
     setClientForTesting(makeStandardClient());
   });
@@ -876,8 +848,6 @@ describe("resolveLinearIds", () => {
 
       expect(ids.teamId).toBe("team-123");
       expect(ids.teamKey).toBe("ENG");
-      expect(ids.projectId).toBe("project-456");
-      expect(ids.projectName).toBe("Test Project");
       expect(ids.states.triage).toBe("s-triage");
       expect(ids.states.ready).toBe("s-ready");
       expect(ids.states.in_progress).toBe("s-inprogress");
@@ -904,14 +874,6 @@ describe("resolveLinearIds", () => {
     await expect(
       resolveLinearIds({ ...LINEAR_CONFIG, team: "NOEXIST" }),
     ).rejects.toThrow("Team 'NOEXIST' not found");
-  });
-
-  test("propagates error when findProject fails", async () => {
-    mockProjectsNodes = [];
-
-    await expect(
-      resolveLinearIds({ ...LINEAR_CONFIG, project: "NOEXIST" }),
-    ).rejects.toThrow("Project 'NOEXIST' not found");
   });
 
   test("propagates error when a findState call fails", async () => {

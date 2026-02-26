@@ -5,7 +5,7 @@ import { fatal } from "./logger";
 
 export interface LinearConfig {
   team: string;
-  project: string;
+  initiative: string;
   states: {
     triage: string;
     ready: string;
@@ -20,8 +20,8 @@ export interface LinearConfig {
 export interface LinearIds {
   teamId: string;
   teamKey: string;
-  projectId: string;
-  projectName: string;
+  initiativeId?: string;
+  initiativeName?: string;
   states: {
     triage: string;
     ready: string;
@@ -44,20 +44,15 @@ export interface ExecutorConfig {
   branch_pattern: string;
   commit_pattern: string;
   model: string;
-  planning_model: string;
 }
 
-export interface AuditorConfig {
+export interface PlanningConfig {
   schedule: "when_idle" | "daily" | "manual";
   min_ready_threshold: number;
   min_interval_minutes: number;
   max_issues_per_run: number;
-  use_agent_teams: boolean;
-  skip_triage: boolean;
-  scan_dimensions: string[];
-  brainstorm_features: boolean;
-  brainstorm_dimensions: string[];
-  max_ideas_per_run: number;
+  timeout_minutes: number;
+  model: string;
 }
 
 export interface MonitorConfig {
@@ -68,10 +63,6 @@ export interface MonitorConfig {
 export interface GithubConfig {
   repo: string; // "owner/repo" override — empty = auto-detect from git remote
   automerge: boolean; // Enable auto-merge on PRs created by the executor
-}
-
-export interface ProjectConfig {
-  name: string;
 }
 
 export interface SandboxConfig {
@@ -94,13 +85,21 @@ export interface BudgetConfig {
   warn_at_percent: number;
 }
 
+export interface ProjectsConfig {
+  enabled: boolean;
+  poll_interval_minutes: number;
+  max_active_projects: number;
+  timeout_minutes: number;
+  model: string;
+}
+
 export interface AutopilotConfig {
   linear: LinearConfig;
   executor: ExecutorConfig;
-  auditor: AuditorConfig;
+  planning: PlanningConfig;
+  projects: ProjectsConfig;
   monitor: MonitorConfig;
   github: GithubConfig;
-  project: ProjectConfig;
   persistence: PersistenceConfig;
   sandbox: SandboxConfig;
   budget: BudgetConfig;
@@ -109,7 +108,7 @@ export interface AutopilotConfig {
 export const DEFAULTS: AutopilotConfig = {
   linear: {
     team: "",
-    project: "",
+    initiative: "",
     states: {
       triage: "Triage",
       ready: "Todo",
@@ -131,32 +130,14 @@ export const DEFAULTS: AutopilotConfig = {
     branch_pattern: "autopilot/{{id}}",
     commit_pattern: "{{id}}: {{title}}",
     model: "sonnet",
-    planning_model: "opus",
   },
-  auditor: {
+  planning: {
     schedule: "when_idle",
     min_ready_threshold: 5,
     min_interval_minutes: 60,
-    max_issues_per_run: 10,
-    use_agent_teams: true,
-    skip_triage: true,
-    scan_dimensions: [
-      "test-coverage",
-      "error-handling",
-      "performance",
-      "security",
-      "code-quality",
-      "dependency-health",
-      "documentation",
-    ],
-    brainstorm_features: true,
-    brainstorm_dimensions: [
-      "user-facing-features",
-      "developer-experience",
-      "integrations",
-      "scalability",
-    ],
-    max_ideas_per_run: 5,
+    max_issues_per_run: 5,
+    timeout_minutes: 90,
+    model: "opus",
   },
   monitor: {
     respond_to_reviews: false,
@@ -166,13 +147,17 @@ export const DEFAULTS: AutopilotConfig = {
     repo: "",
     automerge: false,
   },
-  project: {
-    name: "",
-  },
   persistence: {
     enabled: true,
     db_path: ".claude/autopilot.db",
     retention_days: 30,
+  },
+  projects: {
+    enabled: true,
+    poll_interval_minutes: 10,
+    max_active_projects: 5,
+    timeout_minutes: 60,
+    model: "opus",
   },
   sandbox: {
     enabled: true,
@@ -217,9 +202,8 @@ export function deepMerge<T extends Record<string, unknown>>(
 
 function validateConfigStrings(config: AutopilotConfig): void {
   const fields: Array<[string, string]> = [
-    ["project.name", config.project.name],
     ["linear.team", config.linear.team],
-    ["linear.project", config.linear.project],
+    ["linear.initiative", config.linear.initiative],
     ["linear.states.triage", config.linear.states.triage],
     ["linear.states.ready", config.linear.states.ready],
     ["linear.states.in_progress", config.linear.states.in_progress],
@@ -229,6 +213,7 @@ function validateConfigStrings(config: AutopilotConfig): void {
   ];
 
   for (const [key, value] of fields) {
+    if (!value) continue;
     if (/[\r\n]/.test(value)) {
       throw new Error(
         `Config validation error: "${key}" must not contain newline characters`,
@@ -318,37 +303,37 @@ export function loadConfig(projectPath: string): AutopilotConfig {
   }
 
   if (
-    typeof config.auditor.min_interval_minutes !== "number" ||
-    Number.isNaN(config.auditor.min_interval_minutes) ||
-    config.auditor.min_interval_minutes < 0 ||
-    config.auditor.min_interval_minutes > 1440
+    typeof config.planning.min_interval_minutes !== "number" ||
+    Number.isNaN(config.planning.min_interval_minutes) ||
+    config.planning.min_interval_minutes < 0 ||
+    config.planning.min_interval_minutes > 1440
   ) {
     throw new Error(
-      "Config validation error: auditor.min_interval_minutes must be a number between 0 and 1440",
+      "Config validation error: planning.min_interval_minutes must be a number between 0 and 1440",
     );
   }
 
   if (
-    typeof config.auditor.min_ready_threshold !== "number" ||
-    Number.isNaN(config.auditor.min_ready_threshold) ||
-    !Number.isInteger(config.auditor.min_ready_threshold) ||
-    config.auditor.min_ready_threshold < 0 ||
-    config.auditor.min_ready_threshold > 1000
+    typeof config.planning.min_ready_threshold !== "number" ||
+    Number.isNaN(config.planning.min_ready_threshold) ||
+    !Number.isInteger(config.planning.min_ready_threshold) ||
+    config.planning.min_ready_threshold < 0 ||
+    config.planning.min_ready_threshold > 1000
   ) {
     throw new Error(
-      "Config validation error: auditor.min_ready_threshold must be an integer between 0 and 1000",
+      "Config validation error: planning.min_ready_threshold must be an integer between 0 and 1000",
     );
   }
 
   if (
-    typeof config.auditor.max_issues_per_run !== "number" ||
-    Number.isNaN(config.auditor.max_issues_per_run) ||
-    !Number.isInteger(config.auditor.max_issues_per_run) ||
-    config.auditor.max_issues_per_run < 1 ||
-    config.auditor.max_issues_per_run > 50
+    typeof config.planning.max_issues_per_run !== "number" ||
+    Number.isNaN(config.planning.max_issues_per_run) ||
+    !Number.isInteger(config.planning.max_issues_per_run) ||
+    config.planning.max_issues_per_run < 1 ||
+    config.planning.max_issues_per_run > 50
   ) {
     throw new Error(
-      "Config validation error: auditor.max_issues_per_run must be an integer between 1 and 50",
+      "Config validation error: planning.max_issues_per_run must be an integer between 1 and 50",
     );
   }
 
