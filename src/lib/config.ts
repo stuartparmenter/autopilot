@@ -6,6 +6,8 @@ import { fatal, warn } from "./logger";
 export interface LinearConfig {
   team: string;
   initiative: string;
+  labels: string[];
+  projects: string[];
   states: {
     triage: string;
     ready: string;
@@ -40,6 +42,7 @@ export interface ExecutorConfig {
   max_retries: number;
   inactivity_timeout_minutes: number;
   poll_interval_minutes: number;
+  stale_timeout_minutes: number;
   auto_approve_labels: string[];
   branch_pattern: string;
   commit_pattern: string;
@@ -121,6 +124,8 @@ export const DEFAULTS: AutopilotConfig = {
   linear: {
     team: "",
     initiative: "",
+    labels: [],
+    projects: [],
     states: {
       triage: "Triage",
       ready: "Todo",
@@ -138,6 +143,7 @@ export const DEFAULTS: AutopilotConfig = {
     max_retries: 3,
     inactivity_timeout_minutes: 10,
     poll_interval_minutes: 5,
+    stale_timeout_minutes: 15,
     auto_approve_labels: [],
     branch_pattern: "autopilot/{{id}}",
     commit_pattern: "{{id}}: {{title}}",
@@ -277,6 +283,20 @@ function validateConfigStrings(config: AutopilotConfig): void {
       throw new Error(
         `Config validation error: "${key}" exceeds the maximum length of 200 characters`,
       );
+    }
+  }
+
+  for (const [arrayKey, array] of [
+    ["linear.labels", config.linear.labels],
+    ["linear.projects", config.linear.projects],
+  ] as [string, string[]][]) {
+    for (let i = 0; i < array.length; i++) {
+      const item = array[i];
+      if (typeof item !== "string" || item.trim() === "") {
+        throw new Error(
+          `Config validation error: "${arrayKey}[${i}]" must not be an empty string`,
+        );
+      }
     }
   }
 }
@@ -420,6 +440,18 @@ export function loadConfig(projectPath: string): AutopilotConfig {
   ) {
     throw new Error(
       "Config validation error: executor.max_fixer_attempts must be an integer between 1 and 10",
+    );
+  }
+
+  if (
+    typeof config.executor.stale_timeout_minutes !== "number" ||
+    Number.isNaN(config.executor.stale_timeout_minutes) ||
+    !Number.isInteger(config.executor.stale_timeout_minutes) ||
+    config.executor.stale_timeout_minutes < 5 ||
+    config.executor.stale_timeout_minutes > 120
+  ) {
+    throw new Error(
+      "Config validation error: executor.stale_timeout_minutes must be an integer between 5 and 120",
     );
   }
 

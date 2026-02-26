@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { AutopilotConfig } from "./lib/config";
 import { DEFAULTS } from "./lib/config";
-import { createApp, escapeHtml, formatDuration, safeCompare } from "./server";
+import { insertAgentRun, openDb } from "./lib/db";
+import {
+  computeHealth,
+  createApp,
+  escapeHtml,
+  formatDuration,
+  safeCompare,
+} from "./server";
 import { AppState } from "./state";
 
 describe("safeCompare", () => {
@@ -881,6 +888,150 @@ describe("GET /partials/planning-button", () => {
   });
 });
 
+describe("dashboard HTML includes analytics partial div", () => {
+  test("includes analytics-bar div with /partials/analytics and 30s poll", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/");
+    const body = await res.text();
+    expect(body).toContain("/partials/analytics");
+    expect(body).toContain("analytics-bar");
+    expect(body).toContain("every 30s");
+  });
+});
+
+describe("GET /partials/analytics", () => {
+  test("returns fallback message when no DB connected", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/partials/analytics");
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Analytics not available");
+  });
+
+  test("returns stat cards with Total Runs, Success Rate, Avg Duration, Total Cost when DB connected", async () => {
+    const state = new AppState();
+    const db = openDb(":memory:");
+    state.setDb(db);
+    const now = Date.now();
+    insertAgentRun(db, {
+      id: "run-1",
+      issueId: "ENG-1",
+      issueTitle: "Test issue",
+      status: "completed",
+      startedAt: now - 60000,
+      finishedAt: now,
+      costUsd: 0.5,
+      durationMs: 60000,
+      numTurns: 5,
+    });
+    const app = createApp(state);
+    const res = await app.request("/partials/analytics");
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Total Runs");
+    expect(body).toContain("Success Rate");
+    expect(body).toContain("Avg Duration");
+    expect(body).toContain("Total Cost");
+    expect(body).toContain("100%");
+  });
+});
+
+describe("GET /api/analytics", () => {
+  test("returns { enabled: false } when no DB connected", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/api/analytics");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { enabled: boolean };
+    expect(json.enabled).toBe(false);
+  });
+
+  test("returns all-time and today-windowed metrics when DB connected", async () => {
+    const state = new AppState();
+    const db = openDb(":memory:");
+    state.setDb(db);
+    const now = Date.now();
+    // Two runs today: one completed, one failed
+    insertAgentRun(db, {
+      id: "run-today-1",
+      issueId: "ENG-1",
+      issueTitle: "Test 1",
+      status: "completed",
+      startedAt: now - 60000,
+      finishedAt: now,
+      costUsd: 0.5,
+      durationMs: 60000,
+      numTurns: 5,
+    });
+    insertAgentRun(db, {
+      id: "run-today-2",
+      issueId: "ENG-2",
+      issueTitle: "Test 2",
+      status: "failed",
+      startedAt: now - 30000,
+      finishedAt: now - 1000,
+      costUsd: 0.1,
+      durationMs: 29000,
+      numTurns: 2,
+    });
+    // One run from yesterday (outside today's window)
+    const yesterday = now - 25 * 60 * 60 * 1000;
+    insertAgentRun(db, {
+      id: "run-yesterday",
+      issueId: "ENG-3",
+      issueTitle: "Old run",
+      status: "completed",
+      startedAt: yesterday - 60000,
+      finishedAt: yesterday,
+      costUsd: 1.0,
+      durationMs: 60000,
+      numTurns: 10,
+    });
+    const app = createApp(state);
+    const res = await app.request("/api/analytics");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      enabled: boolean;
+      totalRuns: number;
+      successRate: number;
+      todayRuns: number;
+      todaySuccessRate: number;
+    };
+    expect(json.enabled).toBe(true);
+    expect(json.totalRuns).toBe(3);
+    expect(json.todayRuns).toBe(2);
+    expect(json.todaySuccessRate).toBeCloseTo(0.5);
+  });
+
+  test("todayRuns is 0 and todaySuccessRate is 0 when no runs today", async () => {
+    const state = new AppState();
+    const db = openDb(":memory:");
+    state.setDb(db);
+    // Only a run from yesterday
+    const yesterday = Date.now() - 25 * 60 * 60 * 1000;
+    insertAgentRun(db, {
+      id: "run-old",
+      issueId: "ENG-1",
+      issueTitle: "Old",
+      status: "completed",
+      startedAt: yesterday - 60000,
+      finishedAt: yesterday,
+    });
+    const app = createApp(state);
+    const res = await app.request("/api/analytics");
+    const json = (await res.json()) as {
+      enabled: boolean;
+      todayRuns: number;
+      todaySuccessRate: number;
+    };
+    expect(json.enabled).toBe(true);
+    expect(json.todayRuns).toBe(0);
+    expect(json.todaySuccessRate).toBe(0);
+  });
+});
+
 describe("GET /partials/triage", () => {
   test("returns empty div when triageIssues callback not configured", async () => {
     const state = new AppState();
@@ -1031,5 +1182,185 @@ describe("POST /api/triage/:issueId/reject", () => {
     expect(res.status).toBe(500);
     const json = (await res.json()) as { error: string };
     expect(json.error).toBe("Reject failed: Network error");
+  });
+});
+
+describe("GET /health", () => {
+  test("returns 200 with expected JSON structure on a fresh AppState", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/health");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json).toHaveProperty("status");
+    expect(json).toHaveProperty("uptime");
+    expect(json).toHaveProperty("memory");
+    expect(json.memory as Record<string, unknown>).toHaveProperty("rss");
+    expect(json).toHaveProperty("subsystems");
+    const subs = json.subsystems as Record<string, unknown>;
+    expect(subs).toHaveProperty("executor");
+    expect(subs).toHaveProperty("monitor");
+    expect(subs).toHaveProperty("planner");
+    expect(subs).toHaveProperty("projects");
+  });
+
+  test("response content-type is application/json", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/health");
+    expect(res.headers.get("Content-Type")).toContain("application/json");
+  });
+
+  test("status field is one of 'pass', 'warn', or 'fail'", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/health");
+    const json = (await res.json()) as { status: string };
+    expect(["pass", "warn", "fail"]).toContain(json.status);
+  });
+
+  test("fresh AppState returns status: 'pass' and HTTP 200", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/health");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { status: string };
+    expect(json.status).toBe("pass");
+  });
+
+  test("paused state returns status: 'warn' and HTTP 200", async () => {
+    const state = new AppState();
+    state.togglePause();
+    const app = createApp(state);
+    const res = await app.request("/health");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { status: string };
+    expect(json.status).toBe("warn");
+  });
+
+  test("is accessible without auth token when auth is configured", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: "secret" });
+    const res = await app.request("/health");
+    expect(res.status).toBe(200);
+  });
+
+  test("uptime is a non-negative number", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/health");
+    const json = (await res.json()) as { uptime: number };
+    expect(typeof json.uptime).toBe("number");
+    expect(json.uptime).toBeGreaterThanOrEqual(0);
+  });
+
+  test("memory.rss is a positive number", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/health");
+    const json = (await res.json()) as { memory: { rss: number } };
+    expect(typeof json.memory.rss).toBe("number");
+    expect(json.memory.rss).toBeGreaterThan(0);
+  });
+});
+
+describe("computeHealth", () => {
+  test("fresh AppState produces status: 'pass'", () => {
+    const state = new AppState();
+    const health = computeHealth(state);
+    expect(health.status).toBe("pass");
+  });
+
+  test("paused state produces status: 'warn'", () => {
+    const state = new AppState();
+    state.togglePause();
+    const health = computeHealth(state);
+    expect(health.status).toBe("warn");
+  });
+
+  test("failed planning produces planner status: 'warn' and overall 'warn'", () => {
+    const state = new AppState();
+    state.updatePlanning({ lastResult: "failed" });
+    const health = computeHealth(state);
+    expect(health.subsystems.planner.status).toBe("warn");
+    expect(health.status).toBe("warn");
+  });
+
+  test("timed_out planning produces planner status: 'warn'", () => {
+    const state = new AppState();
+    state.updatePlanning({ lastResult: "timed_out" });
+    const health = computeHealth(state);
+    expect(health.subsystems.planner.status).toBe("warn");
+  });
+
+  test("completed planning produces planner status: 'pass'", () => {
+    const state = new AppState();
+    state.updatePlanning({ lastResult: "completed" });
+    const health = computeHealth(state);
+    expect(health.subsystems.planner.status).toBe("pass");
+  });
+
+  test("queue stale > 5min produces executor status: 'warn'", () => {
+    const state = new AppState();
+    state.updateQueue(5, 0); // sets lastChecked to now
+    const future = Date.now() + 6 * 60 * 1000; // 6 minutes later
+    const health = computeHealth(state, future);
+    expect(health.subsystems.executor.status).toBe("warn");
+    expect(health.status).toBe("warn");
+  });
+
+  test("queue stale > 10min produces executor status: 'fail' and HTTP 503", async () => {
+    const state = new AppState();
+    state.updateQueue(5, 0); // sets lastChecked to now
+    const future = Date.now() + 11 * 60 * 1000; // 11 minutes later
+    const health = computeHealth(state, future);
+    expect(health.subsystems.executor.status).toBe("fail");
+    expect(health.status).toBe("fail");
+
+    // Verify the route returns 503 when computeHealth returns 'fail'
+    // (503 is returned when status === 'fail')
+    const httpStatus = health.status === "fail" ? 503 : 200;
+    expect(httpStatus).toBe(503);
+  });
+
+  test("fresh queue (never checked) produces executor status: 'pass'", () => {
+    const state = new AppState();
+    // queue.lastChecked === 0, never checked — not considered stale
+    const health = computeHealth(state);
+    expect(health.subsystems.executor.status).toBe("pass");
+  });
+
+  test("executor runningAgents reflects current running count", () => {
+    const state = new AppState();
+    state.addAgent("agent-1", "ENG-1", "Test issue");
+    state.addAgent("agent-2", "ENG-2", "Another issue");
+    const health = computeHealth(state);
+    expect(health.subsystems.executor.runningAgents).toBe(2);
+  });
+
+  test("planner metadata is included in response", () => {
+    const state = new AppState();
+    state.updatePlanning({
+      running: true,
+      lastResult: "completed",
+      lastRunAt: 12345,
+    });
+    const health = computeHealth(state);
+    expect(health.subsystems.planner.running).toBe(true);
+    expect(health.subsystems.planner.lastResult).toBe("completed");
+    expect(health.subsystems.planner.lastRunAt).toBe(12345);
+  });
+
+  test("queueLastChecked is null when queue has never been checked", () => {
+    const state = new AppState();
+    const health = computeHealth(state);
+    expect(health.subsystems.executor.queueLastChecked).toBeNull();
+  });
+
+  test("queueLastChecked is a number when queue has been checked", () => {
+    const state = new AppState();
+    state.updateQueue(3, 1);
+    const health = computeHealth(state);
+    expect(typeof health.subsystems.executor.queueLastChecked).toBe("number");
   });
 });

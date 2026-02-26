@@ -8,7 +8,7 @@
 
 import { resolve } from "node:path";
 import { RatelimitedLinearError } from "@linear/sdk";
-import { fillSlots } from "./executor";
+import { fillSlots, recoverStaleIssues } from "./executor";
 import { closeAllAgents } from "./lib/claude";
 import { loadConfig, resolveProjectPath } from "./lib/config";
 import { openDb, pruneActivityLogs } from "./lib/db";
@@ -18,6 +18,7 @@ import { getTriageIssues, resolveLinearIds, updateIssue } from "./lib/linear";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
 import { sanitizeMessage } from "./lib/sanitize";
 import { WebhookTrigger } from "./lib/webhooks";
+import { sweepWorktrees } from "./lib/worktree";
 import { checkOpenPRs } from "./monitor";
 import { runPlanning, shouldRunPlanning } from "./planner";
 import { checkProjects } from "./projects";
@@ -288,6 +289,10 @@ let lastProjectsCheckAt = 0;
 
 let consecutiveFailures = 0;
 
+// Sweep stale worktrees left behind by previous crashed runs.
+// No agents are running yet, so every worktree found is stale.
+await sweepWorktrees(projectPath, new Set());
+
 info("Starting main loop (Ctrl+C to stop)...");
 console.log();
 
@@ -300,33 +305,58 @@ while (!shuttingDown) {
 
     if (shuttingDown) break;
 
-    // Check open PRs and spawn fixers for failures/conflicts
-    const fixerPromises = await checkOpenPRs({
-      owner: ghOwner,
-      repo: ghRepo,
-      config,
-      projectPath,
-      linearIds,
-      state,
-      shutdownSignal: shutdownController.signal,
-    });
-    for (const p of fixerPromises) {
-      const tracked = p.finally(() => running.delete(tracked));
-      running.add(tracked);
+    // Recover stale In Progress issues before filling slots
+    await recoverStaleIssues({ config, linearIds, state });
+
+    // Run monitor and executor concurrently. fillSlots may read a slightly
+    // lower running count if checkOpenPRs has not yet registered its fixers
+    // (it is still fetching attachments), but transient over-allocation by
+    // 1-2 agents is accepted as harmless. Promise.allSettled ensures a failure
+    // in one subsystem does not prevent the other from running.
+    const [monitorResult, executorResult] = await Promise.allSettled([
+      checkOpenPRs({
+        owner: ghOwner,
+        repo: ghRepo,
+        config,
+        projectPath,
+        linearIds,
+        state,
+        shutdownSignal: shutdownController.signal,
+      }),
+      fillSlots({
+        config,
+        projectPath,
+        linearIds,
+        state,
+        shutdownSignal: shutdownController.signal,
+      }),
+    ]);
+
+    if (monitorResult.status === "fulfilled") {
+      for (const p of monitorResult.value) {
+        const tracked = p.finally(() => running.delete(tracked));
+        running.add(tracked);
+      }
+    } else {
+      const msg =
+        monitorResult.reason instanceof Error
+          ? monitorResult.reason.message
+          : String(monitorResult.reason);
+      warn(`Monitor error: ${msg}`);
     }
 
-    // Fill executor slots
-    const newPromises = await fillSlots({
-      config,
-      projectPath,
-      linearIds,
-      state,
-      shutdownSignal: shutdownController.signal,
-    });
-    for (const p of newPromises) {
-      // Each promise self-removes from the set when it settles
-      const tracked = p.finally(() => running.delete(tracked));
-      running.add(tracked);
+    if (executorResult.status === "fulfilled") {
+      for (const p of executorResult.value) {
+        // Each promise self-removes from the set when it settles
+        const tracked = p.finally(() => running.delete(tracked));
+        running.add(tracked);
+      }
+    } else {
+      const msg =
+        executorResult.reason instanceof Error
+          ? executorResult.reason.message
+          : String(executorResult.reason);
+      warn(`Executor error: ${msg}`);
     }
 
     // Check planning (counts against parallel limit)

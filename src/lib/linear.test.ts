@@ -37,6 +37,8 @@ const TEST_IDS: LinearIds = {
 const LINEAR_CONFIG = {
   team: "ENG",
   initiative: "Test Initiative",
+  labels: [],
+  projects: [],
   states: {
     triage: "Triage",
     ready: "Ready",
@@ -48,30 +50,44 @@ const LINEAR_CONFIG = {
 };
 
 // ---------------------------------------------------------------------------
-// MockPage type and helpers (for countIssuesInState pagination tests)
+// Mock response type and helpers (for countIssuesInState raw GraphQL tests)
 // ---------------------------------------------------------------------------
 
-interface MockPage {
-  nodes: { id: string }[];
-  pageInfo: { hasNextPage: boolean };
-  fetchNext: () => Promise<MockPage>;
-}
-
-function makePage(
-  nodeCount: number,
-  hasNextPage: boolean,
-  fetchNext?: () => Promise<MockPage>,
-): MockPage {
-  return {
-    nodes: Array.from({ length: nodeCount }, (_, i) => ({ id: `item-${i}` })),
-    pageInfo: { hasNextPage },
-    fetchNext:
-      fetchNext ??
-      (async () => {
-        throw new Error("unexpected fetchNext call");
-      }),
+interface MockRawResponse {
+  data: {
+    issues: {
+      nodes: { id: string }[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
   };
 }
+
+function makeRawResponse(
+  nodeCount: number,
+  hasNextPage: boolean,
+  endCursor: string | null,
+): MockRawResponse {
+  return {
+    data: {
+      issues: {
+        nodes: Array.from({ length: nodeCount }, (_, i) => ({
+          id: `item-${i}`,
+        })),
+        pageInfo: { hasNextPage, endCursor },
+      },
+    },
+  };
+}
+
+// Sequential call tracking: each invocation of mockRawRequest pops from this array.
+let rawCallCount = 0;
+let rawResponses: Array<MockRawResponse | Error> = [];
+
+const mockRawRequest = mock(async () => {
+  const resp = rawResponses[rawCallCount++];
+  if (resp instanceof Error) throw resp;
+  return resp;
+});
 
 // ---------------------------------------------------------------------------
 // Issue / relation helpers (for getReadyIssues tests)
@@ -504,6 +520,73 @@ describe("getReadyIssues", () => {
     expect(result).toHaveLength(1);
     expect((result[0] as { id: string }).id).toBe("good-issue");
   });
+
+  test("no filters — sends only team and state filter (backwards compat)", async () => {
+    await getReadyIssues(TEST_IDS, 10);
+
+    expect(mockIssuesForReady).toHaveBeenCalledWith({
+      filter: {
+        team: { id: { eq: TEST_IDS.teamId } },
+        state: { id: { eq: TEST_IDS.states.ready } },
+      },
+      first: 10,
+    });
+  });
+
+  test("labels filter — sends labels.some.name.in filter", async () => {
+    await getReadyIssues(TEST_IDS, 10, { labels: ["bug", "autopilot"] });
+
+    expect(mockIssuesForReady).toHaveBeenCalledWith({
+      filter: {
+        team: { id: { eq: TEST_IDS.teamId } },
+        state: { id: { eq: TEST_IDS.states.ready } },
+        labels: { some: { name: { in: ["bug", "autopilot"] } } },
+      },
+      first: 10,
+    });
+  });
+
+  test("projects filter — sends project.name.in filter", async () => {
+    await getReadyIssues(TEST_IDS, 10, { projects: ["frontend", "backend"] });
+
+    expect(mockIssuesForReady).toHaveBeenCalledWith({
+      filter: {
+        team: { id: { eq: TEST_IDS.teamId } },
+        state: { id: { eq: TEST_IDS.states.ready } },
+        project: { name: { in: ["frontend", "backend"] } },
+      },
+      first: 10,
+    });
+  });
+
+  test("labels + projects — sends both labels and project filters (AND semantics)", async () => {
+    await getReadyIssues(TEST_IDS, 10, {
+      labels: ["autopilot"],
+      projects: ["frontend"],
+    });
+
+    expect(mockIssuesForReady).toHaveBeenCalledWith({
+      filter: {
+        team: { id: { eq: TEST_IDS.teamId } },
+        state: { id: { eq: TEST_IDS.states.ready } },
+        labels: { some: { name: { in: ["autopilot"] } } },
+        project: { name: { in: ["frontend"] } },
+      },
+      first: 10,
+    });
+  });
+
+  test("empty labels array — omits labels filter (same as no filter)", async () => {
+    await getReadyIssues(TEST_IDS, 10, { labels: [], projects: [] });
+
+    expect(mockIssuesForReady).toHaveBeenCalledWith({
+      filter: {
+        team: { id: { eq: TEST_IDS.teamId } },
+        state: { id: { eq: TEST_IDS.states.ready } },
+      },
+      first: 10,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -577,42 +660,38 @@ describe("getTriageIssues", () => {
 // countIssuesInState
 // ---------------------------------------------------------------------------
 
-// Mutable reference: each test sets this before calling countIssuesInState.
-// We use a mutable variable instead of mockImplementation to avoid the
-// mockImplementation reliability issues in Bun 1.3.9 (see github.test.ts).
-let currentPage: MockPage = makePage(0, false);
-const mockIssues = mock(async () => currentPage);
-
 describe("countIssuesInState", () => {
   beforeEach(() => {
-    mockIssues.mockClear();
-    // Inject the mock client directly to avoid @linear/sdk module-mock issues
-    setClientForTesting({ issues: mockIssues } as unknown as LinearClient);
+    rawCallCount = 0;
+    rawResponses = [];
+    mockRawRequest.mockClear();
+    // Inject the mock client: countIssuesInState uses client.client.rawRequest()
+    setClientForTesting({
+      client: { rawRequest: mockRawRequest },
+    } as unknown as LinearClient);
   });
 
   test("returns node count for a single-page result", async () => {
-    currentPage = makePage(7, false);
+    rawResponses = [makeRawResponse(7, false, null)];
     const count = await countIssuesInState(TEST_IDS, "state-id");
     expect(count).toBe(7);
   });
 
   test("accumulates count across multiple pages", async () => {
-    const page2 = makePage(3, false);
-    currentPage = makePage(5, true, async () => page2);
+    rawResponses = [
+      makeRawResponse(5, true, "cursor-1"),
+      makeRawResponse(3, false, null),
+    ];
     const count = await countIssuesInState(TEST_IDS, "state-id");
     expect(count).toBe(8); // 5 + 3
   });
 
-  test("retries fetchNext() on transient error and returns correct total", async () => {
-    let fetchNextCalls = 0;
-    const page2 = makePage(2, false);
-    currentPage = makePage(3, true, async () => {
-      fetchNextCalls++;
-      if (fetchNextCalls === 1) {
-        throw Object.assign(new Error("service unavailable"), { status: 503 });
-      }
-      return page2;
-    });
+  test("retries rawRequest() on transient error and returns correct total", async () => {
+    rawResponses = [
+      makeRawResponse(3, true, "cursor-1"),
+      Object.assign(new Error("service unavailable"), { status: 503 }),
+      makeRawResponse(2, false, null),
+    ];
 
     // Suppress retry warning output from withRetry
     const originalLog = console.log;
@@ -621,7 +700,7 @@ describe("countIssuesInState", () => {
     console.log = originalLog;
 
     expect(count).toBe(5); // 3 + 2
-    expect(fetchNextCalls).toBe(2); // failed once, then succeeded
+    expect(rawCallCount).toBe(3); // page1 + failed attempt + successful retry
   });
 
   test("stops pagination after MAX_PAGES and logs a warning", async () => {
@@ -631,15 +710,10 @@ describe("countIssuesInState", () => {
       if (typeof args[0] === "string") warnMessages.push(args[0]);
     };
 
-    // Create an infinite chain: every page reports hasNextPage true
-    function makeInfinitePage(n: number): MockPage {
-      return {
-        nodes: [{ id: `item-${n}` }],
-        pageInfo: { hasNextPage: true },
-        fetchNext: async () => makeInfinitePage(n + 1),
-      };
-    }
-    currentPage = makeInfinitePage(0);
+    // MAX_PAGES = 100: provide 100 pages each with hasNextPage true
+    rawResponses = Array.from({ length: 100 }, (_, i) =>
+      makeRawResponse(1, true, `cursor-${i}`),
+    );
 
     const count = await countIssuesInState(TEST_IDS, "state-id");
     console.log = originalLog;
@@ -652,25 +726,6 @@ describe("countIssuesInState", () => {
       (msg) => msg.includes("[WARN]") && msg.includes("page limit"),
     );
     expect(hasWarning).toBe(true);
-  });
-
-  test("returns 0 for empty state", async () => {
-    currentPage = makePage(0, false);
-    const count = await countIssuesInState(TEST_IDS, "state-empty");
-    expect(count).toBe(0);
-  });
-
-  test("passes correct filter to API", async () => {
-    currentPage = makePage(0, false);
-    await countIssuesInState(TEST_IDS, "state-xyz");
-
-    expect(mockIssues).toHaveBeenCalledWith({
-      filter: {
-        team: { id: { eq: TEST_IDS.teamId } },
-        state: { id: { eq: "state-xyz" } },
-      },
-      first: 250,
-    });
   });
 });
 

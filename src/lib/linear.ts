@@ -142,10 +142,16 @@ export async function findOrCreateInitiative(
  * Get ready, unblocked leaf issues across the team, sorted by priority.
  * Queries by team (not project) so issues in dynamically-created projects
  * are visible. Skips parent issues that have children.
+ *
+ * Optional filters:
+ * - labels: only return issues matching any of these label names
+ * - projects: only return issues in any of these project names (combined with
+ *   labels via AND: issue must match both label and project)
  */
 export async function getReadyIssues(
   linearIds: LinearIds,
   limit: number = 10,
+  filters?: { labels?: string[]; projects?: string[] },
 ): Promise<Issue[]> {
   const client = getLinearClient();
 
@@ -155,6 +161,12 @@ export async function getReadyIssues(
         filter: {
           team: { id: { eq: linearIds.teamId } },
           state: { id: { eq: linearIds.states.ready } },
+          ...(filters?.labels?.length
+            ? { labels: { some: { name: { in: filters.labels } } } }
+            : {}),
+          ...(filters?.projects?.length
+            ? { project: { name: { in: filters.projects } } }
+            : {}),
         },
         first: limit,
       }),
@@ -232,6 +244,24 @@ export async function getReadyIssues(
   return leafIssues;
 }
 
+// Minimal GraphQL query to count issues — fetches only { id } per node to
+// minimize payload vs. the SDK's full Issue fragment (40+ fields).
+const COUNT_ISSUES_QUERY = `
+  query countIssues($filter: IssueFilter, $first: Int, $after: String) {
+    issues(filter: $filter, first: $first, after: $after) {
+      nodes { id }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+interface CountIssuesResponse {
+  issues: {
+    nodes: { id: string }[];
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  };
+}
+
 export async function getTriageIssues(
   linearIds: LinearIds,
   limit: number = 50,
@@ -253,44 +283,82 @@ export async function getTriageIssues(
   );
 }
 
+/**
+ * Get all In Progress issues for the team.
+ * Used by recoverStaleIssues() to find orphaned issues.
+ */
+export async function getInProgressIssues(
+  linearIds: LinearIds,
+  limit: number = 50,
+): Promise<Issue[]> {
+  const client = getLinearClient();
+  const result = await withRetry(
+    () =>
+      client.issues({
+        filter: {
+          team: { id: { eq: linearIds.teamId } },
+          state: { id: { eq: linearIds.states.in_progress } },
+        },
+        first: limit,
+      }),
+    "getInProgressIssues",
+  );
+  return [...result.nodes];
+}
+
 const MAX_PAGES = 100;
 
 /**
  * Count issues in a given state across the team.
+ * Uses a raw GraphQL query to fetch only { id } per node, reducing payload
+ * by ~95% vs the SDK's full Issue fragment.
  */
 export async function countIssuesInState(
   linearIds: LinearIds,
   stateId: string,
 ): Promise<number> {
   const client = getLinearClient();
-  let result = await withRetry(
-    () =>
-      client.issues({
-        filter: {
-          team: { id: { eq: linearIds.teamId } },
-          state: { id: { eq: stateId } },
-        },
-        first: 250,
-      }),
-    "countIssuesInState",
-  );
+  const filter = {
+    team: { id: { eq: linearIds.teamId } },
+    state: { id: { eq: stateId } },
+  };
 
-  let count = result.nodes.length;
-  let pages = 1;
+  let count = 0;
+  let pages = 0;
+  let after: string | null = null;
 
-  while (result.pageInfo.hasNextPage) {
+  while (true) {
     if (pages >= MAX_PAGES) {
       warn(
         `countIssuesInState: reached ${MAX_PAGES} page limit, returning partial count`,
       );
       break;
     }
-    result = await withRetry(
-      () => result.fetchNext(),
-      "countIssuesInState (pagination)",
+
+    const response = await withRetry(
+      () =>
+        client.client.rawRequest<CountIssuesResponse, Record<string, unknown>>(
+          COUNT_ISSUES_QUERY,
+          {
+            filter,
+            first: 250,
+            after,
+          },
+        ),
+      pages === 0 ? "countIssuesInState" : "countIssuesInState (pagination)",
     );
-    count += result.nodes.length;
+
+    const issuesData = response.data?.issues;
+    if (!issuesData) break;
+    const { nodes, pageInfo } = issuesData;
+    count += nodes.length;
     pages++;
+
+    if (pageInfo.hasNextPage && pageInfo.endCursor) {
+      after = pageInfo.endCursor;
+    } else {
+      break;
+    }
   }
 
   return count;

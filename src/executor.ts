@@ -1,7 +1,12 @@
 import { handleAgentResult } from "./lib/agent-result";
 import { buildMcpServers, runClaude } from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
-import { getReadyIssues, updateIssue, validateIdentifier } from "./lib/linear";
+import {
+  getInProgressIssues,
+  getReadyIssues,
+  updateIssue,
+  validateIdentifier,
+} from "./lib/linear";
 import { info, warn } from "./lib/logger";
 import { buildPrompt } from "./lib/prompt";
 import { sanitizeMessage } from "./lib/sanitize";
@@ -106,9 +111,58 @@ export async function executeIssue(opts: {
 
     state.clearIssueFailures(issue.id);
     return true;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    warn(`Executor agent for ${issue.identifier} crashed: ${msg}`);
+    state.completeAgent(agentId, "failed", { error: msg });
+    return false;
   } finally {
     activeIssueIds.delete(issue.id);
   }
+}
+
+/**
+ * Detect In Progress issues with no running agent and move them back to Ready.
+ * Catches crashes, OOM kills, and other scenarios where graceful shutdown didn't run.
+ * Returns the count of recovered issues.
+ */
+export async function recoverStaleIssues(opts: {
+  config: AutopilotConfig;
+  linearIds: LinearIds;
+  state: AppState;
+}): Promise<number> {
+  const { config, linearIds, state } = opts;
+
+  const inProgressIssues = await getInProgressIssues(linearIds);
+  if (inProgressIssues.length === 0) return 0;
+
+  const activeIds = new Set(
+    state
+      .getRunningAgents()
+      .map((a) => a.linearIssueId)
+      .filter(Boolean),
+  );
+
+  const staleMs = config.executor.stale_timeout_minutes * 60 * 1000;
+  let recovered = 0;
+
+  for (const issue of inProgressIssues) {
+    if (activeIds.has(issue.id)) continue;
+
+    const age = Date.now() - new Date(issue.updatedAt).getTime();
+    if (age < staleMs) continue;
+
+    info(
+      `Recovering stale issue ${issue.identifier} (In Progress with no active agent for >${config.executor.stale_timeout_minutes}m)`,
+    );
+    await updateIssue(issue.id, {
+      stateId: linearIds.states.ready,
+      comment: `Autopilot detected this issue as stale (In Progress with no active agent for >${config.executor.stale_timeout_minutes} minutes). Moving back to Ready for re-execution.`,
+    });
+    recovered++;
+  }
+
+  return recovered;
 }
 
 /**
@@ -147,6 +201,10 @@ export async function fillSlots(opts: {
   const allReady = await getReadyIssues(
     linearIds,
     available + activeIssueIds.size,
+    {
+      labels: config.linear.labels,
+      projects: config.linear.projects,
+    },
   );
   const issues = allReady.filter((i) => !activeIssueIds.has(i.id));
 

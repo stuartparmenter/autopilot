@@ -143,6 +143,102 @@ function loginPage(error?: string): string {
 </html>`;
 }
 
+type HealthStatus = "pass" | "warn" | "fail";
+
+export interface HealthResponse {
+  status: HealthStatus;
+  uptime: number;
+  memory: { rss: number };
+  subsystems: {
+    executor: {
+      status: HealthStatus;
+      runningAgents: number;
+      queueLastChecked: number | null;
+    };
+    monitor: { status: HealthStatus };
+    planner: {
+      status: HealthStatus;
+      running: boolean;
+      lastResult: string | null;
+      lastRunAt: number | null;
+    };
+    projects: { status: HealthStatus };
+  };
+}
+
+const QUEUE_WARN_MS = 5 * 60 * 1000;
+const QUEUE_FAIL_MS = 10 * 60 * 1000;
+
+export function computeHealth(
+  state: AppState,
+  now = Date.now(),
+): HealthResponse {
+  const snap = state.toJSON();
+  const uptimeSeconds = Math.floor((now - state.startedAt) / 1000);
+  const mem = process.memoryUsage();
+
+  let executorStatus: HealthStatus = "pass";
+  if (snap.queue.lastChecked > 0) {
+    const queueAge = now - snap.queue.lastChecked;
+    if (queueAge > QUEUE_FAIL_MS) {
+      executorStatus = "fail";
+    } else if (queueAge > QUEUE_WARN_MS) {
+      executorStatus = "warn";
+    }
+  }
+
+  const monitorStatus: HealthStatus = executorStatus;
+
+  const plannerStatus: HealthStatus =
+    snap.planning.lastResult === "failed" ||
+    snap.planning.lastResult === "timed_out"
+      ? "warn"
+      : "pass";
+
+  const projectsStatus: HealthStatus = "pass";
+
+  const allStatuses: HealthStatus[] = [
+    executorStatus,
+    monitorStatus,
+    plannerStatus,
+    projectsStatus,
+  ];
+  let overallStatus: HealthStatus;
+  if (allStatuses.includes("fail")) {
+    overallStatus = "fail";
+  } else if (allStatuses.includes("warn") || snap.paused) {
+    overallStatus = "warn";
+  } else {
+    overallStatus = "pass";
+  }
+
+  return {
+    status: overallStatus,
+    uptime: uptimeSeconds,
+    memory: { rss: mem.rss },
+    subsystems: {
+      executor: {
+        status: executorStatus,
+        runningAgents: state.getRunningCount(),
+        queueLastChecked:
+          snap.queue.lastChecked > 0 ? snap.queue.lastChecked : null,
+      },
+      monitor: {
+        status: monitorStatus,
+      },
+      planner: {
+        status: plannerStatus,
+        running: snap.planning.running,
+        lastResult: snap.planning.lastResult ?? null,
+        lastRunAt: snap.planning.lastRunAt ?? null,
+      },
+      projects: {
+        status: projectsStatus,
+      },
+    },
+  };
+}
+
 export function createApp(
   state: AppState,
   options?: DashboardOptions,
@@ -159,7 +255,7 @@ export function createApp(
     const authToken = options.authToken;
 
     app.use("*", async (c, next) => {
-      if (c.req.path.startsWith("/auth/")) {
+      if (c.req.path.startsWith("/auth/") || c.req.path === "/health") {
         return next();
       }
       const authHeader = c.req.header("Authorization");
@@ -272,6 +368,12 @@ export function createApp(
                 hx-trigger="load, every 30s"
                 hx-swap="innerHTML"
               ></div>
+              <div
+                class="analytics-bar"
+                hx-get="/partials/analytics"
+                hx-trigger="load, every 30s"
+                hx-swap="innerHTML"
+              ></div>
             </header>
             <div class="layout">
               <div class="sidebar">
@@ -327,7 +429,8 @@ export function createApp(
     if (!analytics) {
       return c.json({ enabled: false });
     }
-    return c.json({ enabled: true, ...analytics });
+    const today = state.getTodayAnalytics();
+    return c.json({ enabled: true, ...analytics, ...(today ?? {}) });
   });
 
   app.get("/api/budget", (c) => {
@@ -336,6 +439,12 @@ export function createApp(
     }
     const snapshot = state.getBudgetSnapshot(options.config);
     return c.json({ enabled: true, ...snapshot });
+  });
+
+  app.get("/health", (c) => {
+    const health = computeHealth(state);
+    const httpStatus = health.status === "fail" ? 503 : 200;
+    return c.json(health, httpStatus);
   });
 
   app.post("/api/planning", (c) => {

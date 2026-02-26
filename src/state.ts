@@ -1,12 +1,14 @@
 import type { Database } from "bun:sqlite";
 import { type AutopilotConfig, DEFAULTS } from "./lib/config";
-import type { AnalyticsResult } from "./lib/db";
+import type { AnalyticsResult, TodayAnalyticsResult } from "./lib/db";
 import {
   getActivityLogs,
   getAnalytics,
   getRecentRuns,
+  getTodayAnalytics,
   insertActivityLogs,
   insertAgentRun,
+  insertConversationLog,
 } from "./lib/db";
 import { sanitizeMessage } from "./lib/sanitize";
 
@@ -42,6 +44,7 @@ export interface AgentResult {
   costUsd?: number;
   durationMs?: number;
   numTurns?: number;
+  sessionId?: string;
   error?: string;
 }
 
@@ -131,8 +134,10 @@ export class AppState {
       costUsd?: number;
       durationMs?: number;
       numTurns?: number;
+      sessionId?: string;
       error?: string;
     },
+    rawMessages?: unknown[],
   ): void {
     const agent = this.agents.get(agentId);
     if (!agent) return;
@@ -157,12 +162,16 @@ export class AppState {
       costUsd: agent.costUsd,
       durationMs: agent.durationMs,
       numTurns: agent.numTurns,
+      sessionId: meta?.sessionId,
       error: agent.error,
     };
 
     if (this.db) {
       insertAgentRun(this.db, result);
       insertActivityLogs(this.db, result.id, agent.activities);
+      if (rawMessages && rawMessages.length > 0) {
+        insertConversationLog(this.db, result.id, JSON.stringify(rawMessages));
+      }
     }
 
     if (meta?.costUsd && meta.costUsd > 0) {
@@ -222,6 +231,11 @@ export class AppState {
   getAnalytics(): AnalyticsResult | null {
     if (!this.db) return null;
     return getAnalytics(this.db);
+  }
+
+  getTodayAnalytics(): TodayAnalyticsResult | null {
+    if (!this.db) return null;
+    return getTodayAnalytics(this.db);
   }
 
   getActivityLogsForRun(agentRunId: string): ActivityEntry[] {

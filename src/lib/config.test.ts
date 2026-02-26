@@ -535,6 +535,67 @@ planning:
     expect(() => loadConfig(dir)).not.toThrow();
   });
 
+  test("executor.stale_timeout_minutes defaults to 15", () => {
+    writeFileSync(join(tmpDir, ".claude-autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.executor.stale_timeout_minutes).toBe(15);
+  });
+
+  test("executor.stale_timeout_minutes can be overridden", () => {
+    const dir = writeConfig(`
+executor:
+  stale_timeout_minutes: 30
+`);
+    const config = loadConfig(dir);
+    expect(config.executor.stale_timeout_minutes).toBe(30);
+  });
+
+  test("executor.stale_timeout_minutes throws below 5", () => {
+    const dir = writeConfig(`
+executor:
+  stale_timeout_minutes: 4
+`);
+    expect(() => loadConfig(dir)).toThrow(
+      "executor.stale_timeout_minutes must be an integer between 5 and 120",
+    );
+  });
+
+  test("executor.stale_timeout_minutes throws above 120", () => {
+    const dir = writeConfig(`
+executor:
+  stale_timeout_minutes: 121
+`);
+    expect(() => loadConfig(dir)).toThrow(
+      "executor.stale_timeout_minutes must be an integer between 5 and 120",
+    );
+  });
+
+  test("executor.stale_timeout_minutes throws for non-integer value", () => {
+    const dir = writeConfig(`
+executor:
+  stale_timeout_minutes: 10.5
+`);
+    expect(() => loadConfig(dir)).toThrow(
+      "executor.stale_timeout_minutes must be an integer between 5 and 120",
+    );
+  });
+
+  test("executor.stale_timeout_minutes accepts boundary value 5", () => {
+    const dir = writeConfig(`
+executor:
+  stale_timeout_minutes: 5
+`);
+    expect(() => loadConfig(dir)).not.toThrow();
+  });
+
+  test("executor.stale_timeout_minutes accepts boundary value 120", () => {
+    const dir = writeConfig(`
+executor:
+  stale_timeout_minutes: 120
+`);
+    expect(() => loadConfig(dir)).not.toThrow();
+  });
+
   test("all default values pass validation", () => {
     writeFileSync(join(tmpDir, ".claude-autopilot.yml"), "");
     expect(() => loadConfig(tmpDir)).not.toThrow();
@@ -743,5 +804,77 @@ planning:
     const calls = spy.mock.calls.map((c) => c.join(" "));
     expect(calls.some((msg) => msg.includes("[WARN]"))).toBe(false);
     spy.mockRestore();
+  });
+
+  test("linear.labels defaults to empty array", () => {
+    writeFileSync(join(tmpDir, ".claude-autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.linear.labels).toEqual([]);
+  });
+
+  test("linear.projects defaults to empty array", () => {
+    writeFileSync(join(tmpDir, ".claude-autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.linear.projects).toEqual([]);
+  });
+
+  test("linear.labels can be overridden", () => {
+    const dir = writeConfig(`
+linear:
+  labels:
+    - bug
+    - autopilot
+`);
+    const config = loadConfig(dir);
+    expect(config.linear.labels).toEqual(["bug", "autopilot"]);
+  });
+
+  test("linear.projects can be overridden", () => {
+    const dir = writeConfig(`
+linear:
+  projects:
+    - frontend
+    - backend
+`);
+    const config = loadConfig(dir);
+    expect(config.linear.projects).toEqual(["frontend", "backend"]);
+  });
+
+  test("linear.labels throws on empty string element", () => {
+    const dir = writeConfig(`
+linear:
+  labels:
+    - bug
+    - ""
+`);
+    expect(() => loadConfig(dir)).toThrow(
+      'linear.labels[1]" must not be an empty string',
+    );
+  });
+
+  test("linear.projects throws on empty string element", () => {
+    const dir = writeConfig(`
+linear:
+  projects:
+    - ""
+`);
+    expect(() => loadConfig(dir)).toThrow(
+      'linear.projects[0]" must not be an empty string',
+    );
+  });
+
+  test("linear.labels and linear.projects together are valid", () => {
+    const dir = writeConfig(`
+linear:
+  labels:
+    - autopilot
+  projects:
+    - frontend
+    - backend
+`);
+    expect(() => loadConfig(dir)).not.toThrow();
+    const config = loadConfig(dir);
+    expect(config.linear.labels).toEqual(["autopilot"]);
+    expect(config.linear.projects).toEqual(["frontend", "backend"]);
   });
 });

@@ -146,6 +146,8 @@ function makeConfig(
     linear: {
       team: "ENG",
       initiative: "test-initiative",
+      labels: [],
+      projects: [],
       states: {
         triage: "triage-id",
         ready: "ready-id",
@@ -163,6 +165,7 @@ function makeConfig(
       max_retries: 3,
       inactivity_timeout_minutes: 10,
       poll_interval_minutes: 5,
+      stale_timeout_minutes: 15,
       auto_approve_labels: [],
       branch_pattern: "autopilot/{{id}}",
       commit_pattern: "{{id}}: {{title}}",
@@ -861,6 +864,39 @@ describe("checkOpenPRs — budget enforcement", () => {
     await checkOpenPRs(makeOpts(state, config));
 
     expect(state.isPaused()).toBe(true);
+  });
+});
+
+describe("checkOpenPRs — runClaude throws", () => {
+  let state: AppState;
+
+  beforeEach(() => {
+    state = new AppState();
+    // CI failure so a fixer is spawned
+    prData = {
+      merged: false,
+      mergeable: null,
+      head: { ref: "feature/crash", sha: "abc123" },
+    };
+    checkRunsData = {
+      check_runs: [
+        { status: "completed", conclusion: "failure", name: "tests" },
+      ],
+    };
+  });
+
+  test("no ghost agent when runClaude rejects inside fixPR", async () => {
+    mockRunClaude.mockRejectedValue(new Error("Spawn gate error"));
+
+    const issue = makeIssue("crash-pr", "https://github.com/o/r/pull/700");
+    mockIssuesQuery.mockResolvedValue({ nodes: [issue] });
+
+    const result = await checkOpenPRs(makeOpts(state));
+    expect(result).toHaveLength(1);
+    await Promise.all(result);
+
+    expect(state.getRunningCount()).toBe(0);
+    expect(state.getHistory()[0].status).toBe("failed");
   });
 });
 
