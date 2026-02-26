@@ -30,7 +30,7 @@ export async function checkOpenPRs(opts: {
   shutdownSignal?: AbortSignal;
 }): Promise<Array<Promise<boolean>>> {
   const { owner, repo, config, linearIds, state } = opts;
-  const maxSlots = config.executor.parallel;
+  const maxSlots = state.getMaxParallel();
 
   const budgetCheck = state.checkBudget(config);
   if (!budgetCheck.ok) {
