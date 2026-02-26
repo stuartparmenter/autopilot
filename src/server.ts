@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
@@ -30,11 +30,10 @@ export interface DashboardOptions {
   config?: AutopilotConfig;
 }
 
-function safeCompare(a: string, b: string): boolean {
-  const aBytes = Buffer.from(a);
-  const bBytes = Buffer.from(b);
-  if (aBytes.length !== bBytes.length) return false;
-  return timingSafeEqual(aBytes, bBytes);
+export function safeCompare(a: string, b: string): boolean {
+  const aHash = createHash("sha256").update(a).digest();
+  const bHash = createHash("sha256").update(b).digest();
+  return timingSafeEqual(aHash, bHash);
 }
 
 function loginPage(error?: string): string {
