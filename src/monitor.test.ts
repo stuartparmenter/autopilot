@@ -165,6 +165,7 @@ function makeConfig(
       model: "opus",
     },
     github: { repo: "", automerge: false },
+    project: { name: "" },
     persistence: {
       enabled: false,
       db_path: ".claude/autopilot.db",
