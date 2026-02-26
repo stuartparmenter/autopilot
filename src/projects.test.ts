@@ -93,6 +93,7 @@ function makeConfig(): AutopilotConfig {
       branch_pattern: "autopilot/{{id}}",
       commit_pattern: "{{id}}: {{title}}",
       model: "sonnet",
+      stale_timeout_minutes: 15,
     },
     planning: {
       schedule: "when_idle",

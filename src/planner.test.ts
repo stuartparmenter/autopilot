@@ -98,6 +98,7 @@ function makeConfig(): AutopilotConfig {
       model: "sonnet",
       max_retries: 3,
       poll_interval_minutes: 5,
+      stale_timeout_minutes: 15,
     },
     planning: {
       schedule: "when_idle",
