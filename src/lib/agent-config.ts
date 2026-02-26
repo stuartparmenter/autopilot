@@ -90,16 +90,28 @@ export function buildMcpServers(linearToken?: string): Record<string, unknown> {
   };
 }
 
+/** Vars agent subprocesses actually need. Intentionally short. */
+const AGENT_ENV_ALLOWLIST = [
+  "HOME",
+  "PATH",
+  "SSH_AUTH_SOCK",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_API_KEY",
+];
+
 /**
- * Build env overrides for agent subprocesses.
- * Intentionally tight — only vars the SDK won't have from natural
- * process.env inheritance. TMPDIR overrides for sandbox isolation
- * are layered on top in runClaude() when sandbox is enabled.
+ * Build the env for agent subprocesses.
+ * The SDK's `env` option replaces process.env entirely (not a merge),
+ * so we pass only what agents need plus our feature flag.
  */
 export function buildAgentEnv(): Record<string, string> {
-  return {
-    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
-  };
+  const env: Record<string, string> = {};
+  for (const key of AGENT_ENV_ALLOWLIST) {
+    const val = process.env[key];
+    if (val !== undefined) env[key] = val;
+  }
+  env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
+  return env;
 }
 
 export function buildSandboxConfig(
