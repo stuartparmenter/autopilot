@@ -220,7 +220,7 @@ export async function runClaude(opts: {
       // SessionStart hook reads it and writes the correct TMPDIR to CLAUDE_ENV_FILE.
       agentTmpDir = mkdtempSync(join(tmpdir(), "claude-agent-"));
       queryOpts.env = {
-        ...process.env,
+        ...(queryOpts.env as Record<string, string>),
         TMPDIR: agentTmpDir,
         CLAUDE_CODE_TMPDIR: agentTmpDir,
         AUTOPILOT_TMPDIR: agentTmpDir,
