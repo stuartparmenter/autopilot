@@ -1,7 +1,21 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
 import type { ClaudeResult } from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
+import * as _realLinear from "./lib/linear";
 import { AppState } from "./state";
+
+// Snapshot of real linear module exports, captured before any mock.module()
+// calls. Used in afterAll to restore the module for subsequent test files,
+// because mock.restore() does not undo mock.module() in Bun 1.3.9.
+const _realLinearSnapshot = { ..._realLinear };
 
 // ---------------------------------------------------------------------------
 // Mock functions — created once, re-wired per test via beforeEach
@@ -31,8 +45,14 @@ const mockGetReadyIssues = mock(
   ): Promise<Array<{ id: string; identifier: string; title: string }>> =>
     Promise.resolve([]),
 );
+const mockGetInProgressIssues = mock(
+  (
+    _linearIds: LinearIds,
+  ): Promise<Array<{ id: string; identifier: string; updatedAt: Date }>> =>
+    Promise.resolve([]),
+);
 
-import { executeIssue, fillSlots } from "./executor";
+import { executeIssue, fillSlots, recoverStaleIssues } from "./executor";
 
 // Wire module mocks before each test and restore afterwards to prevent
 // leaking into other test files in Bun's single-process test runner.
@@ -46,6 +66,7 @@ beforeEach(() => {
   mock.module("./lib/linear", () => ({
     updateIssue: mockUpdateIssue,
     getReadyIssues: mockGetReadyIssues,
+    getInProgressIssues: mockGetInProgressIssues,
     validateIdentifier: () => {},
   }));
 });
@@ -60,7 +81,9 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
   return {
     linear: {
       team: "ENG",
-      project: "test-project",
+      initiative: "",
+      labels: [],
+      projects: [],
       states: {
         triage: "triage-id",
         ready: "ready-id",
@@ -73,34 +96,53 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
     executor: {
       parallel: parallelSlots,
       timeout_minutes: 30,
+      fixer_timeout_minutes: 20,
+      max_fixer_attempts: 3,
       max_retries: 3,
       inactivity_timeout_minutes: 10,
       poll_interval_minutes: 5,
+      stale_timeout_minutes: 15,
       auto_approve_labels: [],
       branch_pattern: "autopilot/{{id}}",
       commit_pattern: "{{id}}: {{title}}",
       model: "sonnet",
-      planning_model: "opus",
     },
-    auditor: {
+    planning: {
       schedule: "when_idle",
       min_ready_threshold: 5,
-      max_issues_per_run: 10,
-      use_agent_teams: false,
-      skip_triage: true,
-      scan_dimensions: [],
-      brainstorm_features: true,
-      brainstorm_dimensions: [],
-      max_ideas_per_run: 5,
+      min_interval_minutes: 60,
+      max_issues_per_run: 5,
+      timeout_minutes: 90,
+      model: "opus",
+    },
+    projects: {
+      enabled: true,
+      poll_interval_minutes: 10,
+      max_active_projects: 5,
+      timeout_minutes: 60,
+      model: "opus",
+    },
+    monitor: {
+      respond_to_reviews: false,
+      review_responder_timeout_minutes: 20,
     },
     github: { repo: "", automerge: false },
-    project: { name: "test-project" },
-    persistence: { enabled: false, db_path: ".claude/autopilot.db" },
+    persistence: {
+      enabled: false,
+      db_path: ".claude/autopilot.db",
+      retention_days: 30,
+    },
     sandbox: {
       enabled: true,
       auto_allow_bash: true,
       network_restricted: false,
       extra_allowed_domains: [],
+    },
+    budget: {
+      daily_limit_usd: 0,
+      monthly_limit_usd: 0,
+      per_agent_limit_usd: 0,
+      warn_at_percent: 80,
     },
   };
 }
@@ -109,8 +151,6 @@ function makeLinearIds(): LinearIds {
   return {
     teamId: "team-id",
     teamKey: "ENG",
-    projectId: "project-id",
-    projectName: "test-project",
     states: {
       triage: "triage-id",
       ready: "ready-id",
@@ -299,6 +339,88 @@ describe("executeIssue — timeout path", () => {
   });
 });
 
+describe("executeIssue — inactivity timeout path", () => {
+  let state: AppState;
+
+  beforeEach(() => {
+    state = new AppState();
+    mockRunClaude.mockResolvedValue({
+      timedOut: true,
+      inactivityTimedOut: true,
+      error: "Inactivity timeout",
+      costUsd: undefined,
+      durationMs: 1800000,
+      numTurns: 10,
+      result: "",
+    });
+    mockUpdateIssue.mockResolvedValue(undefined);
+  });
+
+  test("moves issue to ready state on inactivity timeout (not blocked)", async () => {
+    mockUpdateIssue.mockClear();
+
+    await executeIssue({
+      issue: makeIssue(),
+      config: makeConfig(),
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    const readyCall = mockUpdateIssue.mock.calls.find(
+      (call) => call[1]?.stateId === "ready-id",
+    );
+    expect(readyCall).toBeDefined();
+    const blockedCall = mockUpdateIssue.mock.calls.find(
+      (call) => call[1]?.stateId === "blocked-id",
+    );
+    expect(blockedCall).toBeUndefined();
+  });
+});
+
+describe("executeIssue — token sanitization in Linear comment", () => {
+  let state: AppState;
+
+  beforeEach(() => {
+    state = new AppState();
+    mockUpdateIssue.mockResolvedValue(undefined);
+  });
+
+  test("redacts tokens in error before posting to Linear", async () => {
+    mockRunClaude.mockResolvedValue({
+      timedOut: false,
+      inactivityTimedOut: false,
+      error: "Failed: Bearer sk-ant-secret123 and ghp_mygithubtoken",
+      costUsd: undefined,
+      durationMs: 500,
+      numTurns: 1,
+      result: "",
+    });
+
+    const issue = makeIssue();
+    const config = makeConfig();
+    // Force max_retries = 1 so the blocked comment is posted on first failure
+    config.executor.max_retries = 1;
+
+    mockUpdateIssue.mockClear();
+    await executeIssue({
+      issue,
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    const blockedCall = mockUpdateIssue.mock.calls.find(
+      (call) => call[1]?.stateId === "blocked-id",
+    );
+    const comment: string = blockedCall?.[1]?.comment ?? "";
+    expect(comment).not.toContain("sk-ant-secret123");
+    expect(comment).not.toContain("mygithubtoken");
+    expect(comment).toContain("[REDACTED]");
+  });
+});
+
 describe("executeIssue — error path", () => {
   let state: AppState;
 
@@ -354,6 +476,30 @@ describe("executeIssue — error path", () => {
       state,
     });
 
+    expect(state.getHistory()[0].status).toBe("failed");
+  });
+});
+
+describe("executeIssue — runClaude throws", () => {
+  let state: AppState;
+
+  beforeEach(() => {
+    state = new AppState();
+    mockUpdateIssue.mockResolvedValue(undefined);
+  });
+
+  test("no ghost agent when runClaude rejects", async () => {
+    mockRunClaude.mockRejectedValue(new Error("Worktree creation failed"));
+
+    await executeIssue({
+      issue: makeIssue(),
+      config: makeConfig(),
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(state.getRunningCount()).toBe(0);
     expect(state.getHistory()[0].status).toBe("failed");
   });
 });
@@ -452,6 +598,72 @@ describe("fillSlots", () => {
     expect(calledWith[1]).toBeGreaterThanOrEqual(3);
   });
 
+  test("returns empty array when budget is exhausted", async () => {
+    state.addSpend(10); // $10 spent
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5; // $5 limit — exhausted
+
+    const promises = await fillSlots({
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(promises).toHaveLength(0);
+  });
+
+  test("auto-pauses when budget is exhausted", async () => {
+    state.addSpend(10);
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    expect(state.isPaused()).toBe(false);
+
+    await fillSlots({
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(state.isPaused()).toBe(true);
+  });
+
+  test("does not double-pause when already paused and budget is exhausted", async () => {
+    state.addSpend(10);
+    state.togglePause(); // already paused
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    await fillSlots({
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    // togglePause flips the flag — calling it again would un-pause. It should NOT be called.
+    expect(state.isPaused()).toBe(true);
+  });
+
+  test("does not query Linear when budget is exhausted", async () => {
+    state.addSpend(10);
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    mockGetReadyIssues.mockClear();
+
+    await fillSlots({
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(mockGetReadyIssues).not.toHaveBeenCalled();
+  });
+
   test("filters out issues already being executed", async () => {
     const activeIssue = makeIssue();
     const freshIssue = makeIssue();
@@ -508,4 +720,153 @@ describe("fillSlots", () => {
 
     await Promise.allSettled([...promises.map((p) => p), execPromise]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// recoverStaleIssues
+// ---------------------------------------------------------------------------
+
+describe("recoverStaleIssues", () => {
+  let state: AppState;
+
+  beforeEach(() => {
+    state = new AppState();
+    mockUpdateIssue.mockClear();
+    mockUpdateIssue.mockResolvedValue(undefined);
+    mockGetInProgressIssues.mockClear();
+    mockGetInProgressIssues.mockResolvedValue([]);
+  });
+
+  function staleIssue(id: string, identifier: string, ageMs = 20 * 60 * 1000) {
+    return {
+      id,
+      identifier,
+      updatedAt: new Date(Date.now() - ageMs),
+    };
+  }
+
+  test("returns 0 when there are no In Progress issues", async () => {
+    mockGetInProgressIssues.mockResolvedValue([]);
+    const count = await recoverStaleIssues({
+      config: makeConfig(),
+      linearIds: makeLinearIds(),
+      state,
+    });
+    expect(count).toBe(0);
+  });
+
+  test("recovers a stale issue with no running agent", async () => {
+    mockGetInProgressIssues.mockResolvedValue([
+      staleIssue("issue-stale-1", "ENG-stale-1"),
+    ]);
+
+    const count = await recoverStaleIssues({
+      config: makeConfig(),
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(count).toBe(1);
+    expect(mockUpdateIssue).toHaveBeenCalledWith("issue-stale-1", {
+      stateId: "ready-id",
+      comment: expect.stringContaining("stale"),
+    });
+  });
+
+  test("does NOT recover an issue that has a matching running agent", async () => {
+    const activeIssue = staleIssue("issue-active-1", "ENG-active-1");
+    state.addAgent("agent-1", "ENG-active-1", "Active Issue", "issue-active-1");
+    mockGetInProgressIssues.mockResolvedValue([activeIssue]);
+
+    const count = await recoverStaleIssues({
+      config: makeConfig(),
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(count).toBe(0);
+    expect(mockUpdateIssue).not.toHaveBeenCalled();
+  });
+
+  test("does NOT recover an issue recently updated (within timeout)", async () => {
+    // updatedAt is only 5 minutes ago, timeout is 15 minutes
+    const recentIssue = staleIssue(
+      "issue-recent-1",
+      "ENG-recent-1",
+      5 * 60 * 1000,
+    );
+    mockGetInProgressIssues.mockResolvedValue([recentIssue]);
+
+    const count = await recoverStaleIssues({
+      config: makeConfig(),
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(count).toBe(0);
+    expect(mockUpdateIssue).not.toHaveBeenCalled();
+  });
+
+  test("calls updateIssue with ready stateId and a comment", async () => {
+    mockGetInProgressIssues.mockResolvedValue([staleIssue("issue-x", "ENG-x")]);
+    mockUpdateIssue.mockClear();
+
+    await recoverStaleIssues({
+      config: makeConfig(),
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(mockUpdateIssue).toHaveBeenCalledTimes(1);
+    const call = mockUpdateIssue.mock.calls[0];
+    expect(call[0]).toBe("issue-x");
+    expect(call[1].stateId).toBe("ready-id");
+    expect(call[1].comment).toBeTruthy();
+  });
+
+  test("recovers multiple stale issues and returns correct count", async () => {
+    mockGetInProgressIssues.mockResolvedValue([
+      staleIssue("issue-a", "ENG-a"),
+      staleIssue("issue-b", "ENG-b"),
+    ]);
+
+    const count = await recoverStaleIssues({
+      config: makeConfig(),
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(count).toBe(2);
+  });
+
+  test("skips active issues and recovers only stale orphans", async () => {
+    state.addAgent("agent-y", "ENG-y", "Active Y", "issue-y");
+    mockGetInProgressIssues.mockResolvedValue([
+      staleIssue("issue-y", "ENG-y"), // active — should be skipped
+      staleIssue("issue-z", "ENG-z"), // orphaned — should be recovered
+    ]);
+
+    const count = await recoverStaleIssues({
+      config: makeConfig(),
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(count).toBe(1);
+    expect(mockUpdateIssue).toHaveBeenCalledWith(
+      "issue-z",
+      expect.objectContaining({ stateId: "ready-id" }),
+    );
+  });
+});
+
+// Restore the real linear module after all executor tests complete.
+// mock.restore() in afterEach does not undo mock.module() in Bun 1.3.9,
+// which causes cross-file interference with subsequent test files (e.g.
+// src/lib/linear.test.ts). Calling mock.module() here with the real
+// implementations (captured before any mocking) fixes the leakage.
+afterAll(() => {
+  mock.module("./lib/linear", () => ({
+    ..._realLinearSnapshot,
+  }));
 });

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AgentResult } from "../state";
+import type { ActivityEntry, AgentResult } from "../state";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agent_runs (
@@ -14,9 +14,24 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   cost_usd REAL,
   duration_ms INTEGER,
   num_turns INTEGER,
-  error TEXT
+  error TEXT,
+  linear_issue_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_finished_at ON agent_runs(finished_at);
+CREATE TABLE IF NOT EXISTS activity_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_run_id TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_agent_run_id ON activity_logs(agent_run_id);
+CREATE TABLE IF NOT EXISTS conversation_log (
+  agent_run_id TEXT PRIMARY KEY,
+  messages_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `;
 
 export interface AnalyticsResult {
@@ -24,6 +39,11 @@ export interface AnalyticsResult {
   successRate: number;
   totalCostUsd: number;
   avgDurationMs: number;
+}
+
+export interface TodayAnalyticsResult {
+  todayRuns: number;
+  todaySuccessRate: number;
 }
 
 interface AgentRunRow {
@@ -37,6 +57,8 @@ interface AgentRunRow {
   duration_ms: number | null;
   num_turns: number | null;
   error: string | null;
+  linear_issue_id: string | null;
+  session_id: string | null;
 }
 
 interface AnalyticsRow {
@@ -46,20 +68,43 @@ interface AnalyticsRow {
   avg_duration_ms: number | null;
 }
 
+interface TodayAnalyticsRow {
+  today_runs: number;
+  today_success_count: number | null;
+}
+
+interface ActivityLogRow {
+  agent_run_id: string;
+  timestamp: number;
+  type: "tool_use" | "text" | "result" | "error" | "status";
+  summary: string;
+  detail: string | null;
+}
+
 export function openDb(dbFilePath: string): Database {
   if (dbFilePath !== ":memory:") {
     mkdirSync(dirname(dbFilePath), { recursive: true });
   }
   const db = new Database(dbFilePath, { create: true });
   db.exec(SCHEMA);
+  try {
+    db.exec("ALTER TABLE agent_runs ADD COLUMN linear_issue_id TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+  try {
+    db.exec("ALTER TABLE agent_runs ADD COLUMN session_id TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
   return db;
 }
 
 export function insertAgentRun(db: Database, result: AgentResult): void {
   db.run(
     `INSERT OR REPLACE INTO agent_runs
-     (id, issue_id, issue_title, status, started_at, finished_at, cost_usd, duration_ms, num_turns, error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, issue_id, issue_title, status, started_at, finished_at, cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       result.id,
       result.issueId,
@@ -71,6 +116,8 @@ export function insertAgentRun(db: Database, result: AgentResult): void {
       result.durationMs ?? null,
       result.numTurns ?? null,
       result.error ?? null,
+      result.linearIssueId ?? null,
+      result.sessionId ?? null,
     ],
   );
 }
@@ -87,6 +134,8 @@ function rowToResult(row: AgentRunRow): AgentResult {
     durationMs: row.duration_ms ?? undefined,
     numTurns: row.num_turns ?? undefined,
     error: row.error ?? undefined,
+    linearIssueId: row.linear_issue_id ?? undefined,
+    sessionId: row.session_id ?? undefined,
   };
 }
 
@@ -94,7 +143,7 @@ export function getRecentRuns(db: Database, limit = 50): AgentResult[] {
   const rows = db
     .query<AgentRunRow, [number]>(
       `SELECT id, issue_id, issue_title, status, started_at, finished_at,
-              cost_usd, duration_ms, num_turns, error
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id
        FROM agent_runs
        ORDER BY finished_at DESC
        LIMIT ?`,
@@ -124,4 +173,116 @@ export function getAnalytics(db: Database): AnalyticsResult {
     totalCostUsd: row?.total_cost_usd ?? 0,
     avgDurationMs: row?.avg_duration_ms ?? 0,
   };
+}
+
+export function getTodayAnalytics(db: Database): TodayAnalyticsResult {
+  const now = new Date();
+  const startOfTodayMs = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  );
+
+  const row = db
+    .query<TodayAnalyticsRow, [number]>(
+      `SELECT
+         COUNT(*) AS today_runs,
+         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS today_success_count
+       FROM agent_runs
+       WHERE finished_at >= ?`,
+    )
+    .get(startOfTodayMs);
+
+  const todayRuns = row?.today_runs ?? 0;
+  const todaySuccessCount = row?.today_success_count ?? 0;
+
+  return {
+    todayRuns,
+    todaySuccessRate: todayRuns > 0 ? todaySuccessCount / todayRuns : 0,
+  };
+}
+
+export function insertActivityLogs(
+  db: Database,
+  agentRunId: string,
+  activities: ActivityEntry[],
+): void {
+  if (activities.length === 0) return;
+  const stmt = db.prepare(
+    `INSERT INTO activity_logs (agent_run_id, timestamp, type, summary, detail) VALUES (?, ?, ?, ?, ?)`,
+  );
+  const insertMany = db.transaction((rows: ActivityEntry[]) => {
+    for (const row of rows) {
+      stmt.run(
+        agentRunId,
+        row.timestamp,
+        row.type,
+        row.summary,
+        row.detail ?? null,
+      );
+    }
+  });
+  insertMany(activities);
+}
+
+export function getActivityLogs(
+  db: Database,
+  agentRunId: string,
+): ActivityEntry[] {
+  const rows = db
+    .query<ActivityLogRow, [string]>(
+      `SELECT agent_run_id, timestamp, type, summary, detail
+       FROM activity_logs
+       WHERE agent_run_id = ?
+       ORDER BY timestamp ASC`,
+    )
+    .all(agentRunId);
+  return rows.map((row) => ({
+    timestamp: row.timestamp,
+    type: row.type,
+    summary: row.summary,
+    detail: row.detail ?? undefined,
+  }));
+}
+
+export function pruneActivityLogs(db: Database, retentionDays: number): number {
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const result = db.run(`DELETE FROM activity_logs WHERE timestamp < ?`, [
+    cutoffMs,
+  ]);
+  return result.changes;
+}
+
+export function insertConversationLog(
+  db: Database,
+  agentRunId: string,
+  messagesJson: string,
+): void {
+  db.run(
+    `INSERT OR REPLACE INTO conversation_log (agent_run_id, messages_json, created_at) VALUES (?, ?, ?)`,
+    [agentRunId, messagesJson, Date.now()],
+  );
+}
+
+export function getConversationLog(
+  db: Database,
+  agentRunId: string,
+): string | null {
+  const row = db
+    .query<{ messages_json: string }, [string]>(
+      `SELECT messages_json FROM conversation_log WHERE agent_run_id = ?`,
+    )
+    .get(agentRunId);
+  return row?.messages_json ?? null;
+}
+
+export function pruneConversationLogs(
+  db: Database,
+  retentionDays: number,
+): number {
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const result = db.run(`DELETE FROM conversation_log WHERE created_at < ?`, [
+    cutoffMs,
+  ]);
+  return result.changes;
 }

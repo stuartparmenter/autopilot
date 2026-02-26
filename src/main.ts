@@ -8,16 +8,19 @@
 
 import { resolve } from "node:path";
 import { RatelimitedLinearError } from "@linear/sdk";
-import { runAudit, shouldRunAudit } from "./auditor";
-import { fillSlots } from "./executor";
+import { fillSlots, recoverStaleIssues } from "./executor";
 import { closeAllAgents } from "./lib/claude";
 import { loadConfig, resolveProjectPath } from "./lib/config";
-import { openDb } from "./lib/db";
+import { openDb, pruneActivityLogs } from "./lib/db";
 import { interruptibleSleep, isFatalError } from "./lib/errors";
 import { detectRepo } from "./lib/github";
-import { resolveLinearIds, updateIssue } from "./lib/linear";
+import { getTriageIssues, resolveLinearIds, updateIssue } from "./lib/linear";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
+import { sanitizeMessage } from "./lib/sanitize";
+import { sweepWorktrees } from "./lib/worktree";
 import { checkOpenPRs } from "./monitor";
+import { runPlanning, shouldRunPlanning } from "./planner";
+import { checkProjects } from "./projects";
 import { createApp } from "./server";
 import { AppState } from "./state";
 
@@ -60,10 +63,6 @@ const config = loadConfig(projectPath);
 
 if (!config.linear.team)
   fatal("linear.team is not set in .claude-autopilot.yml");
-if (!config.linear.project)
-  fatal("linear.project is not set in .claude-autopilot.yml");
-if (!config.project.name)
-  fatal("project.name is not set in .claude-autopilot.yml");
 
 // --- Check environment variables ---
 
@@ -109,7 +108,7 @@ const isLocalhost =
   host === "127.0.0.1" || host === "localhost" || host === "::1";
 
 if (!isLocalhost && !dashboardToken) {
-  error(
+  fatal(
     `AUTOPILOT_DASHBOARD_TOKEN must be set when binding dashboard to non-localhost.\n` +
       `Set: export AUTOPILOT_DASHBOARD_TOKEN=<your-secret-token>\n` +
       `Or bind to localhost only (omit --host).`,
@@ -119,11 +118,21 @@ if (!isLocalhost && !dashboardToken) {
 header("claude-autopilot v0.2.0");
 
 info(`Project: ${projectPath}`);
-info(`Team: ${config.linear.team}, Project: ${config.linear.project}`);
+info(
+  `Team: ${config.linear.team}` +
+    (config.linear.initiative
+      ? `, Initiative: ${config.linear.initiative}`
+      : ""),
+);
 info(`Max parallel: ${config.executor.parallel}`);
 info(`Poll interval: ${config.executor.poll_interval_minutes}m`);
+if (config.projects.enabled && config.linear.initiative) {
+  info(
+    `Projects loop: every ${config.projects.poll_interval_minutes}m, max ${config.projects.max_active_projects} owners`,
+  );
+}
 info(
-  `Model: ${config.executor.model} (planning: ${config.executor.planning_model})`,
+  `Models: executor=${config.executor.model}, planning=${config.planning.model}, projects=${config.projects.model}`,
 );
 
 // --- Detect GitHub repo ---
@@ -138,23 +147,32 @@ ok(`GitHub repo: ${ghOwner}/${ghRepo}`);
 
 info("Connecting to Linear...");
 const linearIds = await resolveLinearIds(config.linear);
-ok(`Connected - team ${config.linear.team}, project ${config.linear.project}`);
+ok(
+  `Connected - team ${config.linear.team}` +
+    (linearIds.initiativeName
+      ? `, initiative ${linearIds.initiativeName}`
+      : ""),
+);
 
 // --- Init state and server ---
 
-const state = new AppState();
+const state = new AppState(config.executor.parallel);
 
 if (config.persistence.enabled) {
   const dbPath = resolve(projectPath, config.persistence.db_path);
   const db = openDb(dbPath);
   state.setDb(db);
+  const pruned = pruneActivityLogs(db, config.persistence.retention_days);
+  if (pruned > 0) info(`Pruned ${pruned} old activity log entries`);
   ok(`Persistence: ${dbPath}`);
 }
 
 const app = createApp(state, {
   authToken: dashboardToken,
-  triggerAudit: () => {
-    runAudit({
+  secureCookie: !isLocalhost,
+  config,
+  triggerPlanning: () => {
+    runPlanning({
       config,
       projectPath,
       linearIds,
@@ -164,6 +182,21 @@ const app = createApp(state, {
   },
   retryIssue: async (linearIssueId: string) => {
     await updateIssue(linearIssueId, { stateId: linearIds.states.ready });
+  },
+  triageIssues: async () => {
+    const issues = await getTriageIssues(linearIds);
+    return issues.map((i) => ({
+      id: i.id,
+      identifier: i.identifier,
+      title: i.title,
+      priority: i.priority ?? 4,
+    }));
+  },
+  approveTriageIssue: async (issueId: string) => {
+    await updateIssue(issueId, { stateId: linearIds.states.ready });
+  },
+  rejectTriageIssue: async (issueId: string) => {
+    await updateIssue(issueId, { stateId: linearIds.states.blocked });
   },
 });
 
@@ -190,16 +223,6 @@ if (dashboardToken) {
 }
 ok(`Dashboard: http://${isLocalhost ? "localhost" : host}:${server.port}`);
 console.log();
-
-// --- Helpers ---
-
-/** Redact sensitive tokens from error messages before logging. */
-function sanitizeMessage(msg: string): string {
-  return msg
-    .replace(/Bearer\s+\S+/g, "Bearer [REDACTED]")
-    .replace(/lin_api_\S+/g, "lin_api_[REDACTED]")
-    .replace(/sk-ant-\S+/g, "sk-ant-[REDACTED]");
-}
 
 // --- Graceful shutdown ---
 
@@ -241,13 +264,19 @@ process.on("uncaughtException", (err) => {
 // --- Main loop ---
 
 const POLL_INTERVAL_MS = config.executor.poll_interval_minutes * 60 * 1000;
+const PROJECTS_INTERVAL_MS = config.projects.poll_interval_minutes * 60 * 1000;
 const BASE_BACKOFF_MS = 10_000; // 10s
 const MAX_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_CONSECUTIVE_FAILURES = 5;
 const running = new Set<Promise<boolean>>();
-let auditorPromise: Promise<void> | null = null;
+let planningPromise: Promise<void> | null = null;
+let lastProjectsCheckAt = 0;
 
 let consecutiveFailures = 0;
+
+// Sweep stale worktrees left behind by previous crashed runs.
+// No agents are running yet, so every worktree found is stale.
+await sweepWorktrees(projectPath, new Set());
 
 info("Starting main loop (Ctrl+C to stop)...");
 console.log();
@@ -261,47 +290,72 @@ while (!shuttingDown) {
 
     if (shuttingDown) break;
 
-    // Check open PRs and spawn fixers for failures/conflicts
-    const fixerPromises = await checkOpenPRs({
-      owner: ghOwner,
-      repo: ghRepo,
-      config,
-      projectPath,
-      linearIds,
-      state,
-      shutdownSignal: shutdownController.signal,
-    });
-    for (const p of fixerPromises) {
-      const tracked = p.finally(() => running.delete(tracked));
-      running.add(tracked);
+    // Recover stale In Progress issues before filling slots
+    await recoverStaleIssues({ config, linearIds, state });
+
+    // Run monitor and executor concurrently. fillSlots may read a slightly
+    // lower running count if checkOpenPRs has not yet registered its fixers
+    // (it is still fetching attachments), but transient over-allocation by
+    // 1-2 agents is accepted as harmless. Promise.allSettled ensures a failure
+    // in one subsystem does not prevent the other from running.
+    const [monitorResult, executorResult] = await Promise.allSettled([
+      checkOpenPRs({
+        owner: ghOwner,
+        repo: ghRepo,
+        config,
+        projectPath,
+        linearIds,
+        state,
+        shutdownSignal: shutdownController.signal,
+      }),
+      fillSlots({
+        config,
+        projectPath,
+        linearIds,
+        state,
+        shutdownSignal: shutdownController.signal,
+      }),
+    ]);
+
+    if (monitorResult.status === "fulfilled") {
+      for (const p of monitorResult.value) {
+        const tracked = p.finally(() => running.delete(tracked));
+        running.add(tracked);
+      }
+    } else {
+      const msg =
+        monitorResult.reason instanceof Error
+          ? monitorResult.reason.message
+          : String(monitorResult.reason);
+      warn(`Monitor error: ${msg}`);
     }
 
-    // Fill executor slots
-    const newPromises = await fillSlots({
-      config,
-      projectPath,
-      linearIds,
-      state,
-      shutdownSignal: shutdownController.signal,
-    });
-    for (const p of newPromises) {
-      // Each promise self-removes from the set when it settles
-      const tracked = p.finally(() => running.delete(tracked));
-      running.add(tracked);
+    if (executorResult.status === "fulfilled") {
+      for (const p of executorResult.value) {
+        // Each promise self-removes from the set when it settles
+        const tracked = p.finally(() => running.delete(tracked));
+        running.add(tracked);
+      }
+    } else {
+      const msg =
+        executorResult.reason instanceof Error
+          ? executorResult.reason.message
+          : String(executorResult.reason);
+      warn(`Executor error: ${msg}`);
     }
 
-    // Check auditor (counts against parallel limit)
+    // Check planning (counts against parallel limit)
     if (
-      !state.getAuditorStatus().running &&
-      state.getRunningCount() < config.executor.parallel
+      !state.getPlanningStatus().running &&
+      state.getRunningCount() < state.getMaxParallel()
     ) {
-      const shouldAudit = await shouldRunAudit({
+      const shouldPlan = await shouldRunPlanning({
         config,
         linearIds,
         state,
       });
-      if (shouldAudit) {
-        auditorPromise = runAudit({
+      if (shouldPlan) {
+        planningPromise = runPlanning({
           config,
           projectPath,
           linearIds,
@@ -310,11 +364,31 @@ while (!shuttingDown) {
         })
           .catch((e) => {
             const msg = e instanceof Error ? e.message : String(e);
-            warn(`Auditor error: ${msg}`);
+            warn(`Planning error: ${msg}`);
           })
           .finally(() => {
-            auditorPromise = null;
+            planningPromise = null;
           });
+      }
+    }
+
+    // Check projects loop
+    if (
+      config.projects.enabled &&
+      linearIds.initiativeId &&
+      Date.now() - lastProjectsCheckAt >= PROJECTS_INTERVAL_MS
+    ) {
+      lastProjectsCheckAt = Date.now();
+      const projectPromises = await checkProjects({
+        config,
+        projectPath,
+        linearIds,
+        state,
+        shutdownSignal: shutdownController.signal,
+      });
+      for (const p of projectPromises) {
+        const tracked = p.finally(() => running.delete(tracked));
+        running.add(tracked);
       }
     }
 
@@ -376,7 +450,7 @@ while (!shuttingDown) {
 // --- Drain phase ---
 
 const drainablePromises: Promise<unknown>[] = [...running];
-if (auditorPromise) drainablePromises.push(auditorPromise);
+if (planningPromise) drainablePromises.push(planningPromise);
 
 if (drainablePromises.length > 0) {
   info(
