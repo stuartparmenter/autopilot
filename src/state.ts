@@ -49,6 +49,7 @@ export interface AgentResult {
   numTurns?: number;
   sessionId?: string;
   error?: string;
+  reviewedAt?: number;
 }
 
 export interface QueueInfo {
@@ -65,6 +66,12 @@ export interface PlanningStatus {
   threshold?: number;
 }
 
+export interface ReviewerStatus {
+  running: boolean;
+  lastRunAt?: number;
+  lastResult?: "completed" | "skipped" | "failed" | "timed_out";
+}
+
 export interface ApiHealthStatus {
   linear: CircuitState;
   github: CircuitState;
@@ -76,6 +83,7 @@ export interface AppStateSnapshot {
   history: AgentResult[];
   queue: QueueInfo;
   planning: PlanningStatus;
+  reviewer: ReviewerStatus;
   startedAt: number;
   apiHealth: ApiHealthStatus;
 }
@@ -94,6 +102,7 @@ export class AppState {
     lastChecked: 0,
   };
   private planning: PlanningStatus = { running: false };
+  private reviewer: ReviewerStatus = { running: false };
   private paused = false;
   private issueFailureCount = new Map<string, number>();
   private db: Database | null = null;
@@ -256,6 +265,18 @@ export class AppState {
     return this.planning;
   }
 
+  updateReviewer(status: Partial<ReviewerStatus>): void {
+    Object.assign(this.reviewer, status);
+  }
+
+  getReviewerStatus(): ReviewerStatus {
+    return this.reviewer;
+  }
+
+  getDb(): Database | null {
+    return this.db;
+  }
+
   isPaused(): boolean {
     return this.paused;
   }
@@ -390,6 +411,7 @@ export class AppState {
       history: this.history,
       queue: this.queue,
       planning: this.planning,
+      reviewer: this.reviewer,
       startedAt: this.startedAt,
       apiHealth: defaultRegistry.getAllStates(),
     };
