@@ -119,6 +119,7 @@ function makeConfig(): AutopilotConfig {
       min_interval_minutes: 60,
       max_issues_per_run: 5,
       timeout_minutes: 90,
+      inactivity_timeout_minutes: 30,
       model: "opus",
     },
     projects: {

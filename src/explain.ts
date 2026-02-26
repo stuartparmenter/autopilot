@@ -142,7 +142,7 @@ const result = await runClaude({
   cwd: projectPath,
   label: "explain",
   timeoutMs: config.planning.timeout_minutes * 60 * 1000,
-  inactivityMs: config.executor.inactivity_timeout_minutes * 60 * 1000,
+  inactivityMs: config.planning.inactivity_timeout_minutes * 60 * 1000,
   model: config.planning.model,
   sandbox: config.sandbox,
   mcpServers: buildMcpServers(),
