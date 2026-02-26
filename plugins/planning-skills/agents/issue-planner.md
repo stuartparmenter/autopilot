@@ -205,7 +205,8 @@ Apply these labels:
 - Set `blocks`/`blocked-by` per the CTO's dependency ordering in the finding brief
 
 ### State
-- File all issues to the **Triage** state (use the exact "Triage State Name" from the Finding Brief).
+- **Project mode** (Project is not "N/A"): File all issues to the **Triage** state (use the exact "Triage State Name" from the Finding Brief).
+- **Label-first mode** (Project is "N/A"): File all issues to the **Ready** state (use the exact "Ready State Name" from the Finding Brief). There is no project owner to triage these issues, so they go directly to the executor.
 
 ---
 
