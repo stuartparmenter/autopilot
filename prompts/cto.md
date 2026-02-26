@@ -159,12 +159,21 @@ When creating a project, use `save_project` with:
 
 **Label-first mode:** Skip project assignment entirely. Apply descriptive labels to each finding (category label + severity label) to ensure findings are discoverable.
 
-### Step 5: Check Dependencies
+### Step 5: Check Dependencies and Systemic Effects
 
 Review the full set of findings:
 - Are there findings that block other findings? Note this for Issue Planners.
 - Are there circular dependencies? Restructure or drop one.
 - Could multiple findings be combined into one issue? (Only if they're genuinely the same work.)
+
+**Second-order effects**: For each finding, ask: does this change remove, weaken, or alter a property that other parts of the system depend on? Think through the downstream consequences — not just what changes, but what *stops working* because of the change.
+
+For every second-order effect you identify, decide:
+- **Expand scope**: include compensating changes in this finding (or a new finding)
+- **File follow-up**: note a follow-up issue that must be filed alongside this one
+- **Explicitly defer**: document why it's safe to ship this finding without addressing the downstream effect yet
+
+Do NOT let a finding through with unacknowledged downstream effects. The Issue Planners cannot fix gaps they don't know about.
 
 ### Shutdown Team
 

@@ -79,6 +79,20 @@ Adversarially review the finding:
 
 If the finding doesn't hold up, **stop and report**.
 
+### Step 4b: Systemic Impact Check
+
+Consider the second and third-order effects of this change on the broader system:
+- Does this change remove or alter something that other modules, pipelines, or workflows depend on?
+- Will existing integrations, data flows, or state machines still work after this change?
+- Could this break assumptions made by code that *calls into* or *is called by* the affected area?
+
+If you identify downstream effects:
+- **Include them in the issue description** under a "Systemic Impact" section so the executor is aware
+- **Note required compensating changes** — if this issue can't ship safely without another change, add that as an acceptance criterion or flag it as a dependency
+- **Flag if the scope should expand** — report back to the CTO if the finding needs additional companion issues to be safe
+
+A change that looks correct in isolation but breaks something downstream is not ready to file.
+
 ### Step 5: Security Assessment
 
 Briefly assess security implications of the proposed changes:
