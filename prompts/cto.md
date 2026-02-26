@@ -34,6 +34,16 @@ The Briefing Agent returns: recent activity, backlog state, recurring patterns, 
 - Understand the project's trajectory
 - Continue from where the last planning session left off (via status updates)
 
+### Extract Strategic Priorities
+
+From the briefing's "Previous Planning Updates" section, extract the **recommended focus areas and strategic themes** from the most recent initiative update. For each:
+- Is it completed? (Skip it.)
+- Is it in progress? (Note it — don't duplicate, but check if it needs support.)
+- Is it unaddressed? (This is a **high-priority investigation directive** — actively investigate it this session.)
+- Is it superseded? (State why and move on.)
+
+Unaddressed strategic priorities from the previous update become **investigation directives** — pass them explicitly to your specialists (especially the PM) and spawn investigations that target them directly, not just open-ended scans.
+
 ---
 
 ## Phase 1: Investigation
@@ -51,7 +61,10 @@ Task(subagent_type="product-manager", team_name="planning-team",
   prompt="Investigate product opportunities for {{REPO_NAME}}.
   Linear Team: {{LINEAR_TEAM}}
   Initiative: {{INITIATIVE_NAME}} (ID: {{INITIATIVE_ID}})
-  [Include relevant briefing highlights.]")
+  [Include relevant briefing highlights.]
+  [Include the strategic priorities extracted from the previous initiative
+  update — especially any unaddressed recommendations. The PM should
+  evaluate these first before brainstorming new opportunities.]")
 ```
 
 ### Step 2: Classify Lifecycle Stage
@@ -123,9 +136,10 @@ Search for existing projects under the initiative using `list_projects`:
 ### Step 2: Select Top Findings
 
 1. **Bugs and security first.** Correctness issues and vulnerabilities always make the cut, regardless of lifecycle stage.
-2. **PM opportunities.** Review the PM's report for product-worthy improvements that complement technical findings.
-3. **Stage-appropriate improvements next.** Foundational tooling for EARLY, architecture/coverage for GROWTH, hardening for MATURE.
-4. **Cap at {{MAX_ISSUES_PER_RUN}}.** Pick the highest-leverage findings.
+2. **Unaddressed strategic priorities.** Recommendations from the previous initiative update that remain unaddressed carry high weight — they were already vetted and represent continuity of direction. Do not let them be crowded out by new technical findings unless the evidence clearly shows they are no longer relevant.
+3. **PM opportunities.** Review the PM's report for product-worthy improvements that complement technical findings. The PM's report represents strategic product thinking — weigh it equally with technical specialist findings. Multiple technical agents exist to check different dimensions (security, quality, architecture), not to collectively outweigh product direction.
+4. **Stage-appropriate improvements next.** Foundational tooling for EARLY, architecture/coverage for GROWTH, hardening for MATURE.
+5. **Cap at {{MAX_ISSUES_PER_RUN}}.** Pick the highest-leverage findings.
 
 ### Step 3: Deduplicate Against Backlog
 
