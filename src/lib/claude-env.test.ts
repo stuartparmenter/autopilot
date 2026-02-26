@@ -10,8 +10,8 @@ describe("buildAgentEnv", () => {
   test("forwards allowlisted vars from process.env", () => {
     const env = buildAgentEnv();
     // HOME and PATH should always be present in the test environment
-    expect(env.HOME).toBe(process.env.HOME);
-    expect(env.PATH).toBe(process.env.PATH);
+    expect(env.HOME).toBe(String(process.env.HOME));
+    expect(env.PATH).toBe(String(process.env.PATH));
   });
 
   test("does not include non-allowlisted process.env vars", () => {

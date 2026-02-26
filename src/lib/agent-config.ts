@@ -2,11 +2,11 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   type AgentDefinition,
+  createSdkMcpServer,
   type HookCallback,
   type HookCallbackMatcher,
   type HookEvent,
   type PreToolUseHookInput,
-  createSdkMcpServer,
   type SdkPluginConfig,
   tool,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -114,7 +114,7 @@ export function buildAgentEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of AGENT_ENV_ALLOWLIST) {
     if (process.env[key]) {
-      env[key] = process.env[key]!;
+      env[key] = process.env[key] as string;
     }
   }
   env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
