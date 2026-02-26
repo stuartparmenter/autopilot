@@ -641,6 +641,119 @@ describe("dashboard HTML includes budget partial div", () => {
   });
 });
 
+describe("CSRF protection", () => {
+  const TOKEN = "test-csrf-token";
+
+  test("cookie-only POST to /api/pause returns 403 (missing custom header)", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/pause", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe("Forbidden");
+  });
+
+  test("cookie-only POST to /api/audit returns 403", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/audit", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("cookie-only POST to /api/cancel/:agentId returns 403", async () => {
+    const state = new AppState();
+    state.addAgent("csrf-agent", "ENG-1", "Test");
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/cancel/csrf-agent", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("cookie-only POST to /api/retry/:historyId returns 403", async () => {
+    const state = new AppState();
+    state.addAgent("csrf-exec-1", "ENG-1", "Test issue", "linear-uuid-csrf");
+    state.completeAgent("csrf-exec-1", "failed", { error: "timed out" });
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/retry/csrf-exec-1", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("cookie + HX-Request: true allows POST to /api/pause", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/pause", {
+      method: "POST",
+      headers: {
+        Cookie: `autopilot_token=${TOKEN}`,
+        "HX-Request": "true",
+      },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("cookie + X-Requested-With: XMLHttpRequest allows POST to /api/pause", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/pause", {
+      method: "POST",
+      headers: {
+        Cookie: `autopilot_token=${TOKEN}`,
+        "X-Requested-With": "XMLHttpRequest",
+      },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("Bearer token POST without custom headers is allowed", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/pause", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("POST /auth/login is exempt from CSRF check", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `token=${encodeURIComponent(TOKEN)}`,
+    });
+    expect(res.status).toBe(302);
+  });
+
+  test("POST /auth/logout is exempt from CSRF check", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/auth/logout", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(302);
+  });
+
+  test("without authToken: POST /api/pause works without custom headers", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/api/pause", { method: "POST" });
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("GET /partials/audit-button", () => {
   let state: AppState;
   let app: ReturnType<typeof createApp>;

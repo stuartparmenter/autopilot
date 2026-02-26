@@ -147,6 +147,16 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
       const tokenToCheck = bearerToken ?? cookieToken;
 
       if (tokenToCheck !== null && safeCompare(tokenToCheck, authToken)) {
+        // CSRF protection: cookie-authenticated POST requests must include a non-simple header
+        const isCookieAuth = bearerToken === null && cookieToken !== null;
+        if (isCookieAuth && c.req.method === "POST") {
+          const hasHxRequest = c.req.header("HX-Request") === "true";
+          const hasXRequestedWith =
+            c.req.header("X-Requested-With") === "XMLHttpRequest";
+          if (!hasHxRequest && !hasXRequestedWith) {
+            return c.json({ error: "Forbidden" }, 403);
+          }
+        }
         return next();
       }
 
