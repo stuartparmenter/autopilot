@@ -7,8 +7,8 @@ import {
   mock,
   test,
 } from "bun:test";
-import * as _realClaude from "./lib/claude";
 import type { ClaudeResult } from "./lib/claude";
+import * as _realClaude from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
 import { AppState } from "./state";
 
