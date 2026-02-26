@@ -534,6 +534,60 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
   });
 });
 
+describe("checkOpenPRs — budget enforcement", () => {
+  let state: AppState;
+
+  beforeEach(() => {
+    state = new AppState();
+    mockIssuesQuery.mockResolvedValue({ nodes: [] });
+  });
+
+  test("returns empty array when budget is exhausted", async () => {
+    state.addSpend(10); // $10 spent
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5; // $5 limit — exhausted
+
+    const result = await checkOpenPRs(makeOpts(state, config));
+
+    expect(result).toHaveLength(0);
+  });
+
+  test("auto-pauses when budget is exhausted", async () => {
+    state.addSpend(10);
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    expect(state.isPaused()).toBe(false);
+
+    await checkOpenPRs(makeOpts(state, config));
+
+    expect(state.isPaused()).toBe(true);
+  });
+
+  test("does not query Linear when budget is exhausted", async () => {
+    state.addSpend(10);
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    mockIssuesQuery.mockClear();
+
+    await checkOpenPRs(makeOpts(state, config));
+
+    expect(mockIssuesQuery).not.toHaveBeenCalled();
+  });
+
+  test("does not double-pause when already paused and budget is exhausted", async () => {
+    state.addSpend(10);
+    state.togglePause(); // already paused
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    await checkOpenPRs(makeOpts(state, config));
+
+    expect(state.isPaused()).toBe(true);
+  });
+});
+
 describe("checkOpenPRs — fixer timeout and attempt budget", () => {
   let state: AppState;
 

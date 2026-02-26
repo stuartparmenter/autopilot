@@ -504,6 +504,72 @@ describe("fillSlots", () => {
     expect(calledWith[1]).toBeGreaterThanOrEqual(3);
   });
 
+  test("returns empty array when budget is exhausted", async () => {
+    state.addSpend(10); // $10 spent
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5; // $5 limit — exhausted
+
+    const promises = await fillSlots({
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(promises).toHaveLength(0);
+  });
+
+  test("auto-pauses when budget is exhausted", async () => {
+    state.addSpend(10);
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    expect(state.isPaused()).toBe(false);
+
+    await fillSlots({
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(state.isPaused()).toBe(true);
+  });
+
+  test("does not double-pause when already paused and budget is exhausted", async () => {
+    state.addSpend(10);
+    state.togglePause(); // already paused
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    await fillSlots({
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    // togglePause flips the flag — calling it again would un-pause. It should NOT be called.
+    expect(state.isPaused()).toBe(true);
+  });
+
+  test("does not query Linear when budget is exhausted", async () => {
+    state.addSpend(10);
+    const config = makeConfig();
+    config.budget.daily_limit_usd = 5;
+
+    mockGetReadyIssues.mockClear();
+
+    await fillSlots({
+      config,
+      projectPath: "/project",
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(mockGetReadyIssues).not.toHaveBeenCalled();
+  });
+
   test("filters out issues already being executed", async () => {
     const activeIssue = makeIssue();
     const freshIssue = makeIssue();
