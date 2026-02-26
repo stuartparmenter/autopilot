@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   timestamp INTEGER NOT NULL,
   type TEXT NOT NULL,
   summary TEXT NOT NULL,
-  detail TEXT
+  detail TEXT,
+  is_subagent INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_activity_logs_agent_run_id ON activity_logs(agent_run_id);
 CREATE TABLE IF NOT EXISTS conversation_log (
@@ -105,6 +106,7 @@ interface ActivityLogRow {
   type: "tool_use" | "text" | "result" | "error" | "status";
   summary: string;
   detail: string | null;
+  is_subagent: number;
 }
 
 export function openDb(dbFilePath: string): Database {
@@ -125,6 +127,13 @@ export function openDb(dbFilePath: string): Database {
   }
   try {
     db.exec("ALTER TABLE agent_runs ADD COLUMN reviewed_at INTEGER");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+  try {
+    db.exec(
+      "ALTER TABLE activity_logs ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0",
+    );
   } catch {
     // Column already exists — safe to ignore
   }
@@ -241,7 +250,7 @@ export function insertActivityLogs(
 ): void {
   if (activities.length === 0) return;
   const stmt = db.prepare(
-    `INSERT INTO activity_logs (agent_run_id, timestamp, type, summary, detail) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO activity_logs (agent_run_id, timestamp, type, summary, detail, is_subagent) VALUES (?, ?, ?, ?, ?, ?)`,
   );
   const insertMany = db.transaction((rows: ActivityEntry[]) => {
     for (const row of rows) {
@@ -251,6 +260,7 @@ export function insertActivityLogs(
         row.type,
         row.summary,
         row.detail ?? null,
+        row.isSubagent ? 1 : 0,
       );
     }
   });
@@ -263,7 +273,7 @@ export function getActivityLogs(
 ): ActivityEntry[] {
   const rows = db
     .query<ActivityLogRow, [string]>(
-      `SELECT agent_run_id, timestamp, type, summary, detail
+      `SELECT agent_run_id, timestamp, type, summary, detail, is_subagent
        FROM activity_logs
        WHERE agent_run_id = ?
        ORDER BY timestamp ASC`,
@@ -274,6 +284,7 @@ export function getActivityLogs(
     type: row.type,
     summary: row.summary,
     detail: row.detail ?? undefined,
+    isSubagent: row.is_subagent === 1 || undefined,
   }));
 }
 
