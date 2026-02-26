@@ -86,6 +86,8 @@ function makeConfig(): AutopilotConfig {
     executor: {
       parallel: 3,
       timeout_minutes: 30,
+      fixer_timeout_minutes: 20,
+      max_fixer_attempts: 3,
       inactivity_timeout_minutes: 10,
       auto_approve_labels: [],
       branch_pattern: "autopilot/{{id}}",
@@ -97,6 +99,7 @@ function makeConfig(): AutopilotConfig {
     planning: {
       schedule: "when_idle",
       min_ready_threshold: 5,
+      min_interval_minutes: 60,
       max_issues_per_run: 5,
       timeout_minutes: 90,
       model: "opus",
@@ -109,12 +112,22 @@ function makeConfig(): AutopilotConfig {
       model: "opus",
     },
     github: { repo: "", automerge: false },
-    persistence: { enabled: true, db_path: ".claude/autopilot.db" },
+    persistence: {
+      enabled: true,
+      db_path: ".claude/autopilot.db",
+      retention_days: 30,
+    },
     sandbox: {
       enabled: true,
       auto_allow_bash: true,
       network_restricted: false,
       extra_allowed_domains: [],
+    },
+    budget: {
+      daily_limit_usd: 0,
+      monthly_limit_usd: 0,
+      per_agent_limit_usd: 0,
+      warn_at_percent: 80,
     },
   };
 }

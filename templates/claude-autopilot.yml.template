@@ -25,6 +25,8 @@ linear:
 executor:
   parallel: 3                   # Max concurrent agents (start low, increase with trust)
   timeout_minutes: 30           # Kill agent after this long
+  # fixer_timeout_minutes: 20   # Kill fixer agents after this long (1-120, default: 20)
+  # max_fixer_attempts: 3       # Max fixer spawns per PR before giving up (1-10, default: 3)
   poll_interval_minutes: 5      # How often to poll Linear/GitHub (0.5-60, default: 5)
   model: "sonnet"               # Model for executor agents
 
@@ -35,6 +37,7 @@ planning:
   schedule: "when_idle"         # "when_idle" | "daily" | "manual"
   min_ready_threshold: 5        # Only plan when fewer than N issues are in Ready+Triage
   max_issues_per_run: 5         # Cap on issues filed per planning run
+  # min_interval_minutes: 60    # Minimum minutes between planning runs (0-1440, default: 60)
   model: "opus"                 # Model for the CTO planning agent
 
 # ─── Projects Loop ───────────────────────────────────────────────────────────

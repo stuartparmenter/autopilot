@@ -1,6 +1,34 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { createApp, escapeHtml, formatDuration } from "./server";
+import type { AutopilotConfig } from "./lib/config";
+import { DEFAULTS } from "./lib/config";
+import { createApp, escapeHtml, formatDuration, safeCompare } from "./server";
 import { AppState } from "./state";
+
+describe("safeCompare", () => {
+  test("returns true for identical strings", () => {
+    expect(safeCompare("secret-token", "secret-token")).toBe(true);
+  });
+
+  test("returns false for different strings of the same length", () => {
+    expect(safeCompare("aaaa", "bbbb")).toBe(false);
+  });
+
+  test("returns false for different strings of different lengths", () => {
+    expect(safeCompare("short", "much-longer-string")).toBe(false);
+  });
+
+  test("returns true for empty strings", () => {
+    expect(safeCompare("", "")).toBe(true);
+  });
+
+  test("returns false for empty vs non-empty", () => {
+    expect(safeCompare("", "notempty")).toBe(false);
+  });
+
+  test("returns false when first arg is longer than second", () => {
+    expect(safeCompare("longer-token-here", "short")).toBe(false);
+  });
+});
 
 describe("formatDuration", () => {
   test("returns seconds only for values under 60", () => {
@@ -136,6 +164,32 @@ describe("auth", () => {
     expect(setCookie).toContain("autopilot_token=");
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
+  });
+
+  test("with authToken and secureCookie: POST /auth/login sets Secure flag on cookie", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN, secureCookie: true });
+    const res = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `token=${encodeURIComponent(TOKEN)}`,
+    });
+    expect(res.status).toBe(302);
+    const setCookie = res.headers.get("Set-Cookie");
+    expect(setCookie).toContain("Secure");
+  });
+
+  test("with authToken and no secureCookie: POST /auth/login does NOT set Secure flag on cookie", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `token=${encodeURIComponent(TOKEN)}`,
+    });
+    expect(res.status).toBe(302);
+    const setCookie = res.headers.get("Set-Cookie");
+    expect(setCookie).not.toContain("Secure");
   });
 
   test("with authToken: POST /auth/login with wrong token returns 401 with error", async () => {
@@ -453,6 +507,306 @@ describe("global onError handler", () => {
     expect(res.status).toBe(500);
     const json = (await res.json()) as { error: string };
     expect(json.error).toBe("unexpected failure");
+  });
+});
+
+describe("GET /api/budget", () => {
+  test("returns { enabled: false } when no config passed", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/api/budget");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { enabled: boolean };
+    expect(json.enabled).toBe(false);
+  });
+
+  test("returns { enabled: false } when config has no limits set", async () => {
+    const state = new AppState();
+    const config: AutopilotConfig = {
+      ...DEFAULTS,
+      budget: {
+        daily_limit_usd: 0,
+        monthly_limit_usd: 0,
+        per_agent_limit_usd: 0,
+        warn_at_percent: 80,
+      },
+    };
+    const app = createApp(state, { config });
+    const res = await app.request("/api/budget");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { enabled: boolean };
+    // enabled is true when config is present, even if limits are 0
+    expect(json.enabled).toBe(true);
+  });
+
+  test("returns budget snapshot with enabled: true when config has daily limit", async () => {
+    const state = new AppState();
+    const config: AutopilotConfig = {
+      ...DEFAULTS,
+      budget: {
+        daily_limit_usd: 10,
+        monthly_limit_usd: 0,
+        per_agent_limit_usd: 0,
+        warn_at_percent: 80,
+      },
+    };
+    const app = createApp(state, { config });
+    const res = await app.request("/api/budget");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      enabled: boolean;
+      dailySpend: number;
+      dailyLimit: number;
+      exhausted: boolean;
+    };
+    expect(json.enabled).toBe(true);
+    expect(json.dailyLimit).toBe(10);
+    expect(json.dailySpend).toBe(0);
+    expect(json.exhausted).toBe(false);
+  });
+
+  test("returns exhausted: true when spend exceeds limit", async () => {
+    const state = new AppState();
+    state.addSpend(12);
+    const config: AutopilotConfig = {
+      ...DEFAULTS,
+      budget: {
+        daily_limit_usd: 10,
+        monthly_limit_usd: 0,
+        per_agent_limit_usd: 0,
+        warn_at_percent: 80,
+      },
+    };
+    const app = createApp(state, { config });
+    const res = await app.request("/api/budget");
+    const json = (await res.json()) as { exhausted: boolean };
+    expect(json.exhausted).toBe(true);
+  });
+});
+
+describe("GET /partials/budget", () => {
+  test("returns empty div when no config passed", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/partials/budget");
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("<div></div>");
+  });
+
+  test("returns empty div when all limits are 0", async () => {
+    const state = new AppState();
+    const config: AutopilotConfig = {
+      ...DEFAULTS,
+      budget: {
+        daily_limit_usd: 0,
+        monthly_limit_usd: 0,
+        per_agent_limit_usd: 0,
+        warn_at_percent: 80,
+      },
+    };
+    const app = createApp(state, { config });
+    const res = await app.request("/partials/budget");
+    const body = await res.text();
+    expect(body).toContain("<div></div>");
+  });
+
+  test("renders spend-vs-limit text when daily limit is set", async () => {
+    const state = new AppState();
+    const config: AutopilotConfig = {
+      ...DEFAULTS,
+      budget: {
+        daily_limit_usd: 10,
+        monthly_limit_usd: 0,
+        per_agent_limit_usd: 0,
+        warn_at_percent: 80,
+      },
+    };
+    const app = createApp(state, { config });
+    const res = await app.request("/partials/budget");
+    const body = await res.text();
+    expect(body).toContain("Daily:");
+    expect(body).toContain("$10.00");
+  });
+
+  test("renders both daily and monthly when both limits set", async () => {
+    const state = new AppState();
+    const config: AutopilotConfig = {
+      ...DEFAULTS,
+      budget: {
+        daily_limit_usd: 10,
+        monthly_limit_usd: 50,
+        per_agent_limit_usd: 0,
+        warn_at_percent: 80,
+      },
+    };
+    const app = createApp(state, { config });
+    const res = await app.request("/partials/budget");
+    const body = await res.text();
+    expect(body).toContain("Daily:");
+    expect(body).toContain("Monthly:");
+    expect(body).toContain("|");
+  });
+
+  test("renders warning color when budget warning applies", async () => {
+    const state = new AppState();
+    state.addSpend(8.5); // 85% of $10 daily limit
+    const config: AutopilotConfig = {
+      ...DEFAULTS,
+      budget: {
+        daily_limit_usd: 10,
+        monthly_limit_usd: 0,
+        per_agent_limit_usd: 0,
+        warn_at_percent: 80,
+      },
+    };
+    const app = createApp(state, { config });
+    const res = await app.request("/partials/budget");
+    const body = await res.text();
+    expect(body).toContain("var(--yellow)");
+  });
+
+  test("renders red color when budget is exhausted", async () => {
+    const state = new AppState();
+    state.addSpend(12); // over $10 daily limit
+    const config: AutopilotConfig = {
+      ...DEFAULTS,
+      budget: {
+        daily_limit_usd: 10,
+        monthly_limit_usd: 0,
+        per_agent_limit_usd: 0,
+        warn_at_percent: 80,
+      },
+    };
+    const app = createApp(state, { config });
+    const res = await app.request("/partials/budget");
+    const body = await res.text();
+    expect(body).toContain("var(--red)");
+  });
+});
+
+describe("dashboard HTML includes budget partial div", () => {
+  test("includes budget-bar div with 30s poll trigger", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/");
+    const body = await res.text();
+    expect(body).toContain("budget-bar");
+    expect(body).toContain("/partials/budget");
+    expect(body).toContain("every 30s");
+  });
+});
+
+describe("CSRF protection", () => {
+  const TOKEN = "test-csrf-token";
+
+  test("cookie-only POST to /api/pause returns 403 (missing custom header)", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/pause", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe("Forbidden");
+  });
+
+  test("cookie-only POST to /api/planning returns 403", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/planning", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("cookie-only POST to /api/cancel/:agentId returns 403", async () => {
+    const state = new AppState();
+    state.addAgent("csrf-agent", "ENG-1", "Test");
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/cancel/csrf-agent", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("cookie-only POST to /api/retry/:historyId returns 403", async () => {
+    const state = new AppState();
+    state.addAgent("csrf-exec-1", "ENG-1", "Test issue", "linear-uuid-csrf");
+    state.completeAgent("csrf-exec-1", "failed", { error: "timed out" });
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/retry/csrf-exec-1", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("cookie + HX-Request: true allows POST to /api/pause", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/pause", {
+      method: "POST",
+      headers: {
+        Cookie: `autopilot_token=${TOKEN}`,
+        "HX-Request": "true",
+      },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("cookie + X-Requested-With: XMLHttpRequest allows POST to /api/pause", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/pause", {
+      method: "POST",
+      headers: {
+        Cookie: `autopilot_token=${TOKEN}`,
+        "X-Requested-With": "XMLHttpRequest",
+      },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("Bearer token POST without custom headers is allowed", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/api/pause", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("POST /auth/login is exempt from CSRF check", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `token=${encodeURIComponent(TOKEN)}`,
+    });
+    expect(res.status).toBe(302);
+  });
+
+  test("POST /auth/logout is exempt from CSRF check", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: TOKEN });
+    const res = await app.request("/auth/logout", {
+      method: "POST",
+      headers: { Cookie: `autopilot_token=${TOKEN}` },
+    });
+    expect(res.status).toBe(302);
+  });
+
+  test("without authToken: POST /api/pause works without custom headers", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/api/pause", { method: "POST" });
+    expect(res.status).toBe(200);
   });
 });
 

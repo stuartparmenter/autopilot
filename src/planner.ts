@@ -22,6 +22,15 @@ export async function shouldRunPlanning(opts: {
     return false;
   }
 
+  const lastRunAt = state.getPlanningStatus().lastRunAt;
+  if (lastRunAt !== undefined) {
+    const elapsedMs = Date.now() - lastRunAt;
+    const intervalMs = config.planning.min_interval_minutes * 60 * 1000;
+    if (elapsedMs < intervalMs) {
+      return false;
+    }
+  }
+
   const [readyCount, triageCount] = await Promise.all([
     countIssuesInState(linearIds, linearIds.states.ready),
     countIssuesInState(linearIds, linearIds.states.triage),

@@ -1,8 +1,9 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
 import { DASHBOARD_CSS } from "./dashboard-styles";
+import type { AutopilotConfig } from "./lib/config";
 import type { AppState } from "./state";
 
 const ACTIVITY_SAYINGS = [
@@ -24,15 +25,16 @@ function randomSaying(): string {
 
 export interface DashboardOptions {
   authToken?: string;
+  secureCookie?: boolean;
   triggerPlanning?: () => void;
   retryIssue?: (linearIssueId: string) => Promise<void>;
+  config?: AutopilotConfig;
 }
 
-function safeCompare(a: string, b: string): boolean {
-  const aBytes = Buffer.from(a);
-  const bBytes = Buffer.from(b);
-  if (aBytes.length !== bBytes.length) return false;
-  return timingSafeEqual(aBytes, bBytes);
+export function safeCompare(a: string, b: string): boolean {
+  const aHash = createHash("sha256").update(a).digest();
+  const bHash = createHash("sha256").update(b).digest();
+  return timingSafeEqual(aHash, bHash);
 }
 
 function loginPage(error?: string): string {
@@ -145,6 +147,16 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
       const tokenToCheck = bearerToken ?? cookieToken;
 
       if (tokenToCheck !== null && safeCompare(tokenToCheck, authToken)) {
+        // CSRF protection: cookie-authenticated POST requests must include a non-simple header
+        const isCookieAuth = bearerToken === null && cookieToken !== null;
+        if (isCookieAuth && c.req.method === "POST") {
+          const hasHxRequest = c.req.header("HX-Request") === "true";
+          const hasXRequestedWith =
+            c.req.header("X-Requested-With") === "XMLHttpRequest";
+          if (!hasHxRequest && !hasXRequestedWith) {
+            return c.json({ error: "Forbidden" }, 403);
+          }
+        }
         return next();
       }
 
@@ -165,6 +177,7 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
           httpOnly: true,
           sameSite: "Strict",
           path: "/",
+          secure: options?.secureCookie,
         });
         return c.redirect("/");
       }
@@ -230,6 +243,12 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
                 hx-trigger="every 5s"
                 hx-swap="innerHTML"
               ></div>
+              <div
+                class="budget-bar"
+                hx-get="/partials/budget"
+                hx-trigger="load, every 30s"
+                hx-swap="innerHTML"
+              ></div>
             </header>
             <div class="layout">
               <div class="sidebar">
@@ -279,6 +298,14 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
       return c.json({ enabled: false });
     }
     return c.json({ enabled: true, ...analytics });
+  });
+
+  app.get("/api/budget", (c) => {
+    if (!options?.config) {
+      return c.json({ enabled: false });
+    }
+    const snapshot = state.getBudgetSnapshot(options.config);
+    return c.json({ enabled: true, ...snapshot });
   });
 
   app.post("/api/planning", (c) => {
@@ -438,6 +465,46 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
           ? `${Math.round(hist.durationMs / 1000)}s`
           : "?";
         const costStr = hist.costUsd ? `$${hist.costUsd.toFixed(4)}` : "";
+        const savedLogs = state.getActivityLogsForRun(id);
+        if (savedLogs.length > 0) {
+          return c.html(html`
+            <div>
+              <div style="display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border)">
+                <div>
+                  <span class="status-dot ${hist.status}"></span>
+                  <strong>${hist.issueId}</strong> — ${hist.issueTitle}
+                </div>
+                <div class="meta">${durationStr} &middot; ${String(savedLogs.length)} activities${costStr ? ` &middot; ${costStr}` : ""}</div>
+              </div>
+              ${raw(
+                savedLogs
+                  .map((act) => {
+                    const time = new Date(act.timestamp).toLocaleTimeString(
+                      "en-US",
+                      { hour12: false },
+                    );
+                    let badgeHtml = `<span class="type-badge ${act.type}">${act.type}</span>`;
+                    let summaryText = act.summary;
+                    if (act.type === "tool_use") {
+                      const colonIdx = act.summary.indexOf(": ");
+                      if (colonIdx !== -1) {
+                        badgeHtml = `<span class="type-badge ${act.type}">${act.summary.slice(0, colonIdx)}</span>`;
+                        summaryText = act.summary.slice(colonIdx + 2);
+                      }
+                    } else if (act.type === "text") {
+                      badgeHtml = "";
+                    }
+                    return `<div class="activity-item">
+                      <span class="time">${time}</span>
+                      ${badgeHtml}
+                      ${escapeHtml(summaryText)}
+                    </div>`;
+                  })
+                  .join(""),
+              )}
+            </div>
+          `);
+        }
         return c.html(html`
           <div style="padding: 8px 0">
             <div>
@@ -547,6 +614,35 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
           .join(""),
       )}`,
     );
+  });
+
+  app.get("/partials/budget", (c) => {
+    if (!options?.config) {
+      return c.html(html`<div></div>`);
+    }
+    const snap = state.getBudgetSnapshot(options.config);
+    if (snap.dailyLimit <= 0 && snap.monthlyLimit <= 0) {
+      return c.html(html`<div></div>`);
+    }
+    let colorStyle = "";
+    if (snap.exhausted) {
+      colorStyle = "color: var(--red)";
+    } else if (snap.warning) {
+      colorStyle = "color: var(--yellow)";
+    }
+    const parts: string[] = [];
+    if (snap.dailyLimit > 0) {
+      parts.push(
+        `Daily: $${snap.dailySpend.toFixed(2)} / $${snap.dailyLimit.toFixed(2)}`,
+      );
+    }
+    if (snap.monthlyLimit > 0) {
+      parts.push(
+        `Monthly: $${snap.monthlySpend.toFixed(2)} / $${snap.monthlyLimit.toFixed(2)}`,
+      );
+    }
+    const text = parts.join("  |  ");
+    return c.html(html`<span style="${colorStyle}">${text}</span>`);
   });
 
   app.get("/partials/analytics", (c) => {

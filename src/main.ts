@@ -11,11 +11,12 @@ import { RatelimitedLinearError } from "@linear/sdk";
 import { fillSlots } from "./executor";
 import { closeAllAgents } from "./lib/claude";
 import { loadConfig, resolveProjectPath } from "./lib/config";
-import { openDb } from "./lib/db";
+import { openDb, pruneActivityLogs } from "./lib/db";
 import { interruptibleSleep, isFatalError } from "./lib/errors";
 import { detectRepo } from "./lib/github";
 import { resolveLinearIds, updateIssue } from "./lib/linear";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
+import { sanitizeMessage } from "./lib/sanitize";
 import { checkOpenPRs } from "./monitor";
 import { runPlanning, shouldRunPlanning } from "./planner";
 import { checkProjects } from "./projects";
@@ -106,7 +107,7 @@ const isLocalhost =
   host === "127.0.0.1" || host === "localhost" || host === "::1";
 
 if (!isLocalhost && !dashboardToken) {
-  error(
+  fatal(
     `AUTOPILOT_DASHBOARD_TOKEN must be set when binding dashboard to non-localhost.\n` +
       `Set: export AUTOPILOT_DASHBOARD_TOKEN=<your-secret-token>\n` +
       `Or bind to localhost only (omit --host).`,
@@ -160,11 +161,15 @@ if (config.persistence.enabled) {
   const dbPath = resolve(projectPath, config.persistence.db_path);
   const db = openDb(dbPath);
   state.setDb(db);
+  const pruned = pruneActivityLogs(db, config.persistence.retention_days);
+  if (pruned > 0) info(`Pruned ${pruned} old activity log entries`);
   ok(`Persistence: ${dbPath}`);
 }
 
 const app = createApp(state, {
   authToken: dashboardToken,
+  secureCookie: !isLocalhost,
+  config,
   triggerPlanning: () => {
     runPlanning({
       config,
@@ -202,16 +207,6 @@ if (dashboardToken) {
 }
 ok(`Dashboard: http://${isLocalhost ? "localhost" : host}:${server.port}`);
 console.log();
-
-// --- Helpers ---
-
-/** Redact sensitive tokens from error messages before logging. */
-function sanitizeMessage(msg: string): string {
-  return msg
-    .replace(/Bearer\s+\S+/g, "Bearer [REDACTED]")
-    .replace(/lin_api_\S+/g, "lin_api_[REDACTED]")
-    .replace(/sk-ant-\S+/g, "sk-ant-[REDACTED]");
-}
 
 // --- Graceful shutdown ---
 

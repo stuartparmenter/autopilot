@@ -2,8 +2,9 @@ import { handleAgentResult } from "./lib/agent-result";
 import { buildMcpServers, runClaude } from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
 import { getReadyIssues, updateIssue, validateIdentifier } from "./lib/linear";
-import { info } from "./lib/logger";
+import { info, warn } from "./lib/logger";
 import { buildPrompt } from "./lib/prompt";
+import { sanitizeMessage } from "./lib/sanitize";
 import type { AppState } from "./state";
 
 // Track issue IDs currently being worked on to prevent duplicates
@@ -89,7 +90,7 @@ export async function executeIssue(opts: {
       if (failureCount >= config.executor.max_retries) {
         await updateIssue(issue.id, {
           stateId: linearIds.states.blocked,
-          comment: `Executor failed after ${failureCount} total attempt(s) — moving to Blocked.\n\nLast error:\n\`\`\`\n${result.error}\n\`\`\``,
+          comment: `Executor failed after ${failureCount} total attempt(s) — moving to Blocked.\n\nLast error:\n\`\`\`\n${sanitizeMessage(result.error ?? "")}\n\`\`\``,
         });
         state.clearIssueFailures(issue.id);
       } else {
@@ -125,6 +126,15 @@ export async function fillSlots(opts: {
   const available = maxSlots - running;
 
   if (available <= 0) {
+    return [];
+  }
+
+  const budgetCheck = state.checkBudget(config);
+  if (!budgetCheck.ok) {
+    warn(`Budget limit reached: ${budgetCheck.reason}`);
+    if (!state.isPaused()) {
+      state.togglePause();
+    }
     return [];
   }
 
