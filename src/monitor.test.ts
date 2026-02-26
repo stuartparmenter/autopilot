@@ -475,6 +475,31 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
     expect(callCount).toBe(2);
   });
 
+  test("retries issue.attachments() on transient 503 error", async () => {
+    const issue = makeIssue("retry-attach", "https://github.com/o/r/pull/92");
+    let callCount = 0;
+    issue.attachments = () => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.reject(
+          Object.assign(new Error("Service Unavailable"), { status: 503 }),
+        ) as ReturnType<(typeof issue)["attachments"]>;
+      }
+      return Promise.resolve({
+        nodes: [
+          { sourceType: "github", url: "https://github.com/o/r/pull/92" },
+        ],
+      });
+    };
+    mockIssuesQuery.mockResolvedValue({ nodes: [issue] });
+
+    const result = await checkOpenPRs(makeOpts(state));
+
+    expect(callCount).toBe(2);
+    expect(result).toHaveLength(1);
+    await Promise.all(result);
+  });
+
   test("continues processing subsequent issues when attachments() throws", async () => {
     const failingIssue = makeIssue(
       "fail-attach",

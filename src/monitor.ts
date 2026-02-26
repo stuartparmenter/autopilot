@@ -74,7 +74,10 @@ export async function checkOpenPRs(opts: {
   for (const issue of issues) {
     let attachments: Awaited<ReturnType<(typeof issue)["attachments"]>>;
     try {
-      attachments = await issue.attachments();
+      attachments = await withRetry(
+        () => issue.attachments(),
+        `attachments:${issue.identifier}`,
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       warn(`Failed to get attachments for ${issue.identifier}: ${msg}`);
