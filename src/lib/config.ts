@@ -3,11 +3,17 @@ import { resolve } from "node:path";
 import YAML from "yaml";
 import { fatal, warn } from "./logger";
 
+export interface OAuthConfig {
+  client_id: string;
+  client_secret: string;
+}
+
 export interface LinearConfig {
   team: string;
   initiative: string;
   labels: string[];
   projects: string[];
+  oauth?: OAuthConfig;
   states: {
     triage: string;
     ready: string;
@@ -55,6 +61,7 @@ export interface PlanningConfig {
   min_interval_minutes: number;
   max_issues_per_run: number;
   timeout_minutes: number;
+  inactivity_timeout_minutes: number;
   model: string;
 }
 
@@ -91,6 +98,7 @@ export interface BudgetConfig {
 export interface ProjectsConfig {
   enabled: boolean;
   poll_interval_minutes: number;
+  backlog_review_interval_minutes: number;
   max_active_projects: number;
   timeout_minutes: number;
   model: string;
@@ -114,6 +122,7 @@ export const DEFAULTS: AutopilotConfig = {
     initiative: "",
     labels: [],
     projects: [],
+    oauth: undefined,
     states: {
       triage: "Triage",
       ready: "Todo",
@@ -143,6 +152,7 @@ export const DEFAULTS: AutopilotConfig = {
     min_interval_minutes: 60,
     max_issues_per_run: 5,
     timeout_minutes: 90,
+    inactivity_timeout_minutes: 30,
     model: "opus",
   },
   monitor: {
@@ -161,6 +171,7 @@ export const DEFAULTS: AutopilotConfig = {
   projects: {
     enabled: true,
     poll_interval_minutes: 10,
+    backlog_review_interval_minutes: 240,
     max_active_projects: 5,
     timeout_minutes: 60,
     model: "opus",
@@ -282,7 +293,7 @@ function validateConfigStrings(config: AutopilotConfig): void {
 }
 
 export function loadConfig(projectPath: string): AutopilotConfig {
-  const configPath = resolve(projectPath, ".claude-autopilot.yml");
+  const configPath = resolve(projectPath, ".autopilot.yml");
   if (!existsSync(configPath)) {
     throw new Error(
       `Config file not found: ${configPath}\nRun 'bun run setup' first.`,
@@ -303,7 +314,7 @@ export function loadConfig(projectPath: string): AutopilotConfig {
   );
   for (const key of unknownKeys) {
     warn(
-      `Unknown config key "${key}" in .claude-autopilot.yml — this key has no effect. Check for typos.`,
+      `Unknown config key "${key}" in .autopilot.yml — this key has no effect. Check for typos.`,
     );
   }
 
@@ -398,6 +409,17 @@ export function loadConfig(projectPath: string): AutopilotConfig {
   ) {
     throw new Error(
       "Config validation error: planning.max_issues_per_run must be an integer between 1 and 50",
+    );
+  }
+
+  if (
+    typeof config.planning.inactivity_timeout_minutes !== "number" ||
+    Number.isNaN(config.planning.inactivity_timeout_minutes) ||
+    config.planning.inactivity_timeout_minutes < 1 ||
+    config.planning.inactivity_timeout_minutes > 120
+  ) {
+    throw new Error(
+      "Config validation error: planning.inactivity_timeout_minutes must be a number between 1 and 120",
     );
   }
 

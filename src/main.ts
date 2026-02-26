@@ -1,20 +1,30 @@
 #!/usr/bin/env bun
 
 /**
- * main.ts — Single entry point for claude-autopilot.
+ * main.ts — Single entry point for autopilot.
  *
  * Usage: bun run start <project-path> [--port 7890] [--host 127.0.0.1]
  */
 
 import { resolve } from "node:path";
 import { RatelimitedLinearError } from "@linear/sdk";
-import { fillSlots, recoverStaleIssues } from "./executor";
+import {
+  fillSlots,
+  recoverAgentsOnShutdown,
+  recoverStaleIssues,
+} from "./executor";
 import { closeAllAgents } from "./lib/claude";
 import { loadConfig, resolveProjectPath } from "./lib/config";
 import { openDb, pruneActivityLogs } from "./lib/db";
 import { interruptibleSleep, isFatalError } from "./lib/errors";
 import { detectRepo } from "./lib/github";
-import { getTriageIssues, resolveLinearIds, updateIssue } from "./lib/linear";
+import {
+  configureLinearAuth,
+  getTriageIssues,
+  resolveLinearIds,
+  updateIssue,
+} from "./lib/linear";
+import { getCurrentLinearToken, initLinearAuth } from "./lib/linear-oauth";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
 import { sanitizeMessage } from "./lib/sanitize";
 import { sweepWorktrees } from "./lib/worktree";
@@ -22,7 +32,7 @@ import { checkOpenPRs } from "./monitor";
 import { runPlanning, shouldRunPlanning } from "./planner";
 import { checkProjects } from "./projects";
 import { createApp } from "./server";
-import { AppState } from "./state";
+import { type AgentState, AppState } from "./state";
 
 // --- Parse args ---
 
@@ -48,7 +58,7 @@ if (!projectArg) {
     "Usage: bun run start <project-path> [--port 7890] [--host 127.0.0.1]",
   );
   console.log();
-  console.log("Start the claude-autopilot loop with a web dashboard.");
+  console.log("Start the autopilot loop with a web dashboard.");
   console.log();
   console.log("Options:");
   console.log("  --port <number>   Dashboard port (default: 7890)");
@@ -61,16 +71,23 @@ if (!projectArg) {
 const projectPath = resolveProjectPath(projectArg);
 const config = loadConfig(projectPath);
 
-if (!config.linear.team)
-  fatal("linear.team is not set in .claude-autopilot.yml");
+if (!config.linear.team) fatal("linear.team is not set in .autopilot.yml");
 
-// --- Check environment variables ---
+// --- Initialize Linear auth (OAuth or API key) ---
 
-if (!process.env.LINEAR_API_KEY) {
+// Always open the DB for OAuth token storage, regardless of persistence.enabled
+const authDbPath = resolve(projectPath, config.persistence.db_path);
+const authDb = openDb(authDbPath);
+await initLinearAuth(authDb);
+
+if (!getCurrentLinearToken()) {
   fatal(
-    "LINEAR_API_KEY environment variable is not set.\n" +
-      "Create one at: https://linear.app/settings/api\n" +
-      "Then: export LINEAR_API_KEY=lin_api_...",
+    "No Linear authentication configured.\n" +
+      "Option 1: Set LINEAR_API_KEY environment variable.\n" +
+      "  Create one at: https://linear.app/settings/api\n" +
+      "  Then: export LINEAR_API_KEY=lin_api_...\n" +
+      "Option 2: Connect via OAuth at the dashboard (/auth/linear).\n" +
+      "  Required: LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET env vars.",
   );
 }
 
@@ -115,7 +132,7 @@ if (!isLocalhost && !dashboardToken) {
   );
 }
 
-header("claude-autopilot v0.2.0");
+header("autopilot v0.2.0");
 
 info(`Project: ${projectPath}`);
 info(
@@ -158,19 +175,31 @@ ok(
 
 const state = new AppState(config.executor.parallel);
 
+// Configure ENG-107's async client with OAuth auto-refresh support.
+// Must happen before resolveLinearIds() which calls getLinearClientAsync().
+configureLinearAuth(
+  authDb,
+  config.linear.oauth
+    ? {
+        clientId: config.linear.oauth.client_id,
+        clientSecret: config.linear.oauth.client_secret,
+      }
+    : undefined,
+);
+
 if (config.persistence.enabled) {
-  const dbPath = resolve(projectPath, config.persistence.db_path);
-  const db = openDb(dbPath);
-  state.setDb(db);
-  const pruned = pruneActivityLogs(db, config.persistence.retention_days);
+  // Reuse the already-opened authDb (same file) for persistence
+  state.setDb(authDb);
+  const pruned = pruneActivityLogs(authDb, config.persistence.retention_days);
   if (pruned > 0) info(`Pruned ${pruned} old activity log entries`);
-  ok(`Persistence: ${dbPath}`);
+  ok(`Persistence: ${authDbPath}`);
 }
 
 const app = createApp(state, {
   authToken: dashboardToken,
   secureCookie: !isLocalhost,
   config,
+  db: authDb,
   triggerPlanning: () => {
     runPlanning({
       config,
@@ -228,6 +257,7 @@ console.log();
 
 const shutdownController = new AbortController();
 let shuttingDown = false;
+let agentsAtShutdown: AgentState[] = [];
 
 function shutdown() {
   if (shuttingDown) {
@@ -235,6 +265,9 @@ function shutdown() {
     process.exit(1);
   }
   shuttingDown = true;
+  // Capture running agents synchronously before killing subprocesses,
+  // so the drain phase can move their Linear issues back to Ready.
+  agentsAtShutdown = state.getRunningAgents();
   console.log();
   info("Shutting down — killing agent subprocesses...");
   // close() is synchronous: sends SIGTERM immediately, escalates to SIGKILL
@@ -463,6 +496,14 @@ if (drainablePromises.length > 0) {
     Promise.all([Promise.allSettled(drainablePromises), Bun.sleep(6_000)]),
     Bun.sleep(60_000),
   ]);
+}
+
+// --- Recover In Progress issues on shutdown ---
+
+const issueCount = agentsAtShutdown.filter((a) => a.linearIssueId).length;
+if (issueCount > 0) {
+  info(`Recovering ${issueCount} In Progress issue(s) back to Ready...`);
+  await recoverAgentsOnShutdown(agentsAtShutdown, linearIds.states.ready);
 }
 
 server.stop();

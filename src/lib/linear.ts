@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import {
   type Initiative,
   type Issue,
@@ -8,27 +9,73 @@ import {
   type WorkflowState,
 } from "@linear/sdk";
 import type { LinearConfig, LinearIds } from "./config";
+import { getOAuthToken } from "./db";
+import { ensureFreshToken, getLinearAccessToken } from "./linear-auth";
 import { info, warn } from "./logger";
 import { withRetry } from "./retry";
 
 let _client: LinearClient | null = null;
+let _currentToken: string | null = null;
+let _db: Database | null = null;
+let _oauthConfig: { clientId: string; clientSecret: string } | null = null;
+let _useTestingClient = false;
+
+/**
+ * Configure OAuth-aware Linear auth. Call once during startup after openDb().
+ * When called, resets any cached client so the next request uses the new config.
+ */
+export function configureLinearAuth(
+  db: Database,
+  oauthConfig?: { clientId: string; clientSecret: string },
+): void {
+  _db = db;
+  _oauthConfig = oauthConfig ?? null;
+  _client = null;
+  _currentToken = null;
+}
+
+/**
+ * Get or create the Linear client with OAuth token support and auto-refresh.
+ * Uses an OAuth access token when available, falls back to LINEAR_API_KEY.
+ * Recreates the client when the underlying token changes (e.g. after refresh).
+ */
+export async function getLinearClientAsync(): Promise<LinearClient> {
+  // Short-circuit for unit tests that inject a client directly
+  if (_useTestingClient && _client) return _client;
+
+  let token: string;
+  if (_db && _oauthConfig) {
+    token = await ensureFreshToken(_db, _oauthConfig);
+  } else {
+    token = getLinearAccessToken(_db ?? undefined);
+  }
+
+  if (_client && _currentToken === token) return _client;
+
+  // Detect whether the token is an OAuth token or a raw API key so we use the
+  // correct LinearClient constructor option (accessToken vs apiKey).
+  const isOAuth = _db !== null && getOAuthToken(_db, "linear") !== null;
+  _client = new LinearClient(
+    isOAuth ? { accessToken: token } : { apiKey: token },
+  );
+  _currentToken = token;
+  return _client;
+}
 
 /**
  * Get or create the Linear client. Reads LINEAR_API_KEY from environment.
+ * @deprecated Use getLinearClientAsync() for OAuth support and auto-refresh.
  */
 export function getLinearClient(): LinearClient {
-  if (_client) return _client;
+  if (_useTestingClient && _client) return _client;
+  if (_client && _currentToken !== null) return _client;
 
   const apiKey = process.env.LINEAR_API_KEY;
   if (!apiKey) {
-    throw new Error(
-      "LINEAR_API_KEY environment variable is not set.\n" +
-        "Create one at: https://linear.app/settings/api\n" +
-        "Then: export LINEAR_API_KEY=lin_api_...",
-    );
+    throw new Error("No Linear authentication configured. Set LINEAR_API_KEY.");
   }
-
   _client = new LinearClient({ apiKey });
+  _currentToken = apiKey;
   return _client;
 }
 
@@ -37,6 +84,10 @@ export function getLinearClient(): LinearClient {
  */
 export function resetClient(): void {
   _client = null;
+  _currentToken = null;
+  _db = null;
+  _oauthConfig = null;
+  _useTestingClient = false;
 }
 
 /**
@@ -44,13 +95,15 @@ export function resetClient(): void {
  */
 export function setClientForTesting(client: LinearClient): void {
   _client = client;
+  _currentToken = null;
+  _useTestingClient = true;
 }
 
 /**
  * Find a team by its key (e.g., "ENG").
  */
 export async function findTeam(teamKey: string): Promise<Team> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const teams = await withRetry(
     () => client.teams({ filter: { key: { eq: teamKey } } }),
     "findTeam",
@@ -67,7 +120,7 @@ export async function findState(
   teamId: string,
   stateName: string,
 ): Promise<WorkflowState> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const states = await withRetry(
     () =>
       client.workflowStates({
@@ -88,7 +141,7 @@ export async function findOrCreateLabel(
   name: string,
   color?: string,
 ): Promise<IssueLabel> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const labels = await withRetry(
     () =>
       client.issueLabels({
@@ -120,7 +173,7 @@ export async function findOrCreateLabel(
 export async function findOrCreateInitiative(
   name: string,
 ): Promise<Initiative> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const initiatives = await withRetry(
     () => client.initiatives({ filter: { name: { eq: name } } }),
     "findOrCreateInitiative",
@@ -211,7 +264,7 @@ export async function getReadyIssues(
   limit: number = 10,
   filters?: { labels?: string[]; projects?: string[] },
 ): Promise<Issue[]> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const filter = {
     team: { id: { eq: linearIds.teamId } },
     state: { id: { eq: linearIds.states.ready } },
@@ -284,7 +337,7 @@ export async function getTriageIssues(
   linearIds: LinearIds,
   limit: number = 50,
 ): Promise<Issue[]> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const result = await withRetry(
     () =>
       client.issues({
@@ -309,7 +362,7 @@ export async function getInProgressIssues(
   linearIds: LinearIds,
   limit: number = 50,
 ): Promise<Issue[]> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const result = await withRetry(
     () =>
       client.issues({
@@ -334,11 +387,18 @@ const MAX_PAGES = 100;
 export async function countIssuesInState(
   linearIds: LinearIds,
   stateId: string,
+  filters?: { labels?: string[]; projects?: string[] },
 ): Promise<number> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const filter = {
     team: { id: { eq: linearIds.teamId } },
     state: { id: { eq: stateId } },
+    ...(filters?.labels?.length
+      ? { labels: { some: { name: { in: filters.labels } } } }
+      : {}),
+    ...(filters?.projects?.length
+      ? { project: { name: { in: filters.projects } } }
+      : {}),
   };
 
   let count = 0;
@@ -389,7 +449,7 @@ export async function updateIssue(
   issueId: string,
   opts: { stateId?: string; comment?: string },
 ): Promise<void> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
 
   if (opts.stateId) {
     await withRetry(
@@ -419,7 +479,7 @@ export async function createIssue(opts: {
   labelIds?: string[];
   parentId?: string;
 }): Promise<Issue> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const payload = await withRetry(
     () =>
       client.createIssue({
@@ -449,7 +509,7 @@ export async function createProjectStatusUpdate(opts: {
   body: string;
   health?: "onTrack" | "atRisk" | "offTrack";
 }): Promise<string> {
-  const client = getLinearClient();
+  const client = await getLinearClientAsync();
   const healthMap: Record<string, ProjectUpdateHealthType> = {
     onTrack: ProjectUpdateHealthType.OnTrack,
     atRisk: ProjectUpdateHealthType.AtRisk,
@@ -489,7 +549,7 @@ export function validateIdentifier(identifier: string): string {
  */
 export async function testConnection(): Promise<boolean> {
   try {
-    const client = getLinearClient();
+    const client = await getLinearClientAsync();
     const viewer = await withRetry(() => client.viewer, "testConnection");
     info(`Connected to Linear as ${viewer.name ?? viewer.email}`);
     return true;

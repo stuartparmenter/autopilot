@@ -1,12 +1,16 @@
+import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { LinearClient } from "@linear/sdk";
 import type { LinearIds } from "./config";
+import { saveOAuthToken } from "./db";
 import {
+  configureLinearAuth,
   countIssuesInState,
   findOrCreateLabel,
   findState,
   findTeam,
   getLinearClient,
+  getLinearClientAsync,
   getReadyIssues,
   getTriageIssues,
   createIssue as linearCreateIssue,
@@ -16,6 +20,7 @@ import {
   setClientForTesting,
   validateIdentifier,
 } from "./linear";
+import { resetLinearAuth } from "./linear-oauth";
 
 // ---------------------------------------------------------------------------
 // Shared test constants
@@ -180,6 +185,7 @@ function makeStandardClient(): LinearClient {
 describe("getLinearClient", () => {
   beforeEach(() => {
     resetClient();
+    resetLinearAuth();
     process.env.LINEAR_API_KEY = "test-linear-key";
   });
 
@@ -194,9 +200,11 @@ describe("getLinearClient", () => {
     expect(a).toBe(b);
   });
 
-  test("throws with helpful message when LINEAR_API_KEY is missing", () => {
+  test("throws with helpful message when no auth is configured", () => {
     delete process.env.LINEAR_API_KEY;
-    expect(() => getLinearClient()).toThrow("LINEAR_API_KEY");
+    expect(() => getLinearClient()).toThrow(
+      "No Linear authentication configured",
+    );
   });
 
   test("returns a new instance after resetClient()", () => {
@@ -822,6 +830,55 @@ describe("countIssuesInState", () => {
     );
     expect(hasWarning).toBe(true);
   });
+
+  test("includes labels filter in GraphQL request when labels provided", async () => {
+    rawResponses = [makeRawResponse(3, false, null)];
+    await countIssuesInState(TEST_IDS, "state-id", {
+      labels: ["backend", "frontend"],
+    });
+    const calledFilter = (mockRawRequest.mock.calls[0] as unknown[])[1] as {
+      filter: Record<string, unknown>;
+    };
+    expect(calledFilter.filter).toHaveProperty("labels", {
+      some: { name: { in: ["backend", "frontend"] } },
+    });
+  });
+
+  test("includes project filter in GraphQL request when projects provided", async () => {
+    rawResponses = [makeRawResponse(2, false, null)];
+    await countIssuesInState(TEST_IDS, "state-id", {
+      projects: ["Alpha", "Beta"],
+    });
+    const calledFilter = (mockRawRequest.mock.calls[0] as unknown[])[1] as {
+      filter: Record<string, unknown>;
+    };
+    expect(calledFilter.filter).toHaveProperty("project", {
+      name: { in: ["Alpha", "Beta"] },
+    });
+  });
+
+  test("omits label/project filters when arrays are empty", async () => {
+    rawResponses = [makeRawResponse(1, false, null)];
+    await countIssuesInState(TEST_IDS, "state-id", {
+      labels: [],
+      projects: [],
+    });
+    const calledFilter = (mockRawRequest.mock.calls[0] as unknown[])[1] as {
+      filter: Record<string, unknown>;
+    };
+    expect(calledFilter.filter).not.toHaveProperty("labels");
+    expect(calledFilter.filter).not.toHaveProperty("project");
+  });
+
+  test("omits label/project filters when no filters argument provided", async () => {
+    rawResponses = [makeRawResponse(1, false, null)];
+    await countIssuesInState(TEST_IDS, "state-id");
+    const calledFilter = (mockRawRequest.mock.calls[0] as unknown[])[1] as {
+      filter: Record<string, unknown>;
+    };
+    expect(calledFilter.filter).not.toHaveProperty("labels");
+    expect(calledFilter.filter).not.toHaveProperty("project");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1100,5 +1157,86 @@ describe("resolveLinearIds", () => {
     await expect(resolveLinearIds(LINEAR_CONFIG)).rejects.toThrow(
       "not found for team",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// configureLinearAuth + getLinearClientAsync
+// ---------------------------------------------------------------------------
+
+describe("getLinearClientAsync", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    resetClient();
+    db = new Database(":memory:", { create: true });
+    // Ensure the oauth_tokens table exists
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS oauth_tokens (
+        service TEXT PRIMARY KEY,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        token_type TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        actor TEXT NOT NULL
+      )
+    `);
+  });
+
+  test("returns client using LINEAR_API_KEY when no OAuth configured", async () => {
+    process.env.LINEAR_API_KEY = "test-api-key";
+    const client = await getLinearClientAsync();
+    expect(client).toBeDefined();
+  });
+
+  test("returns client using OAuth access token when DB has a fresh token", async () => {
+    delete process.env.LINEAR_API_KEY;
+    // Save a fresh OAuth token to the DB (expires 1 hour from now)
+    saveOAuthToken(db, "linear", {
+      accessToken: "oauth-access-token",
+      refreshToken: "oauth-refresh-token",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      tokenType: "Bearer",
+      scope: "read",
+      actor: "application",
+    });
+    configureLinearAuth(db);
+    const client = await getLinearClientAsync();
+    expect(client).toBeDefined();
+  });
+
+  test("returns same client instance when token has not changed (singleton)", async () => {
+    process.env.LINEAR_API_KEY = "test-api-key";
+    configureLinearAuth(db);
+    const a = await getLinearClientAsync();
+    const b = await getLinearClientAsync();
+    expect(a).toBe(b);
+  });
+
+  test("recreates client when configureLinearAuth is called again (token change)", async () => {
+    process.env.LINEAR_API_KEY = "test-api-key";
+    configureLinearAuth(db);
+    const a = await getLinearClientAsync();
+    // Reconfigure — this resets the cached client
+    configureLinearAuth(db);
+    const b = await getLinearClientAsync();
+    expect(a).not.toBe(b);
+  });
+
+  test("falls back to LINEAR_API_KEY when OAuth configured but no token in DB", async () => {
+    process.env.LINEAR_API_KEY = "test-api-key";
+    configureLinearAuth(db, { clientId: "cid", clientSecret: "csec" });
+    // No OAuth token in DB — ensureFreshToken should fall back to LINEAR_API_KEY
+    const client = await getLinearClientAsync();
+    expect(client).toBeDefined();
+  });
+
+  test("setClientForTesting still works after configureLinearAuth", async () => {
+    configureLinearAuth(db);
+    const mockClient = makeStandardClient();
+    setClientForTesting(mockClient);
+    const result = await getLinearClientAsync();
+    expect(result).toBe(mockClient);
   });
 });
