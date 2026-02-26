@@ -14,12 +14,16 @@ import { withRetry } from "./retry";
 
 let _client: LinearClient | null = null;
 let _clientToken: string | null = null;
+let _testClient: LinearClient | null = null;
 
 /**
  * Get or create the Linear client. Uses OAuth token if configured, otherwise
  * falls back to LINEAR_API_KEY environment variable.
  */
 export function getLinearClient(): LinearClient {
+  // Test injection takes priority — bypasses token management entirely
+  if (_testClient) return _testClient;
+
   const token = getCurrentLinearToken();
   if (!token) {
     throw new Error(
@@ -46,13 +50,14 @@ export function getLinearClient(): LinearClient {
 export function resetClient(): void {
   _client = null;
   _clientToken = null;
+  _testClient = null;
 }
 
 /**
  * Inject a mock client directly. Used in unit tests to avoid real API calls.
  */
 export function setClientForTesting(client: LinearClient): void {
-  _client = client;
+  _testClient = client;
 }
 
 /**
