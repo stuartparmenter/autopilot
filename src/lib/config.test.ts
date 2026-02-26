@@ -239,6 +239,41 @@ planning:
     expect(config.planning.max_issues_per_run).toBe(3);
   });
 
+  test("planning inactivity_timeout_minutes defaults to 30", () => {
+    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.planning.inactivity_timeout_minutes).toBe(30);
+  });
+
+  test("planning inactivity_timeout_minutes can be overridden", () => {
+    const dir = writeConfig(`
+planning:
+  inactivity_timeout_minutes: 45
+`);
+    const config = loadConfig(dir);
+    expect(config.planning.inactivity_timeout_minutes).toBe(45);
+  });
+
+  test("planning inactivity_timeout_minutes throws below 1", () => {
+    const dir = writeConfig(`
+planning:
+  inactivity_timeout_minutes: 0
+`);
+    expect(() => loadConfig(dir)).toThrow(
+      "planning.inactivity_timeout_minutes must be a number between 1 and 120",
+    );
+  });
+
+  test("planning inactivity_timeout_minutes throws above 120", () => {
+    const dir = writeConfig(`
+planning:
+  inactivity_timeout_minutes: 121
+`);
+    expect(() => loadConfig(dir)).toThrow(
+      "planning.inactivity_timeout_minutes must be a number between 1 and 120",
+    );
+  });
+
   test("poll_interval_minutes defaults to 5", () => {
     writeFileSync(join(tmpDir, ".autopilot.yml"), "");
     const config = loadConfig(tmpDir);

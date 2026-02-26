@@ -216,7 +216,7 @@ async function runProjectOwner(opts: {
       cwd: opts.projectPath,
       label: `project-owner:${projectName}`,
       timeoutMs: config.projects.timeout_minutes * 60 * 1000,
-      inactivityMs: config.executor.inactivity_timeout_minutes * 60 * 1000,
+      inactivityMs: config.planning.inactivity_timeout_minutes * 60 * 1000,
       model: config.projects.model,
       sandbox: config.sandbox,
       mcpServers: buildMcpServers(),

@@ -61,6 +61,7 @@ export interface PlanningConfig {
   min_interval_minutes: number;
   max_issues_per_run: number;
   timeout_minutes: number;
+  inactivity_timeout_minutes: number;
   model: string;
 }
 
@@ -151,6 +152,7 @@ export const DEFAULTS: AutopilotConfig = {
     min_interval_minutes: 60,
     max_issues_per_run: 5,
     timeout_minutes: 90,
+    inactivity_timeout_minutes: 30,
     model: "opus",
   },
   monitor: {
@@ -407,6 +409,17 @@ export function loadConfig(projectPath: string): AutopilotConfig {
   ) {
     throw new Error(
       "Config validation error: planning.max_issues_per_run must be an integer between 1 and 50",
+    );
+  }
+
+  if (
+    typeof config.planning.inactivity_timeout_minutes !== "number" ||
+    Number.isNaN(config.planning.inactivity_timeout_minutes) ||
+    config.planning.inactivity_timeout_minutes < 1 ||
+    config.planning.inactivity_timeout_minutes > 120
+  ) {
+    throw new Error(
+      "Config validation error: planning.inactivity_timeout_minutes must be a number between 1 and 120",
     );
   }
 
