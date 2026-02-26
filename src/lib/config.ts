@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import YAML from "yaml";
-import { fatal } from "./logger";
+import { fatal, warn } from "./logger";
 
 export interface LinearConfig {
   team: string;
@@ -55,6 +55,11 @@ export interface PlanningConfig {
   model: string;
 }
 
+export interface MonitorConfig {
+  respond_to_reviews: boolean;
+  review_responder_timeout_minutes: number;
+}
+
 export interface GithubConfig {
   repo: string; // "owner/repo" override — empty = auto-detect from git remote
   automerge: boolean; // Enable auto-merge on PRs created by the executor
@@ -93,6 +98,7 @@ export interface AutopilotConfig {
   executor: ExecutorConfig;
   planning: PlanningConfig;
   projects: ProjectsConfig;
+  monitor: MonitorConfig;
   github: GithubConfig;
   persistence: PersistenceConfig;
   sandbox: SandboxConfig;
@@ -132,6 +138,10 @@ export const DEFAULTS: AutopilotConfig = {
     max_issues_per_run: 5,
     timeout_minutes: 90,
     model: "opus",
+  },
+  monitor: {
+    respond_to_reviews: false,
+    review_responder_timeout_minutes: 20,
   },
   github: {
     repo: "",
@@ -190,6 +200,40 @@ export function deepMerge<T extends Record<string, unknown>>(
   return result;
 }
 
+export function collectUnknownKeys(
+  source: Record<string, unknown>,
+  reference: Record<string, unknown>,
+  prefix = "",
+): string[] {
+  const unknown: string[] = [];
+  for (const key of Object.keys(source)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (!(key in reference)) {
+      unknown.push(path);
+    } else {
+      const sourceVal = source[key];
+      const refVal = reference[key];
+      if (
+        sourceVal &&
+        typeof sourceVal === "object" &&
+        !Array.isArray(sourceVal) &&
+        refVal &&
+        typeof refVal === "object" &&
+        !Array.isArray(refVal)
+      ) {
+        unknown.push(
+          ...collectUnknownKeys(
+            sourceVal as Record<string, unknown>,
+            refVal as Record<string, unknown>,
+            path,
+          ),
+        );
+      }
+    }
+  }
+  return unknown;
+}
+
 function validateConfigStrings(config: AutopilotConfig): void {
   const fields: Array<[string, string]> = [
     ["linear.team", config.linear.team],
@@ -232,6 +276,16 @@ export function loadConfig(projectPath: string): AutopilotConfig {
     DEFAULTS as unknown as Record<string, unknown>,
     parsed,
   ) as unknown as AutopilotConfig;
+
+  const unknownKeys = collectUnknownKeys(
+    parsed,
+    DEFAULTS as unknown as Record<string, unknown>,
+  );
+  for (const key of unknownKeys) {
+    warn(
+      `Unknown config key "${key}" in .claude-autopilot.yml — this key has no effect. Check for typos.`,
+    );
+  }
 
   validateConfigStrings(config);
 
