@@ -705,32 +705,7 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
                 </div>
                 <div class="meta">${durationStr} &middot; ${String(savedLogs.length)} activities${costStr ? ` &middot; ${costStr}` : ""}</div>
               </div>
-              ${raw(
-                savedLogs
-                  .map((act) => {
-                    const time = new Date(act.timestamp).toLocaleTimeString(
-                      "en-US",
-                      { hour12: false },
-                    );
-                    let badgeHtml = `<span class="type-badge ${act.type}">${act.type}</span>`;
-                    let summaryText = act.summary;
-                    if (act.type === "tool_use") {
-                      const colonIdx = act.summary.indexOf(": ");
-                      if (colonIdx !== -1) {
-                        badgeHtml = `<span class="type-badge ${act.type}">${act.summary.slice(0, colonIdx)}</span>`;
-                        summaryText = act.summary.slice(colonIdx + 2);
-                      }
-                    } else if (act.type === "text") {
-                      badgeHtml = "";
-                    }
-                    return `<div class="activity-item">
-                      <span class="time">${time}</span>
-                      ${badgeHtml}
-                      ${escapeHtml(summaryText)}
-                    </div>`;
-                  })
-                  .join(""),
-              )}
+              ${raw(savedLogs.map((act) => renderActivityItem(act)).join(""))}
             </div>
           `);
         }
@@ -774,38 +749,7 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
           <div class="meta">${elapsedStr} &middot; ${String(agent.activities.length)} activities</div>
           ${!verbose ? html`<a href="#" hx-get="/partials/activity/${id}?verbose=true" hx-target="#main-panel" hx-swap="innerHTML" style="color: var(--accent); font-size: 11px; margin-left: auto">verbose</a>` : html`<a href="#" hx-get="/partials/activity/${id}" hx-target="#main-panel" hx-swap="innerHTML" style="color: var(--accent); font-size: 11px; margin-left: auto">compact</a>`}
         </div>
-        ${raw(
-          activities
-            .map((act) => {
-              const time = new Date(act.timestamp).toLocaleTimeString("en-US", {
-                hour12: false,
-              });
-              const detailHtml =
-                verbose && act.detail
-                  ? `<div class="detail-text">${escapeHtml(act.detail)}</div>`
-                  : "";
-              // For tool_use, parse "ToolName: detail" format and show tool name as badge
-              // For text, skip the badge entirely and just show the text
-              let badgeHtml = `<span class="type-badge ${act.type}">${act.type}</span>`;
-              let summaryText = act.summary;
-              if (act.type === "tool_use") {
-                const colonIdx = act.summary.indexOf(": ");
-                if (colonIdx !== -1) {
-                  badgeHtml = `<span class="type-badge ${act.type}">${act.summary.slice(0, colonIdx)}</span>`;
-                  summaryText = act.summary.slice(colonIdx + 2);
-                }
-              } else if (act.type === "text") {
-                badgeHtml = "";
-              }
-              return `<div class="activity-item">
-                <span class="time">${time}</span>
-                ${badgeHtml}
-                ${escapeHtml(summaryText)}
-                ${detailHtml}
-              </div>`;
-            })
-            .join(""),
-        )}
+        ${raw(activities.map((act) => renderActivityItem(act, verbose)).join(""))}
         ${agent.status === "running" ? html`<div class="activity-status"><span class="dot"></span> ${randomSaying()}</div>` : ""}
       </div>
     `);
@@ -973,4 +917,46 @@ export function escapeHtml(str: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+import type { ActivityEntry } from "./state";
+
+/** Render a single activity entry as an HTML string for the dashboard feed. */
+export function renderActivityItem(
+  act: ActivityEntry,
+  verbose?: boolean,
+): string {
+  const time = new Date(act.timestamp).toLocaleTimeString("en-US", {
+    hour12: false,
+  });
+  const detailHtml =
+    verbose && act.detail
+      ? `<div class="detail-text">${escapeHtml(act.detail)}</div>`
+      : "";
+
+  // Subagent prefix badge
+  const subBadge = act.isSubagent
+    ? `<span class="type-badge subagent">subagent</span>`
+    : "";
+
+  // Main badge: tool_use parses "ToolName: detail", text skips badge
+  let badgeHtml = `<span class="type-badge ${act.type}">${act.type}</span>`;
+  let summaryText = act.summary;
+  if (act.type === "tool_use") {
+    const colonIdx = act.summary.indexOf(": ");
+    if (colonIdx !== -1) {
+      badgeHtml = `<span class="type-badge ${act.type}">${act.summary.slice(0, colonIdx)}</span>`;
+      summaryText = act.summary.slice(colonIdx + 2);
+    }
+  } else if (act.type === "text") {
+    badgeHtml = "";
+  }
+
+  const itemClass = act.isSubagent ? "activity-item subagent" : "activity-item";
+  return `<div class="${itemClass}">
+    <span class="time">${time}</span>
+    ${subBadge}${badgeHtml}
+    ${escapeHtml(summaryText)}
+    ${detailHtml}
+  </div>`;
 }

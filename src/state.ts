@@ -18,6 +18,8 @@ export interface ActivityEntry {
   type: "tool_use" | "text" | "result" | "error" | "status";
   summary: string;
   detail?: string;
+  /** True for activities originating from a subagent (Task tool). */
+  isSubagent?: boolean;
 }
 
 export interface AgentState {
