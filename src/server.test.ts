@@ -1,8 +1,34 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { AutopilotConfig } from "./lib/config";
 import { DEFAULTS } from "./lib/config";
-import { createApp, escapeHtml, formatDuration } from "./server";
+import { createApp, escapeHtml, formatDuration, safeCompare } from "./server";
 import { AppState } from "./state";
+
+describe("safeCompare", () => {
+  test("returns true for identical strings", () => {
+    expect(safeCompare("secret-token", "secret-token")).toBe(true);
+  });
+
+  test("returns false for different strings of the same length", () => {
+    expect(safeCompare("aaaa", "bbbb")).toBe(false);
+  });
+
+  test("returns false for different strings of different lengths", () => {
+    expect(safeCompare("short", "much-longer-string")).toBe(false);
+  });
+
+  test("returns true for empty strings", () => {
+    expect(safeCompare("", "")).toBe(true);
+  });
+
+  test("returns false for empty vs non-empty", () => {
+    expect(safeCompare("", "notempty")).toBe(false);
+  });
+
+  test("returns false when first arg is longer than second", () => {
+    expect(safeCompare("longer-token-here", "short")).toBe(false);
+  });
+});
 
 describe("formatDuration", () => {
   test("returns seconds only for values under 60", () => {
