@@ -12,7 +12,7 @@ import { runAudit, shouldRunAudit } from "./auditor";
 import { fillSlots } from "./executor";
 import { closeAllAgents } from "./lib/claude";
 import { loadConfig, resolveProjectPath } from "./lib/config";
-import { openDb } from "./lib/db";
+import { openDb, pruneActivityLogs } from "./lib/db";
 import { interruptibleSleep, isFatalError } from "./lib/errors";
 import { detectRepo } from "./lib/github";
 import { resolveLinearIds, updateIssue } from "./lib/linear";
@@ -150,6 +150,8 @@ if (config.persistence.enabled) {
   const dbPath = resolve(projectPath, config.persistence.db_path);
   const db = openDb(dbPath);
   state.setDb(db);
+  const pruned = pruneActivityLogs(db, config.persistence.retention_days);
+  if (pruned > 0) info(`Pruned ${pruned} old activity log entries`);
   ok(`Persistence: ${dbPath}`);
 }
 
@@ -160,6 +162,7 @@ const app = createApp(
   state,
   {
     authToken: dashboardToken,
+    config,
     triggerAudit: () => {
       runAudit({
         config,
