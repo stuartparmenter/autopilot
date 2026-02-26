@@ -362,6 +362,30 @@ export function loadConfig(projectPath: string): AutopilotConfig {
     );
   }
 
+  if (
+    typeof config.budget.warn_at_percent !== "number" ||
+    Number.isNaN(config.budget.warn_at_percent) ||
+    config.budget.warn_at_percent < 0 ||
+    config.budget.warn_at_percent > 100
+  ) {
+    throw new Error(
+      "Config validation error: budget.warn_at_percent must be a number between 0 and 100",
+    );
+  }
+
+  for (const field of [
+    "daily_limit_usd",
+    "monthly_limit_usd",
+    "per_agent_limit_usd",
+  ] as const) {
+    const value = config.budget[field];
+    if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+      throw new Error(
+        `Config validation error: budget.${field} must be a non-negative number`,
+      );
+    }
+  }
+
   return config;
 }
 
