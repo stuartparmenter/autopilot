@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const AUTOPILOT_ROOT = resolve(
+export const AUTOPILOT_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../..",
 );
@@ -76,45 +76,4 @@ export function buildPrompt(
   projectPath?: string,
 ): string {
   return renderPrompt(loadPrompt(name, projectPath), vars);
-}
-
-/**
- * Build the full auditor prompt with subagent prompts appended.
- *
- * If `projectPath` is provided, each sub-prompt is resolved with project-local
- * override support. See `loadPrompt` for override details.
- */
-export function buildAuditorPrompt(
-  vars: Record<string, string>,
-  projectPath?: string,
-): string {
-  const auditor = buildPrompt("auditor", vars, projectPath);
-  const planner = loadPrompt("planner", projectPath);
-  const verifier = loadPrompt("verifier", projectPath);
-  const security = loadPrompt("security-reviewer", projectPath);
-  const productManager = buildPrompt("product-manager", vars, projectPath);
-
-  return `${auditor}
-
----
-
-# Reference: Subagent Prompts
-
-Use these prompts when spawning Agent Team subagents. Provide them as the system prompt for each subagent.
-
-## Planner Subagent Prompt
-
-${planner}
-
-## Verifier Subagent Prompt
-
-${verifier}
-
-## Security Reviewer Subagent Prompt
-
-${security}
-
-## Product Manager Subagent Prompt
-
-${productManager}`;
 }

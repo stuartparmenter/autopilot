@@ -1,12 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  buildAuditorPrompt,
-  buildPrompt,
-  loadPrompt,
-  renderPrompt,
-} from "./prompt";
+import { buildPrompt, loadPrompt, renderPrompt } from "./prompt";
 
 describe("renderPrompt", () => {
   test("substitutes a single variable", () => {
@@ -94,8 +89,8 @@ describe("loadPrompt", () => {
     expect(prompt).toContain("{{ISSUE_ID}}");
   });
 
-  test("loads the auditor prompt and it is non-empty", () => {
-    const prompt = loadPrompt("auditor");
+  test("loads the CTO prompt and it is non-empty", () => {
+    const prompt = loadPrompt("cto");
     expect(prompt.length).toBeGreaterThan(0);
   });
 
@@ -213,49 +208,40 @@ describe("loadPrompt project-local overrides", () => {
   });
 });
 
-describe("buildAuditorPrompt", () => {
+describe("buildPrompt — CTO prompt", () => {
   test("returns a non-empty string", () => {
-    const result = buildAuditorPrompt({});
+    const result = buildPrompt("cto", {});
     expect(result.length).toBeGreaterThan(0);
   });
 
-  test("contains planner subagent section", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("## Planner Subagent Prompt");
+  test("substitutes REPO_NAME variable", () => {
+    const result = buildPrompt("cto", { REPO_NAME: "my-app" });
+    expect(result).toContain("my-app");
+    expect(result).not.toContain("{{REPO_NAME}}");
   });
 
-  test("contains verifier subagent section", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("## Verifier Subagent Prompt");
+  test("substitutes LINEAR_TEAM variable", () => {
+    const result = buildPrompt("cto", { LINEAR_TEAM: "ENG" });
+    expect(result).toContain("ENG");
   });
 
-  test("contains security reviewer subagent section", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("## Security Reviewer Subagent Prompt");
+  test("substitutes MAX_ISSUES_PER_RUN variable", () => {
+    const result = buildPrompt("cto", { MAX_ISSUES_PER_RUN: "5" });
+    expect(result).not.toContain("{{MAX_ISSUES_PER_RUN}}");
   });
 
-  test("contains the reference header for subagent prompts", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("# Reference: Subagent Prompts");
+  test("contains lifecycle classification rubric", () => {
+    const result = buildPrompt("cto", {});
+    expect(result).toContain("EARLY");
+    expect(result).toContain("GROWTH");
+    expect(result).toContain("MATURE");
   });
 
-  test("contains product manager subagent section", () => {
-    const result = buildAuditorPrompt({});
-    expect(result).toContain("## Product Manager Subagent Prompt");
-  });
-
-  test("substitutes brainstorm variables", () => {
-    const result = buildAuditorPrompt({
-      BRAINSTORM_FEATURES: "true",
-      BRAINSTORM_DIMENSIONS: "user-facing-features, developer-experience",
-      MAX_IDEAS_PER_RUN: "5",
-      FEATURE_TARGET_STATE: "Triage",
-    });
-    expect(result).toContain("Triage");
-    expect(result).not.toContain("{{FEATURE_TARGET_STATE}}");
-    expect(result).not.toContain("{{MAX_IDEAS_PER_RUN}}");
-    expect(result).not.toContain("{{BRAINSTORM_FEATURES}}");
-    expect(result).toContain("Phase 1.5: Brainstorm Features");
-    expect(result).toContain("auto-feature-idea");
+  test("contains phase structure", () => {
+    const result = buildPrompt("cto", {});
+    expect(result).toContain("Phase 0");
+    expect(result).toContain("Phase 1");
+    expect(result).toContain("Phase 2");
+    expect(result).toContain("Phase 3");
   });
 });

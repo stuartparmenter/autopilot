@@ -153,7 +153,7 @@ Data flow: [Describe the primary data flow, e.g., "Client -> API Gateway -> Serv
 This project is managed by [claude-autopilot](https://github.com/your-org/claude-autopilot). The automation agents interact with this project as follows:
 
 - **Executor agent** picks up issues in the **Ready** (Todo) state in Linear, creates a branch, implements the change, and opens a PR.
-- **Auditor agent** scans the codebase for improvements and files new issues to **Triage** in Linear for human review.
+- **Planning agent** scans the codebase for improvements and files new issues to **Triage** in Linear for human review.
 - **Protected files** listed in `claude-autopilot.yml` (including this file, `.env`, and the config itself) must **never** be modified by the executor. Changes to these files require human intervention.
 
 <!-- TODO: Update the link above and adjust terminology to match your Linear workflow states. -->
