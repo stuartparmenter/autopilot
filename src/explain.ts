@@ -47,6 +47,19 @@ if (!process.env.LINEAR_API_KEY) {
   );
 }
 
+if (
+  !process.env.ANTHROPIC_API_KEY &&
+  !process.env.CLAUDE_API_KEY &&
+  !process.env.CLAUDE_CODE_USE_BEDROCK &&
+  !process.env.CLAUDE_CODE_USE_VERTEX
+) {
+  fatal(
+    "No Anthropic API key found.\n" +
+      "Set: export ANTHROPIC_API_KEY=sk-ant-...\n" +
+      "Or configure AWS Bedrock (CLAUDE_CODE_USE_BEDROCK) or GCP Vertex (CLAUDE_CODE_USE_VERTEX) auth.",
+  );
+}
+
 if (!config.linear.team) {
   fatal("linear.team is not set in .claude-autopilot.yml");
 }
