@@ -2,6 +2,11 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { info, warn } from "./logger";
 
+/** Prefix applied to all autopilot-managed clone names. Used to namespace
+ * autopilot clones and restrict sweepClones() to only remove autopilot-owned
+ * directories, leaving human-created clones untouched. */
+export const AUTOPILOT_PREFIX = "ap-";
+
 function clonePath(projectPath: string, name: string): string {
   return resolve(projectPath, ".claude", "clones", name);
 }
@@ -244,7 +249,9 @@ export async function sweepClones(
     return;
   }
 
-  const stale = entries.filter((name) => !activeNames.has(name));
+  const stale = entries.filter(
+    (name) => name.startsWith(AUTOPILOT_PREFIX) && !activeNames.has(name),
+  );
   if (stale.length > 0) {
     info(`Sweeping ${stale.length} stale clone(s): ${stale.join(", ")}`);
   }

@@ -9,7 +9,12 @@ import {
 } from "bun:test";
 import * as fs from "node:fs";
 
-import { createClone, removeClone, sweepClones } from "./sandbox-clone";
+import {
+  AUTOPILOT_PREFIX,
+  createClone,
+  removeClone,
+  sweepClones,
+} from "./sandbox-clone";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -339,8 +344,8 @@ describe("forceRemoveDir retry logic", () => {
 // ---------------------------------------------------------------------------
 
 describe("sweepClones", () => {
-  test("removes all clones when active set is empty (default)", async () => {
-    readdirSyncSpy.mockReturnValue(["ENG-1", "ENG-2"] as any);
+  test("removes all autopilot-prefixed clones when active set is empty (default)", async () => {
+    readdirSyncSpy.mockReturnValue(["ap-ENG-1", "ap-ENG-2"] as any);
 
     await sweepClones(PROJECT);
 
@@ -348,23 +353,54 @@ describe("sweepClones", () => {
     expect(rmSyncSpy).toHaveBeenCalledTimes(2);
   });
 
-  test("skips clones in the active set", async () => {
-    readdirSyncSpy.mockReturnValue(["ENG-1", "ENG-2", "ENG-3"] as any);
+  test("skips autopilot-prefixed clones in the active set", async () => {
+    readdirSyncSpy.mockReturnValue(["ap-ENG-1", "ap-ENG-2", "ap-ENG-3"] as any);
 
-    await sweepClones(PROJECT, new Set(["ENG-2"]));
+    await sweepClones(PROJECT, new Set(["ap-ENG-2"]));
 
-    // ENG-1 and ENG-3 removed; ENG-2 is active and skipped
+    // ap-ENG-1 and ap-ENG-3 removed; ap-ENG-2 is active and skipped
     expect(rmSyncSpy).toHaveBeenCalledTimes(2);
   });
 
   test("continues past individual removal failures", async () => {
-    readdirSyncSpy.mockReturnValue(["ENG-1", "ENG-2"] as any);
+    readdirSyncSpy.mockReturnValue(["ap-ENG-1", "ap-ENG-2"] as any);
     existsSpy.mockReturnValue(true);
     rmSyncSpy.mockImplementation(() => {
       throw new Error("locked");
     });
 
     await expect(sweepClones(PROJECT)).resolves.toBeUndefined();
+  });
+
+  test("skips non-autopilot-prefixed clones (human-created)", async () => {
+    // Clones that do NOT start with AUTOPILOT_PREFIX should never be swept
+    readdirSyncSpy.mockReturnValue([
+      "human-branch",
+      "ENG-1",
+      "some-feature",
+    ] as any);
+
+    await sweepClones(PROJECT);
+
+    // None removed — no autopilot prefix
+    expect(rmSyncSpy).not.toHaveBeenCalled();
+  });
+
+  test("removes stale autopilot-prefixed clones and leaves non-prefixed ones alone", async () => {
+    const staleClone = `${AUTOPILOT_PREFIX}fix-ENG-2`;
+    const activeClone = `${AUTOPILOT_PREFIX}ENG-1`;
+    readdirSyncSpy.mockReturnValue([
+      activeClone,
+      staleClone,
+      "human-branch",
+    ] as any);
+
+    await sweepClones(PROJECT, new Set([activeClone]));
+
+    // staleClone is prefixed and not active → removed
+    // activeClone is prefixed but active → skipped
+    // human-branch is not prefixed → skipped
+    expect(rmSyncSpy).toHaveBeenCalledTimes(1);
   });
 
   test("does not throw when clones directory does not exist", async () => {
