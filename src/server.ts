@@ -11,6 +11,13 @@ import {
   exchangeCodeForToken,
   saveStoredToken,
 } from "./lib/linear-oauth";
+import {
+  parseGitHubEventType,
+  parseLinearEventType,
+  verifyGitHubSignature,
+  verifyLinearSignature,
+  type WebhookTrigger,
+} from "./lib/webhooks";
 import type { AppState } from "./state";
 
 const ACTIVITY_SAYINGS = [
@@ -28,6 +35,13 @@ const ACTIVITY_SAYINGS = [
 
 function randomSaying(): string {
   return ACTIVITY_SAYINGS[Math.floor(Math.random() * ACTIVITY_SAYINGS.length)];
+}
+
+export interface WebhookOptions {
+  trigger: WebhookTrigger;
+  linearSecret: string;
+  githubSecret: string;
+  readyStateName: string;
 }
 
 export interface DashboardOptions {
@@ -236,7 +250,11 @@ export function computeHealth(
   };
 }
 
-export function createApp(state: AppState, options?: DashboardOptions): Hono {
+export function createApp(
+  state: AppState,
+  options?: DashboardOptions,
+  webhooks?: WebhookOptions,
+): Hono {
   const app = new Hono();
 
   app.onError((e, c) => {
@@ -808,6 +826,86 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
       )}`,
     );
   });
+
+  // --- Webhook endpoints ---
+
+  if (webhooks) {
+    const { trigger, linearSecret, githubSecret, readyStateName } = webhooks;
+    // Track delivery IDs to deduplicate retried webhook deliveries
+    const processedDeliveries = new Set<string>();
+
+    app.post("/webhooks/linear", async (c) => {
+      const rawBody = await c.req.text();
+      const signature = c.req.header("x-linear-signature") ?? "";
+      if (!verifyLinearSignature(linearSecret, rawBody, signature)) {
+        return c.json({ error: "Invalid signature" }, 401);
+      }
+
+      const deliveryId =
+        c.req.header("x-linear-delivery") ?? crypto.randomUUID();
+      if (processedDeliveries.has(deliveryId)) {
+        return c.json({ ok: true });
+      }
+      processedDeliveries.add(deliveryId);
+
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody);
+      } catch {
+        return c.json({ error: "Invalid JSON" }, 400);
+      }
+
+      const eventType = parseLinearEventType(
+        { event: c.req.header("x-linear-event") },
+        body,
+        readyStateName,
+      );
+      if (eventType === "issue_ready") {
+        trigger.fire();
+      }
+
+      return c.json({ ok: true });
+    });
+
+    app.post("/webhooks/github", async (c) => {
+      const rawBody = await c.req.text();
+      const signature = c.req.header("x-hub-signature-256") ?? "";
+      if (!verifyGitHubSignature(githubSecret, rawBody, signature)) {
+        return c.json({ error: "Invalid signature" }, 401);
+      }
+
+      const deliveryId =
+        c.req.header("x-github-delivery") ?? crypto.randomUUID();
+      if (processedDeliveries.has(deliveryId)) {
+        return c.json({ ok: true });
+      }
+      processedDeliveries.add(deliveryId);
+
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody);
+      } catch {
+        return c.json({ error: "Invalid JSON" }, 400);
+      }
+
+      const eventType = parseGitHubEventType(
+        { event: c.req.header("x-github-event") },
+        body,
+      );
+      if (eventType === "ci_failure") {
+        trigger.fire();
+      }
+
+      return c.json({ ok: true });
+    });
+  } else {
+    app.post("/webhooks/linear", (c) =>
+      c.json({ error: "Webhooks not configured" }, 404),
+    );
+    app.post("/webhooks/github", (c) =>
+      c.json({ error: "Webhooks not configured" }, 404),
+    );
+  }
 
   app.get("/partials/budget", (c) => {
     if (!options?.config) {

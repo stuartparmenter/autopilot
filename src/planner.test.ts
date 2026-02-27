@@ -139,6 +139,7 @@ function makeConfig(): AutopilotConfig {
       review_responder_timeout_minutes: 20,
     },
     github: { repo: "", automerge: false },
+    project: { name: "" },
     git: {
       user_name: "autopilot[bot]",
       user_email: "autopilot[bot]@users.noreply.github.com",

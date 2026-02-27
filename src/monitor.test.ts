@@ -208,6 +208,7 @@ function makeConfig(
       review_responder_timeout_minutes: 20,
     },
     github: { repo: "", automerge: false },
+    project: { name: "" },
     git: {
       user_name: "autopilot[bot]",
       user_email: "autopilot[bot]@users.noreply.github.com",
@@ -480,14 +481,8 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
   });
 
   test("skips issues that already have an active fixer", async () => {
-    let resolveFirst: () => void;
-    const hanging = new Promise<
-      ReturnType<
-        typeof mockRunClaude extends (...a: any[]) => Promise<infer R>
-          ? (...a: any[]) => Promise<R>
-          : never
-      >
-    >((resolve) => {
+    let resolveFirst: (() => void) | undefined;
+    const hanging = new Promise<ClaudeResult>((resolve) => {
       resolveFirst = () =>
         resolve({
           timedOut: false,
@@ -497,9 +492,9 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
           durationMs: 0,
           numTurns: 0,
           result: "",
-        } as any);
+        });
     });
-    mockRunClaude.mockReturnValue(hanging as any);
+    mockRunClaude.mockReturnValue(hanging);
 
     const issue = makeIssue("dedup-issue", "https://github.com/o/r/pull/71");
     mockIssuesQuery.mockResolvedValue({ nodes: [issue] });
@@ -510,7 +505,7 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
     const secondResult = await checkOpenPRs(makeOpts(state));
     expect(secondResult).toHaveLength(0);
 
-    resolveFirst!();
+    resolveFirst?.();
     await Promise.all(firstResult);
   });
 
