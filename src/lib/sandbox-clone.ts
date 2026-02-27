@@ -134,7 +134,7 @@ export async function createClone(
       "symbolic-ref",
       "refs/remotes/origin/HEAD",
     ]);
-    defaultBranch = ref.replace(/^\/refs\/remotes\/origin\//, "");
+    defaultBranch = ref.replace(/^refs\/remotes\/origin\//, "");
   } catch {
     // Fallback to "main" if origin/HEAD isn't set
   }
