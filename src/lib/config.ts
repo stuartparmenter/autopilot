@@ -289,6 +289,8 @@ function validateConfigStrings(config: AutopilotConfig): void {
     ["linear.states.in_review", config.linear.states.in_review],
     ["linear.states.done", config.linear.states.done],
     ["linear.states.blocked", config.linear.states.blocked],
+    ["git.user_name", config.git.user_name],
+    ["git.user_email", config.git.user_email],
   ];
 
   for (const [key, value] of fields) {

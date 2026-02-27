@@ -167,8 +167,24 @@ export async function createClone(
 
   // Set bot identity in the clone's local config.
   if (gitIdentity) {
-    gitSync(dest, ["config", "user.name", gitIdentity.userName]);
-    gitSync(dest, ["config", "user.email", gitIdentity.userEmail]);
+    const nameErr = gitSync(dest, [
+      "config",
+      "user.name",
+      gitIdentity.userName,
+    ]);
+    if (nameErr) {
+      throw new Error(`Failed to set user.name in clone '${name}': ${nameErr}`);
+    }
+    const emailErr = gitSync(dest, [
+      "config",
+      "user.email",
+      gitIdentity.userEmail,
+    ]);
+    if (emailErr) {
+      throw new Error(
+        `Failed to set user.email in clone '${name}': ${emailErr}`,
+      );
+    }
   }
 
   // Fetch from GitHub so remote tracking refs are up to date
@@ -198,8 +214,17 @@ export async function createClone(
   // Check if a legacy worktree-<name> branch exists on the remote
   // (in-flight PRs from before the rename). The full fetch above already
   // retrieved all remote tracking refs, so we can check locally.
+  // Use rev-parse to verify the remote ref exists (avoids ambiguity with
+  // file paths that `git checkout` could match).
   const legacyBranch = `worktree-${name}`;
-  const legacyCheckoutErr = gitSync(dest, ["checkout", legacyBranch]);
+  const legacyExists = gitSync(dest, [
+    "rev-parse",
+    "--verify",
+    `origin/${legacyBranch}`,
+  ]);
+  const legacyCheckoutErr = legacyExists
+    ? "no remote ref"
+    : gitSync(dest, ["checkout", legacyBranch]);
   if (!legacyCheckoutErr) {
     info(`Created clone: ${name} (resuming legacy branch ${legacyBranch})`);
     return { path: dest, branch: legacyBranch };
