@@ -23,12 +23,12 @@ const _realSdkSnapshot = { ..._realSdk };
 const _realLinearSdkSnapshot = { ..._realLinearSdk };
 const _realOctokitSnapshot = { ..._realOctokit };
 
-import type { AutopilotConfig, LinearIds } from "./lib/config";
+import { executeIssue, fillSlots } from "./executor";
 import { _worktree, resetSpawnGate } from "./lib/claude";
+import type { AutopilotConfig, LinearIds } from "./lib/config";
 import { resetClient as resetGithubClient } from "./lib/github";
 import { resetClient as resetLinearClient } from "./lib/linear";
 import { checkOpenPRs, resetHandledReviewIds } from "./monitor";
-import { executeIssue, fillSlots } from "./executor";
 import { AppState } from "./state";
 
 // ---------------------------------------------------------------------------
@@ -78,13 +78,17 @@ function makeErrorIterable(message: string): AsyncIterable<unknown> & {
 // ---------------------------------------------------------------------------
 
 // Linear SDK: used by getReadyIssues() via client.client.rawRequest()
-const mockRawRequest = mock(() =>
-  Promise.resolve({ data: { issues: { nodes: [] } } }),
+const mockRawRequest = mock(
+  (): Promise<unknown> => Promise.resolve({ data: { issues: { nodes: [] } } }),
 );
 // Linear SDK: used by getInProgressIssues() and checkOpenPRs() via client.issues()
-const mockLinearIssues = mock(() => Promise.resolve({ nodes: [] }));
+const mockLinearIssues = mock(
+  (): Promise<unknown> => Promise.resolve({ nodes: [] }),
+);
 // Linear SDK: used by updateIssue() in linear.ts via client.updateIssue()
-const mockLinearUpdateIssue = mock(() => Promise.resolve({ success: true }));
+const mockLinearUpdateIssue = mock((_id: string, _opts: { stateId?: string }) =>
+  Promise.resolve({ success: true }),
+);
 // Linear SDK: used by updateIssue() in linear.ts via client.createComment()
 const mockLinearCreateComment = mock(() =>
   Promise.resolve({ success: true, comment: null }),
@@ -92,7 +96,10 @@ const mockLinearCreateComment = mock(() =>
 
 // Agent SDK: controls whether query() returns a success or error iterable
 const mockQuery = mock(
-  () => makeSuccessIterable() as unknown as AsyncIterable<unknown> & { close(): void },
+  () =>
+    makeSuccessIterable() as unknown as AsyncIterable<unknown> & {
+      close(): void;
+    },
 );
 
 // GitHub (Octokit): controls what getPRStatus() sees
@@ -263,7 +270,12 @@ beforeEach(() => {
   mockLinearCreateComment.mockResolvedValue({ success: true, comment: null });
 
   // Default agent result: success (empty iterable completes immediately)
-  mockQuery.mockImplementation(() => makeSuccessIterable() as unknown as AsyncIterable<unknown> & { close(): void });
+  mockQuery.mockImplementation(
+    () =>
+      makeSuccessIterable() as unknown as AsyncIterable<unknown> & {
+        close(): void;
+      },
+  );
 
   // Override _worktree functions to skip real git worktree creation/removal.
   // The _worktree object in claude.ts is intentionally mutable for exactly this purpose.
@@ -288,12 +300,10 @@ beforeEach(() => {
       type: "sdk_mcp_server",
       ...opts,
     }),
-    tool: (
-      name: string,
-      _desc: string,
-      _schema: unknown,
-      fn: unknown,
-    ) => ({ name, fn }),
+    tool: (name: string, _desc: string, _schema: unknown, fn: unknown) => ({
+      name,
+      fn,
+    }),
   }));
 
   // @linear/sdk: replace LinearClient so getLinearClient() / getLinearClientAsync()
@@ -439,7 +449,12 @@ describe("Integration: executor failure path", () => {
 
     // Make query() throw — triggers the catch block in runClaude() which sets
     // result.error, causing handleAgentResult() to return { status: "failed" }
-    mockQuery.mockImplementation(() => makeErrorIterable("agent subprocess crashed") as unknown as AsyncIterable<unknown> & { close(): void });
+    mockQuery.mockImplementation(
+      () =>
+        makeErrorIterable(
+          "agent subprocess crashed",
+        ) as unknown as AsyncIterable<unknown> & { close(): void },
+    );
     mockLinearUpdateIssue.mockClear();
 
     const result = await executeIssue({
@@ -473,7 +488,12 @@ describe("Integration: executor failure path", () => {
     // Use max_retries=2 so two calls exhaust the budget
     const config = makeConfig({ max_retries: 2 });
 
-    mockQuery.mockImplementation(() => makeErrorIterable("agent subprocess crashed") as unknown as AsyncIterable<unknown> & { close(): void });
+    mockQuery.mockImplementation(
+      () =>
+        makeErrorIterable(
+          "agent subprocess crashed",
+        ) as unknown as AsyncIterable<unknown> & { close(): void },
+    );
     mockLinearUpdateIssue.mockClear();
     mockLinearCreateComment.mockClear();
 
