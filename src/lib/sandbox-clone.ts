@@ -170,15 +170,8 @@ export async function createClone(
 
   if (fromBranch) {
     // Fixer/review mode: check out an existing PR branch.
-    // Use "--" to prevent branch names starting with "-" from being parsed as flags.
-    const fetchErr = gitSync(dest, ["fetch", "origin", "--", fromBranch]);
-    if (fetchErr) {
-      throw new Error(
-        `Failed to fetch branch '${fromBranch}' in clone '${name}': ${fetchErr}`,
-      );
-    }
-
-    const checkoutErr = gitSync(dest, ["checkout", "--", fromBranch]);
+    // The full fetch above already retrieved all remote tracking refs.
+    const checkoutErr = gitSync(dest, ["checkout", fromBranch]);
     if (checkoutErr) {
       throw new Error(
         `Failed to checkout branch '${fromBranch}' in clone '${name}': ${checkoutErr}`,
@@ -190,34 +183,14 @@ export async function createClone(
   }
 
   // Executor mode: create a fresh branch.
-  // Check if a legacy worktree-<name> branch exists on remote (in-flight PRs).
+  // Check if a legacy worktree-<name> branch exists on the remote
+  // (in-flight PRs from before the rename). The full fetch above already
+  // retrieved all remote tracking refs, so we can check locally.
   const legacyBranch = `worktree-${name}`;
-  const lsResult = Bun.spawnSync(
-    ["git", "ls-remote", "--heads", "origin", legacyBranch],
-    { cwd: dest, stdout: "pipe", stderr: "pipe" },
-  );
-  const hasLegacyBranch =
-    lsResult.exitCode === 0 && lsResult.stdout.toString().trim().length > 0;
-
-  if (hasLegacyBranch) {
-    // Resume work on legacy branch for backward compat
-    const legacyFetchErr = gitSync(dest, [
-      "fetch",
-      "origin",
-      "--",
-      legacyBranch,
-    ]);
-    const legacyCheckoutErr =
-      !legacyFetchErr && gitSync(dest, ["checkout", "--", legacyBranch]);
-
-    if (!legacyFetchErr && !legacyCheckoutErr) {
-      info(`Created clone: ${name} (resuming legacy branch ${legacyBranch})`);
-      return { path: dest, branch: legacyBranch };
-    }
-
-    warn(
-      `Legacy branch '${legacyBranch}' found on remote but could not be checked out — falling back to new branch`,
-    );
+  const legacyCheckoutErr = gitSync(dest, ["checkout", legacyBranch]);
+  if (!legacyCheckoutErr) {
+    info(`Created clone: ${name} (resuming legacy branch ${legacyBranch})`);
+    return { path: dest, branch: legacyBranch };
   }
 
   // New naming: autopilot-<name>

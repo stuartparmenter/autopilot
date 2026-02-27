@@ -52,9 +52,9 @@ function defaultSpawnHandler(cmds: string[]): SpawnResult {
   if (cmds[1] === "remote" && cmds[2] === "get-url") {
     return spawnOk("git@github.com:owner/repo.git");
   }
-  // git ls-remote → no legacy branch by default
-  if (cmds[1] === "ls-remote") {
-    return spawnOk("");
+  // git checkout worktree-* → fail by default (no legacy branch)
+  if (cmds[1] === "checkout" && cmds[2]?.startsWith("worktree-")) {
+    return spawnFail("pathspec did not match");
   }
   return spawnOk();
 }
@@ -131,38 +131,32 @@ describe("createClone — executor mode", () => {
     );
   });
 
-  test("checks remote for worktree-<name> — uses it if exists (backward compat)", async () => {
+  test("checks out legacy worktree-<name> branch if it exists (backward compat)", async () => {
     spawnSpy.mockImplementation(((cmds: string[]) => {
-      if (cmds[1] === "ls-remote" && cmds.includes("worktree-ENG-1")) {
-        return spawnOk("abc123\trefs/heads/worktree-ENG-1");
+      // Legacy checkout succeeds (branch exists as remote tracking ref)
+      if (cmds[1] === "checkout" && cmds[2] === "worktree-ENG-1") {
+        return spawnOk();
       }
       return defaultSpawnHandler(cmds);
     }) as any);
 
     const result = await createClone(PROJECT, "ENG-1");
     expect(result.branch).toBe("worktree-ENG-1");
-
-    // Should fetch and checkout the legacy branch
-    const fetchCall = spawnSpy.mock.calls.find(
-      (c) => c[0][1] === "fetch" && c[0].includes("worktree-ENG-1"),
-    );
-    expect(fetchCall).toBeDefined();
   });
 
-  test("falls back to autopilot-<name> when legacy branch fetch fails", async () => {
+  test("falls back to autopilot-<name> when legacy branch checkout fails", async () => {
+    // Default handler returns spawnOk() for all commands, and the
+    // defaultSpawnHandler doesn't special-case checkout of worktree-*,
+    // so the legacy checkout will fail (no remote tracking ref).
+    // Actually, spawnOk() means it succeeds. We need to fail it explicitly.
     spawnSpy.mockImplementation(((cmds: string[]) => {
-      if (cmds[1] === "ls-remote" && cmds.includes("worktree-ENG-1")) {
-        return spawnOk("abc123\trefs/heads/worktree-ENG-1");
-      }
-      // Legacy fetch fails
-      if (cmds[1] === "fetch" && cmds.includes("worktree-ENG-1")) {
-        return spawnFail("could not read from remote");
+      if (cmds[1] === "checkout" && cmds[2] === "worktree-ENG-1") {
+        return spawnFail("pathspec 'worktree-ENG-1' did not match");
       }
       return defaultSpawnHandler(cmds);
     }) as any);
 
     const result = await createClone(PROJECT, "ENG-1");
-    // Should fall back to new naming
     expect(result.branch).toBe("autopilot-ENG-1");
   });
 
@@ -216,17 +210,12 @@ describe("createClone — executor mode", () => {
 // ---------------------------------------------------------------------------
 
 describe("createClone — fixer mode", () => {
-  test("fetches and checks out the provided branch", async () => {
+  test("checks out the provided branch", async () => {
     const result = await createClone(PROJECT, "ENG-1", "feature/pr-branch");
     expect(result.branch).toBe("feature/pr-branch");
 
-    const fetchCall = spawnSpy.mock.calls.find(
-      (c) => c[0][1] === "fetch" && c[0].includes("feature/pr-branch"),
-    );
-    expect(fetchCall).toBeDefined();
-
     const checkoutCall = spawnSpy.mock.calls.find(
-      (c) => c[0][1] === "checkout" && c[0].includes("feature/pr-branch"),
+      (c) => c[0][1] === "checkout" && c[0][2] === "feature/pr-branch",
     );
     expect(checkoutCall).toBeDefined();
   });
@@ -243,22 +232,22 @@ describe("createClone — fixer mode", () => {
     expect(setUrlCall).toBeDefined();
   });
 
-  test("fetch failure throws", async () => {
+  test("fetch origin failure throws", async () => {
     spawnSpy.mockImplementation(((cmds: string[]) => {
-      if (cmds[1] === "fetch" && cmds.includes("feature/pr")) {
-        return spawnFail("no such branch");
+      if (cmds[1] === "fetch" && cmds[2] === "origin") {
+        return spawnFail("could not read from remote");
       }
       return defaultSpawnHandler(cmds);
     }) as any);
 
     expect(createClone(PROJECT, "ENG-1", "feature/pr")).rejects.toThrow(
-      "Failed to fetch branch",
+      "Failed to fetch from origin",
     );
   });
 
   test("checkout failure throws", async () => {
     spawnSpy.mockImplementation(((cmds: string[]) => {
-      if (cmds[1] === "checkout" && cmds.includes("feature/pr")) {
+      if (cmds[1] === "checkout" && cmds[2] === "feature/pr") {
         return spawnFail("pathspec error");
       }
       return defaultSpawnHandler(cmds);
