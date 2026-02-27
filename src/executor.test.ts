@@ -50,6 +50,8 @@ const mockGetReadyIssues = mock(
 const mockGetInProgressIssues = mock(
   (
     _linearIds: LinearIds,
+    _limit?: number,
+    _filters?: { labels?: string[]; projects?: string[] },
   ): Promise<Array<{ id: string; identifier: string; updatedAt: Date }>> =>
     Promise.resolve([]),
 );
@@ -147,6 +149,14 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
       auto_allow_bash: true,
       network_restricted: false,
       extra_allowed_domains: [],
+    },
+    reviewer: {
+      enabled: false,
+      min_interval_minutes: 120,
+      min_runs_before_review: 10,
+      timeout_minutes: 60,
+      model: "opus",
+      max_issues_per_review: 5,
     },
     budget: {
       daily_limit_usd: 0,
@@ -862,6 +872,44 @@ describe("recoverStaleIssues", () => {
     expect(mockUpdateIssue).toHaveBeenCalledWith(
       "issue-z",
       expect.objectContaining({ stateId: "ready-id" }),
+    );
+  });
+
+  test("passes config labels and projects filters to getInProgressIssues", async () => {
+    mockGetInProgressIssues.mockClear();
+    mockGetInProgressIssues.mockResolvedValue([]);
+
+    const config = makeConfig();
+    config.linear.labels = ["autopilot:managed"];
+    config.linear.projects = ["Alpha"];
+
+    await recoverStaleIssues({
+      config,
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(mockGetInProgressIssues).toHaveBeenCalledWith(
+      expect.anything(),
+      50,
+      { labels: ["autopilot:managed"], projects: ["Alpha"] },
+    );
+  });
+
+  test("passes empty arrays when no labels or projects configured", async () => {
+    mockGetInProgressIssues.mockClear();
+    mockGetInProgressIssues.mockResolvedValue([]);
+
+    await recoverStaleIssues({
+      config: makeConfig(), // labels: [], projects: []
+      linearIds: makeLinearIds(),
+      state,
+    });
+
+    expect(mockGetInProgressIssues).toHaveBeenCalledWith(
+      expect.anything(),
+      50,
+      { labels: [], projects: [] },
     );
   });
 });

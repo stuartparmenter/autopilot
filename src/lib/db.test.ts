@@ -6,13 +6,17 @@ import {
   getAnalytics,
   getConversationLog,
   getRecentRuns,
+  getRunWithTranscript,
+  getUnreviewedRuns,
   insertActivityLogs,
   insertAgentRun,
   insertConversationLog,
+  markRunsReviewed,
   openDb,
   pruneActivityLogs,
   pruneConversationLogs,
 } from "./db";
+import { sanitizeMessage } from "./sanitize";
 
 let db: Database;
 
@@ -540,5 +544,214 @@ describe("pruneConversationLogs", () => {
 
   test("returns 0 on empty table", () => {
     expect(pruneConversationLogs(db, 30)).toBe(0);
+  });
+});
+
+describe("reviewed_at migration", () => {
+  test("migration adds reviewed_at column to existing DB without it", () => {
+    const db2 = new Database(":memory:", { create: true });
+    db2.exec(`
+      CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL,
+        issue_title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER NOT NULL,
+        cost_usd REAL,
+        duration_ms INTEGER,
+        num_turns INTEGER,
+        error TEXT
+      );
+    `);
+    db2.run(
+      `INSERT INTO agent_runs (id, issue_id, issue_title, status, started_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ["pre-migration", "ISSUE-1", "Old Title", "completed", 1000, 2000],
+    );
+
+    // Run the migration
+    try {
+      db2.exec("ALTER TABLE agent_runs ADD COLUMN reviewed_at INTEGER");
+    } catch {
+      // ignore duplicate column
+    }
+
+    const row = db2
+      .query<{ reviewed_at: number | null }, [string]>(
+        "SELECT reviewed_at FROM agent_runs WHERE id = ?",
+      )
+      .get("pre-migration");
+    expect(row?.reviewed_at).toBeNull();
+
+    db2.close();
+  });
+
+  test("reviewed_at migration is idempotent on a new DB", () => {
+    expect(() => openDb(":memory:")).not.toThrow();
+  });
+});
+
+describe("getUnreviewedRuns", () => {
+  test("returns only runs where reviewed_at IS NULL", () => {
+    insertAgentRun(db, makeResult("r1", { status: "completed" }));
+    insertAgentRun(db, makeResult("r2", { status: "failed" }));
+    insertAgentRun(db, makeResult("r3", { status: "timed_out" }));
+    markRunsReviewed(db, ["r1"]);
+
+    const runs = getUnreviewedRuns(db);
+    expect(runs).toHaveLength(2);
+    const ids = runs.map((r) => r.id);
+    expect(ids).not.toContain("r1");
+    expect(ids).toContain("r2");
+    expect(ids).toContain("r3");
+  });
+
+  test("returns runs in ascending finished_at order", () => {
+    insertAgentRun(db, makeResult("r1", { startedAt: 3000, finishedAt: 4000 }));
+    insertAgentRun(db, makeResult("r2", { startedAt: 1000, finishedAt: 2000 }));
+
+    const runs = getUnreviewedRuns(db);
+    expect(runs[0].id).toBe("r2");
+    expect(runs[1].id).toBe("r1");
+  });
+
+  test("respects the limit parameter", () => {
+    for (let i = 0; i < 10; i++) {
+      insertAgentRun(
+        db,
+        makeResult(`r${i}`, {
+          startedAt: i * 1000,
+          finishedAt: i * 1000 + 500,
+        }),
+      );
+    }
+    const runs = getUnreviewedRuns(db, 5);
+    expect(runs).toHaveLength(5);
+  });
+
+  test("returns empty array when all runs are reviewed", () => {
+    insertAgentRun(db, makeResult("r1"));
+    markRunsReviewed(db, ["r1"]);
+    expect(getUnreviewedRuns(db)).toHaveLength(0);
+  });
+
+  test("returns empty array when no runs exist", () => {
+    expect(getUnreviewedRuns(db)).toHaveLength(0);
+  });
+});
+
+describe("getRunWithTranscript", () => {
+  test("returns run metadata and null messagesJson when no conversation log", () => {
+    insertAgentRun(db, makeResult("r1", { status: "completed" }));
+    const result = getRunWithTranscript(db, "r1");
+    expect(result.run.id).toBe("r1");
+    expect(result.run.status).toBe("completed");
+    expect(result.messagesJson).toBeNull();
+  });
+
+  test("returns run metadata and messagesJson when conversation log exists", () => {
+    insertAgentRun(db, makeResult("r1"));
+    const messages = [{ type: "text", content: "hello" }];
+    insertConversationLog(db, "r1", JSON.stringify(messages));
+
+    const result = getRunWithTranscript(db, "r1");
+    expect(result.run.id).toBe("r1");
+    expect(result.messagesJson).not.toBeNull();
+    expect(JSON.parse(result.messagesJson as string)).toEqual(messages);
+  });
+
+  test("throws an error for unknown run ID", () => {
+    expect(() => getRunWithTranscript(db, "nonexistent")).toThrow(
+      "Agent run not found",
+    );
+  });
+});
+
+describe("markRunsReviewed", () => {
+  test("sets reviewed_at for the specified run IDs", () => {
+    insertAgentRun(db, makeResult("r1"));
+    insertAgentRun(db, makeResult("r2"));
+
+    markRunsReviewed(db, ["r1"]);
+
+    const unreviewedAfter = getUnreviewedRuns(db);
+    expect(unreviewedAfter).toHaveLength(1);
+    expect(unreviewedAfter[0].id).toBe("r2");
+  });
+
+  test("is a no-op for empty array", () => {
+    insertAgentRun(db, makeResult("r1"));
+    expect(() => markRunsReviewed(db, [])).not.toThrow();
+    expect(getUnreviewedRuns(db)).toHaveLength(1);
+  });
+
+  test("batch-updates multiple run IDs", () => {
+    insertAgentRun(db, makeResult("r1"));
+    insertAgentRun(db, makeResult("r2"));
+    insertAgentRun(db, makeResult("r3"));
+
+    markRunsReviewed(db, ["r1", "r2"]);
+
+    const unreviewed = getUnreviewedRuns(db);
+    expect(unreviewed).toHaveLength(1);
+    expect(unreviewed[0].id).toBe("r3");
+  });
+
+  test("reviewedAt is set on results returned from getRecentRuns after marking", () => {
+    insertAgentRun(db, makeResult("r1"));
+    markRunsReviewed(db, ["r1"]);
+
+    const runs = getRecentRuns(db);
+    expect(runs[0].reviewedAt).toBeDefined();
+    expect(typeof runs[0].reviewedAt).toBe("number");
+  });
+});
+
+describe("transcript redaction before storage", () => {
+  test("sanitized transcript has secrets redacted and stored value is valid JSON", () => {
+    insertAgentRun(db, makeResult("run-secrets"));
+    const rawMessages = [
+      {
+        role: "tool_result",
+        content:
+          "cat .env returned: AWS_KEY=AKIAIOSFODNN7EXAMPLE password=supersecret123",
+      },
+      {
+        role: "assistant",
+        content: "I can see credentials in the output",
+      },
+    ];
+    const scrubbedJson = sanitizeMessage(JSON.stringify(rawMessages));
+    insertConversationLog(db, "run-secrets", scrubbedJson);
+
+    const retrieved = getConversationLog(db, "run-secrets");
+    expect(retrieved).not.toBeNull();
+    expect(retrieved).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(retrieved).not.toContain("supersecret123");
+    expect(() => JSON.parse(retrieved as string)).not.toThrow();
+  });
+
+  test("round-trip: JSON.parse succeeds on scrubbed transcript with secrets in JSON string values", () => {
+    insertAgentRun(db, makeResult("run-roundtrip"));
+    const rawMessages = [
+      {
+        type: "text",
+        content:
+          "Found sk_live_abcdefghijklmnopqrst in config and npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij in package",
+      },
+    ];
+    const scrubbedJson = sanitizeMessage(JSON.stringify(rawMessages));
+    insertConversationLog(db, "run-roundtrip", scrubbedJson);
+
+    const retrieved = getConversationLog(db, "run-roundtrip");
+    expect(retrieved).not.toBeNull();
+    const parsed = JSON.parse(retrieved as string) as typeof rawMessages;
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].content).toContain("[REDACTED]");
+    expect(parsed[0].content).not.toContain("abcdefghijklmnopqrst");
+    expect(parsed[0].content).not.toContain(
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+    );
   });
 });

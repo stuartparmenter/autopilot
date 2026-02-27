@@ -18,6 +18,8 @@ export interface ActivityEntry {
   type: "tool_use" | "text" | "result" | "error" | "status";
   summary: string;
   detail?: string;
+  /** True for activities originating from a subagent (Task tool). */
+  isSubagent?: boolean;
 }
 
 export interface AgentState {
@@ -47,6 +49,7 @@ export interface AgentResult {
   numTurns?: number;
   sessionId?: string;
   error?: string;
+  reviewedAt?: number;
 }
 
 export interface QueueInfo {
@@ -63,6 +66,25 @@ export interface PlanningStatus {
   threshold?: number;
 }
 
+export interface ReviewerStatus {
+  running: boolean;
+  lastRunAt?: number;
+  lastResult?: "completed" | "skipped" | "failed" | "timed_out";
+}
+
+export interface PlanningSession {
+  id: string;
+  agentRunId: string;
+  startedAt: number;
+  finishedAt: number;
+  status: "completed" | "failed" | "timed_out";
+  summary?: string;
+  issuesFiledCount: number;
+  issuesFiled?: Array<{ identifier: string; title: string }>;
+  findingsRejected?: Array<{ finding: string; reason: string }>;
+  costUsd?: number;
+}
+
 export interface ApiHealthStatus {
   linear: CircuitState;
   github: CircuitState;
@@ -74,6 +96,8 @@ export interface AppStateSnapshot {
   history: AgentResult[];
   queue: QueueInfo;
   planning: PlanningStatus;
+  planningHistory: PlanningSession[];
+  reviewer: ReviewerStatus;
   startedAt: number;
   apiHealth: ApiHealthStatus;
 }
@@ -92,6 +116,8 @@ export class AppState {
     lastChecked: 0,
   };
   private planning: PlanningStatus = { running: false };
+  private planningHistory: PlanningSession[] = [];
+  private reviewer: ReviewerStatus = { running: false };
   private paused = false;
   private issueFailureCount = new Map<string, number>();
   private db: Database | null = null;
@@ -177,7 +203,11 @@ export class AppState {
       insertAgentRun(this.db, result);
       insertActivityLogs(this.db, result.id, agent.activities);
       if (rawMessages && rawMessages.length > 0) {
-        insertConversationLog(this.db, result.id, JSON.stringify(rawMessages));
+        insertConversationLog(
+          this.db,
+          result.id,
+          sanitizeMessage(JSON.stringify(rawMessages)),
+        );
       }
     }
 
@@ -252,6 +282,29 @@ export class AppState {
 
   getPlanningStatus(): PlanningStatus {
     return this.planning;
+  }
+
+  getPlanningHistory(): PlanningSession[] {
+    return this.planningHistory;
+  }
+
+  addPlanningSession(session: PlanningSession): void {
+    this.planningHistory.unshift(session);
+    if (this.planningHistory.length > 20) {
+      this.planningHistory = this.planningHistory.slice(0, 20);
+    }
+  }
+
+  updateReviewer(status: Partial<ReviewerStatus>): void {
+    Object.assign(this.reviewer, status);
+  }
+
+  getReviewerStatus(): ReviewerStatus {
+    return this.reviewer;
+  }
+
+  getDb(): Database | null {
+    return this.db;
   }
 
   isPaused(): boolean {
@@ -388,6 +441,8 @@ export class AppState {
       history: this.history,
       queue: this.queue,
       planning: this.planning,
+      planningHistory: this.planningHistory,
+      reviewer: this.reviewer,
       startedAt: this.startedAt,
       apiHealth: defaultRegistry.getAllStates(),
     };

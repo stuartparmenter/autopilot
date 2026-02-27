@@ -169,6 +169,14 @@ export const DASHBOARD_CSS = `
     background: #3a2f1a;
     color: var(--yellow);
   }
+  .type-badge.subagent {
+    background: #1a2a2a;
+    color: #5a8a8a;
+    font-size: 9px;
+  }
+  .activity-item.subagent {
+    opacity: 0.6;
+  }
   .empty-state {
     display: flex;
     flex-direction: column;

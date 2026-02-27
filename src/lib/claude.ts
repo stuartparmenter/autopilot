@@ -8,15 +8,20 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ActivityEntry } from "../state";
 import { makeErrorActivity, processAgentMessage } from "./activity";
-import { buildQueryOptions, buildSandboxConfig } from "./agent-config";
+import {
+  buildQueryOptions,
+  buildSandboxConfig,
+  buildSandboxGuardHook,
+} from "./agent-config";
 import type { SandboxConfig } from "./config";
 import { info, warn } from "./logger";
 import { AUTOPILOT_ROOT } from "./paths";
-import { createWorktree, removeWorktree } from "./worktree";
+import { createClone, removeClone } from "./sandbox-clone";
 
-/** Worktree functions indirected through a mutable object so tests can replace them without mock.module(). */
-export const _worktree = { createWorktree, removeWorktree };
+/** Clone functions indirected through a mutable object so tests can replace them without mock.module(). */
+export const _clone = { createClone, removeClone };
 
+export { summarizeToolUse } from "./activity";
 // Re-export for backward compatibility — callers import these from "./lib/claude"
 export { buildAgentEnv, buildMcpServers } from "./agent-config";
 
@@ -84,52 +89,16 @@ export interface ClaudeResult {
   rawMessages?: unknown[];
 }
 
-/** Maps tool names to the input field used in their activity summary. */
-const TOOL_SUMMARY_FIELDS: Record<string, string> = {
-  Read: "file_path",
-  Write: "file_path",
-  Edit: "file_path",
-  Bash: "command",
-  Glob: "pattern",
-  Grep: "pattern",
-  WebFetch: "url",
-  WebSearch: "query",
-};
-
-export function summarizeToolUse(
-  toolName: string,
-  input: unknown,
-  cwd?: string,
-): string {
-  const inp =
-    input !== null && typeof input === "object"
-      ? (input as Record<string, unknown>)
-      : {};
-
-  const field = TOOL_SUMMARY_FIELDS[toolName];
-  if (field) {
-    let value = String(inp[field] ?? "");
-    if (cwd && value.startsWith(cwd)) {
-      value = value.slice(cwd.length).replace(/^\//, "");
-    }
-    return `${toolName}: ${value}`;
-  }
-  if (toolName === "Task") {
-    return `Task: ${inp.description ?? inp.subagent_type ?? "subagent"}`;
-  }
-  return `Tool: ${toolName}`;
-}
-
 /**
  * Run Claude Code with the Agent SDK.
  * Sends a prompt, runs it against a codebase directory, and returns structured results.
  */
 export async function runClaude(opts: {
-  prompt: string;
+  prompt: string | ((branch: string) => string);
   cwd: string;
   label?: string;
-  worktree?: string;
-  worktreeBranch?: string;
+  clone?: string;
+  cloneBranch?: string;
   timeoutMs?: number;
   inactivityMs?: number;
   model?: string;
@@ -178,7 +147,7 @@ export async function runClaude(opts: {
     inactivityTimedOut: false,
   };
 
-  let worktreeName: string | undefined;
+  let cloneName: string | undefined;
   let agentTmpDir: string | undefined;
   let inactivityTimedOut = false;
   let loopCompleted = false;
@@ -186,8 +155,6 @@ export async function runClaude(opts: {
   let inactivityInterval: ReturnType<typeof setInterval> | undefined;
   let releaseSpawnSlot: (() => void) | undefined;
   let activeQuery: { close(): void } | undefined;
-
-  const keepBranch = !!opts.worktreeBranch;
 
   try {
     const queryOpts = buildQueryOptions(
@@ -202,44 +169,56 @@ export async function runClaude(opts: {
       },
     );
 
+    // Inject autopilot plugin: fixes sandbox TMPDIR issues via SessionStart hook.
+    // Applied to all agents — must be present before sandbox config is set.
+    const autopilotPlugin: SdkPluginConfig = {
+      type: "local",
+      path: resolve(AUTOPILOT_ROOT, "plugins/autopilot"),
+    };
+    const basePlugins = (queryOpts.plugins ?? []) as SdkPluginConfig[];
+    queryOpts.plugins = [...basePlugins, autopilotPlugin];
+
     // Sandbox isolation: restrict agent filesystem and optionally network access
     if (opts.sandbox?.enabled) {
-      // Create a dedicated temp directory for this agent.
-      // CLAUDE_CODE_TMPDIR tells Claude Code where to put internal temp files
-      // (it appends /claude/ to this path). TMPDIR covers git, bun, etc.
+      // Create a dedicated temp directory for this agent and add it to
+      // the sandbox allowWrite list so it's writable inside bubblewrap.
+      // CLAUDE_CODE_TMPDIR tells Claude Code where to put internal temp files.
+      // AUTOPILOT_TMPDIR is read by the executor plugin's SessionStart hook
+      // which writes the correct TMPDIR to CLAUDE_ENV_FILE for Bash calls.
       agentTmpDir = mkdtempSync(join(tmpdir(), "claude-agent-"));
       queryOpts.env = {
-        ...process.env,
-        TMPDIR: agentTmpDir,
+        ...(queryOpts.env as Record<string, string>),
         CLAUDE_CODE_TMPDIR: agentTmpDir,
+        AUTOPILOT_TMPDIR: agentTmpDir,
       };
-      queryOpts.sandbox = buildSandboxConfig(opts.cwd, opts.sandbox);
+      queryOpts.sandbox = buildSandboxConfig(opts.sandbox, agentTmpDir);
 
-      // Inject sandbox-guard plugin: enforces filesystem restrictions for
-      // Write/Edit tools which bypass bwrap (only Bash is sandboxed at OS level).
+      // Sandbox guard: deny Write/Edit to paths outside cwd and /tmp.
+      // Programmatic hook replaces the shell plugin so denials are logged.
       // See: https://github.com/anthropics/claude-code/issues/29048
-      const sandboxGuard: SdkPluginConfig = {
-        type: "local",
-        path: resolve(AUTOPILOT_ROOT, "plugins/sandbox-guard"),
-      };
-      const existing = (queryOpts.plugins ?? []) as SdkPluginConfig[];
-      queryOpts.plugins = [...existing, sandboxGuard];
+      queryOpts.hooks = buildSandboxGuardHook(opts.cwd);
     }
 
-    // Self-managed worktrees: create before spawning, clean up in finally
-    if (opts.worktree) {
-      queryOpts.cwd = await _worktree.createWorktree(
+    // Self-managed clones: create before spawning, clean up in finally
+    if (opts.clone) {
+      const cloneResult = await _clone.createClone(
         opts.cwd,
-        opts.worktree,
-        opts.worktreeBranch,
+        opts.clone,
+        opts.cloneBranch,
       );
-      worktreeName = opts.worktree;
+      queryOpts.cwd = cloneResult.path;
+      cloneName = opts.clone;
+
+      // If prompt is a builder function, resolve it now that we know the branch
+      if (typeof opts.prompt === "function") {
+        opts.prompt = opts.prompt(cloneResult.branch);
+      }
     }
 
     // Check for shutdown before proceeding
     if (opts.parentSignal?.aborted) {
-      if (worktreeName) {
-        await _worktree.removeWorktree(opts.cwd, worktreeName, { keepBranch });
+      if (cloneName) {
+        await _clone.removeClone(opts.cwd, cloneName);
       }
       result.error = "Aborted before start";
       return result;
@@ -266,7 +245,13 @@ export async function runClaude(opts: {
       }, 30_000);
     }
 
-    const q = query({ prompt: opts.prompt, options: queryOpts });
+    const resolvedPrompt =
+      typeof opts.prompt === "function"
+        ? (() => {
+            throw new Error("Prompt builder was not resolved before query()");
+          })()
+        : opts.prompt;
+    const q = query({ prompt: resolvedPrompt, options: queryOpts });
     activeQuery = q;
     activeQueries.add(q);
 
@@ -379,16 +364,16 @@ export async function runClaude(opts: {
     if (agentTmpDir) {
       try {
         rmSync(agentTmpDir, { recursive: true, force: true });
-      } catch {
-        // best-effort cleanup
+      } catch (e) {
+        warn(`${tag}Failed to clean up agent temp dir '${agentTmpDir}': ${e}`);
       }
     }
 
-    if (worktreeName) {
+    if (cloneName) {
       try {
-        await _worktree.removeWorktree(opts.cwd, worktreeName, { keepBranch });
+        await _clone.removeClone(opts.cwd, cloneName);
       } catch (e) {
-        warn(`${tag}Worktree cleanup failed for '${worktreeName}': ${e}`);
+        warn(`${tag}Clone cleanup failed for '${cloneName}': ${e}`);
       }
     }
   }

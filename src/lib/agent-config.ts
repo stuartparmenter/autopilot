@@ -1,7 +1,12 @@
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   type AgentDefinition,
   createSdkMcpServer,
+  type HookCallback,
+  type HookCallbackMatcher,
+  type HookEvent,
+  type PreToolUseHookInput,
   type SdkPluginConfig,
   tool,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -9,6 +14,7 @@ import { z } from "zod";
 import type { SandboxConfig } from "./config";
 import { enableAutoMerge } from "./github";
 import { createProjectStatusUpdate } from "./linear";
+import { warn } from "./logger";
 
 /** Domains agents always need access to when network is restricted. */
 export const SANDBOX_BASE_DOMAINS = [
@@ -17,60 +23,6 @@ export const SANDBOX_BASE_DOMAINS = [
   "api.githubcopilot.com",
   "mcp.linear.app",
 ];
-
-export const AGENT_ENV_ALLOWLIST: readonly string[] = [
-  // System basics
-  "HOME",
-  "PATH",
-  "SHELL",
-  "TERM",
-  "USER",
-  "LANG",
-  "LOGNAME",
-  "HOSTNAME",
-  // Agent SDK auth
-  "ANTHROPIC_API_KEY",
-  "CLAUDE_API_KEY",
-  // Bedrock auth
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  "AWS_PROFILE",
-  // Vertex auth
-  "GOOGLE_APPLICATION_CREDENTIALS",
-  "CLOUDSDK_CONFIG",
-  "GCLOUD_PROJECT",
-  "GOOGLE_CLOUD_PROJECT",
-  // Auth mode flags
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  // Git/SSH
-  "SSH_AUTH_SOCK",
-  "GIT_SSH_COMMAND",
-  "GIT_AUTHOR_NAME",
-  "GIT_AUTHOR_EMAIL",
-  "GIT_COMMITTER_NAME",
-  "GIT_COMMITTER_EMAIL",
-  // Temp directories
-  "TMPDIR",
-  "TMP",
-  "TEMP",
-  // XDG
-  "XDG_CONFIG_HOME",
-  "XDG_DATA_HOME",
-  "XDG_CACHE_HOME",
-  // Proxy/TLS (corporate environments)
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "no_proxy",
-  "NODE_EXTRA_CA_CERTS",
-  "NODE_TLS_REJECT_UNAUTHORIZED",
-] as const;
 
 export function buildMcpServers(linearToken?: string): Record<string, unknown> {
   const token = linearToken ?? process.env.LINEAR_API_KEY;
@@ -144,12 +96,25 @@ export function buildMcpServers(linearToken?: string): Record<string, unknown> {
   };
 }
 
+/** Vars the agent subprocess needs. The SDK's `env` replaces process.env
+ *  entirely, so we only forward what's required. */
+const AGENT_ENV_ALLOWLIST = [
+  "HOME",
+  "PATH",
+  "SSH_AUTH_SOCK",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_API_KEY",
+];
+
+/**
+ * Build the env for agent subprocesses.
+ * Only allowlisted vars + the teams flag are forwarded.
+ */
 export function buildAgentEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of AGENT_ENV_ALLOWLIST) {
-    const val = process.env[key];
-    if (val !== undefined) {
-      env[key] = val;
+    if (process.env[key]) {
+      env[key] = process.env[key] as string;
     }
   }
   env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
@@ -157,8 +122,8 @@ export function buildAgentEnv(): Record<string, string> {
 }
 
 export function buildSandboxConfig(
-  cwd: string,
   sandbox: SandboxConfig,
+  agentTmpDir: string,
 ): Record<string, unknown> {
   const config: Record<string, unknown> = {
     enabled: true,
@@ -166,12 +131,14 @@ export function buildSandboxConfig(
     allowUnsandboxedCommands: false,
     filesystem: {
       allowWrite: [
-        // Git worktrees share the parent repo's .git directory
-        resolve(cwd, ".git"),
-        // Allow /tmp for Claude Code internals, git, bun, ssh-keygen, etc.
-        // Per-agent TMPDIR scoping is blocked by SDK overriding env vars:
-        // https://github.com/anthropics/claude-code/issues/15700
+        // Allow /tmp broadly, plus the specific agent tmpdir.
+        // The explicit agentTmpDir entry ensures this agent's temp directory
+        // is writable even if the SDK/sandbox layer drops the broad "/tmp".
         "/tmp",
+        agentTmpDir,
+        // Teams need write access to these dirs for coordination files
+        resolve(homedir(), ".claude/teams"),
+        resolve(homedir(), ".claude/tasks"),
       ],
     },
   };
@@ -192,8 +159,84 @@ export function buildSandboxConfig(
 }
 
 /**
+ * Build a PreToolUse hook that denies Write/Edit/NotebookEdit to paths
+ * outside the agent's working directory and /tmp.
+ * Replaces the shell-based sandbox-guard plugin with a programmatic hook
+ * so denials are logged to our activity stream.
+ */
+export function buildSandboxGuardHook(
+  agentCwd: string,
+): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+  const guard: HookCallback = async (input) => {
+    const pre = input as PreToolUseHookInput;
+    const toolInput = pre.tool_input as Record<string, unknown> | undefined;
+    const filePath = toolInput?.file_path as string | undefined;
+    if (!filePath) return {};
+
+    let resolved = filePath;
+    if (resolved.startsWith("~")) {
+      resolved = `${homedir()}${resolved.slice(1)}`;
+    }
+    if (!resolved.startsWith("/")) {
+      resolved = resolve(agentCwd, resolved);
+    }
+    resolved = resolve(resolved);
+
+    const normalCwd = resolve(agentCwd);
+
+    // Allow: under cwd
+    if (resolved.startsWith(`${normalCwd}/`) || resolved === normalCwd) {
+      return {};
+    }
+    // Allow: under /tmp
+    if (resolved.startsWith("/tmp/") || resolved === "/tmp") {
+      return {};
+    }
+    // Allow: under agent's TMPDIR
+    if (process.env.TMPDIR) {
+      const normalTmp = resolve(process.env.TMPDIR);
+      if (resolved.startsWith(`${normalTmp}/`) || resolved === normalTmp) {
+        return {};
+      }
+    }
+    // Allow: ~/.claude/teams and ~/.claude/tasks (team coordination)
+    const claudeTeams = resolve(homedir(), ".claude/teams");
+    const claudeTasks = resolve(homedir(), ".claude/tasks");
+    if (
+      resolved.startsWith(`${claudeTeams}/`) ||
+      resolved === claudeTeams ||
+      resolved.startsWith(`${claudeTasks}/`) ||
+      resolved === claudeTasks
+    ) {
+      return {};
+    }
+
+    warn(
+      `[sandbox-guard] DENIED ${pre.tool_name} to '${filePath}' (cwd: ${agentCwd})`,
+    );
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse" as const,
+        permissionDecision: "deny" as const,
+        permissionDecisionReason: `[sandbox-guard] ${pre.tool_name} to '${filePath}' blocked: path is outside the working directory (${agentCwd}). Only write to files within your working directory or /tmp.`,
+      },
+    };
+  };
+
+  return {
+    PreToolUse: [
+      {
+        matcher: "Write|Edit|NotebookEdit",
+        hooks: [guard],
+      },
+    ],
+  };
+}
+
+/**
  * Build the base query options object for the Agent SDK.
- * Does not include sandbox config (added conditionally) or worktree cwd override.
+ * Does not include sandbox config (added conditionally) or clone cwd override.
  */
 export function buildQueryOptions(
   cwd: string,

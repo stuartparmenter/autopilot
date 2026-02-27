@@ -26,12 +26,13 @@ import {
 } from "./lib/linear";
 import { getCurrentLinearToken, initLinearAuth } from "./lib/linear-oauth";
 import { error, fatal, header, info, ok, warn } from "./lib/logger";
+import { sweepClones, sweepLegacyWorktrees } from "./lib/sandbox-clone";
 import { sanitizeMessage } from "./lib/sanitize";
 import { WebhookTrigger } from "./lib/webhooks";
-import { sweepWorktrees } from "./lib/worktree";
 import { checkOpenPRs } from "./monitor";
 import { runPlanning, shouldRunPlanning } from "./planner";
 import { checkProjects } from "./projects";
+import { runReviewer, shouldRunReviewer } from "./reviewer";
 import { createApp } from "./server";
 import { type AgentState, AppState } from "./state";
 
@@ -147,6 +148,11 @@ info(`Poll interval: ${config.executor.poll_interval_minutes}m`);
 if (config.projects.enabled && config.linear.initiative) {
   info(
     `Projects loop: every ${config.projects.poll_interval_minutes}m, max ${config.projects.max_active_projects} owners`,
+  );
+}
+if (config.reviewer.enabled) {
+  info(
+    `Reviewer loop: every ${config.reviewer.min_interval_minutes}m, after ${config.reviewer.min_runs_before_review} runs`,
   );
 }
 info(
@@ -318,13 +324,17 @@ const MAX_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_CONSECUTIVE_FAILURES = 5;
 const running = new Set<Promise<boolean>>();
 let planningPromise: Promise<void> | null = null;
+let reviewerPromise: Promise<void> | null = null;
 let lastProjectsCheckAt = 0;
 
 let consecutiveFailures = 0;
 
-// Sweep stale worktrees left behind by previous crashed runs.
-// No agents are running yet, so every worktree found is stale.
-await sweepWorktrees(projectPath, new Set());
+// Sweep stale clones left behind by previous crashed runs.
+// No agents are running yet, so every clone found is stale.
+await sweepClones(projectPath, new Set());
+
+// One-time migration: clean up legacy .claude/worktrees/ from before the clone migration.
+await sweepLegacyWorktrees(projectPath);
 
 info("Starting main loop (Ctrl+C to stop)...");
 console.log();
@@ -420,6 +430,37 @@ while (!shuttingDown) {
       }
     }
 
+    // Check reviewer loop
+    if (
+      config.reviewer.enabled &&
+      state.getDb() &&
+      !state.getReviewerStatus().running &&
+      state.getRunningCount() < state.getMaxParallel()
+    ) {
+      const shouldReview = await shouldRunReviewer({
+        config,
+        state,
+        db: authDb,
+      });
+      if (shouldReview) {
+        reviewerPromise = runReviewer({
+          config,
+          projectPath,
+          linearIds,
+          state,
+          db: authDb,
+          shutdownSignal: shutdownController.signal,
+        })
+          .catch((e) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            warn(`Reviewer error: ${msg}`);
+          })
+          .finally(() => {
+            reviewerPromise = null;
+          });
+      }
+    }
+
     // Check projects loop
     if (
       config.projects.enabled &&
@@ -437,6 +478,25 @@ while (!shuttingDown) {
       for (const p of projectPromises) {
         const tracked = p.finally(() => running.delete(tracked));
         running.add(tracked);
+      }
+    }
+
+    // Auto-promote orphaned Triage issues in label-first mode
+    if (!linearIds.initiativeId) {
+      const filters = {
+        labels: config.linear.labels,
+        projects: config.linear.projects,
+      };
+      const triageOrphans = await getTriageIssues(linearIds, 50, filters);
+      for (const issue of triageOrphans) {
+        info(
+          `Label-first auto-promotion: moving ${issue.identifier} from Triage to Ready`,
+        );
+        await updateIssue(issue.id, {
+          stateId: linearIds.states.ready,
+          comment:
+            "Auto-promoted from Triage to Ready (label-first mode — no project owner to triage).",
+        });
       }
     }
 
@@ -508,6 +568,7 @@ while (!shuttingDown) {
 
 const drainablePromises: Promise<unknown>[] = [...running];
 if (planningPromise) drainablePromises.push(planningPromise);
+if (reviewerPromise) drainablePromises.push(reviewerPromise);
 
 if (drainablePromises.length > 0) {
   info(

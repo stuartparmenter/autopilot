@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   timestamp INTEGER NOT NULL,
   type TEXT NOT NULL,
   summary TEXT NOT NULL,
-  detail TEXT
+  detail TEXT,
+  is_subagent INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_activity_logs_agent_run_id ON activity_logs(agent_run_id);
 CREATE TABLE IF NOT EXISTS conversation_log (
@@ -84,6 +85,7 @@ interface AgentRunRow {
   error: string | null;
   linear_issue_id: string | null;
   session_id: string | null;
+  reviewed_at: number | null;
 }
 
 interface AnalyticsRow {
@@ -104,6 +106,7 @@ interface ActivityLogRow {
   type: "tool_use" | "text" | "result" | "error" | "status";
   summary: string;
   detail: string | null;
+  is_subagent: number;
 }
 
 export function openDb(dbFilePath: string): Database {
@@ -119,6 +122,18 @@ export function openDb(dbFilePath: string): Database {
   }
   try {
     db.exec("ALTER TABLE agent_runs ADD COLUMN session_id TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+  try {
+    db.exec("ALTER TABLE agent_runs ADD COLUMN reviewed_at INTEGER");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+  try {
+    db.exec(
+      "ALTER TABLE activity_logs ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0",
+    );
   } catch {
     // Column already exists — safe to ignore
   }
@@ -161,6 +176,7 @@ function rowToResult(row: AgentRunRow): AgentResult {
     error: row.error ?? undefined,
     linearIssueId: row.linear_issue_id ?? undefined,
     sessionId: row.session_id ?? undefined,
+    reviewedAt: row.reviewed_at ?? undefined,
   };
 }
 
@@ -168,7 +184,7 @@ export function getRecentRuns(db: Database, limit = 50): AgentResult[] {
   const rows = db
     .query<AgentRunRow, [number]>(
       `SELECT id, issue_id, issue_title, status, started_at, finished_at,
-              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at
        FROM agent_runs
        ORDER BY finished_at DESC
        LIMIT ?`,
@@ -234,7 +250,7 @@ export function insertActivityLogs(
 ): void {
   if (activities.length === 0) return;
   const stmt = db.prepare(
-    `INSERT INTO activity_logs (agent_run_id, timestamp, type, summary, detail) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO activity_logs (agent_run_id, timestamp, type, summary, detail, is_subagent) VALUES (?, ?, ?, ?, ?, ?)`,
   );
   const insertMany = db.transaction((rows: ActivityEntry[]) => {
     for (const row of rows) {
@@ -244,6 +260,7 @@ export function insertActivityLogs(
         row.type,
         row.summary,
         row.detail ?? null,
+        row.isSubagent ? 1 : 0,
       );
     }
   });
@@ -256,7 +273,7 @@ export function getActivityLogs(
 ): ActivityEntry[] {
   const rows = db
     .query<ActivityLogRow, [string]>(
-      `SELECT agent_run_id, timestamp, type, summary, detail
+      `SELECT agent_run_id, timestamp, type, summary, detail, is_subagent
        FROM activity_logs
        WHERE agent_run_id = ?
        ORDER BY timestamp ASC`,
@@ -267,6 +284,7 @@ export function getActivityLogs(
     type: row.type,
     summary: row.summary,
     detail: row.detail ?? undefined,
+    isSubagent: row.is_subagent === 1 || undefined,
   }));
 }
 
@@ -362,4 +380,58 @@ export function pruneConversationLogs(
     cutoffMs,
   ]);
   return result.changes;
+}
+
+export function getUnreviewedRuns(db: Database, limit = 100): AgentResult[] {
+  const rows = db
+    .query<AgentRunRow, [number]>(
+      `SELECT id, issue_id, issue_title, status, started_at, finished_at,
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at
+       FROM agent_runs
+       WHERE reviewed_at IS NULL AND status IN ('completed', 'failed', 'timed_out')
+       ORDER BY finished_at ASC
+       LIMIT ?`,
+    )
+    .all(limit);
+  return rows.map(rowToResult);
+}
+
+export function getRunWithTranscript(
+  db: Database,
+  agentRunId: string,
+): { run: AgentResult; messagesJson: string | null } {
+  const runRow = db
+    .query<AgentRunRow, [string]>(
+      `SELECT id, issue_id, issue_title, status, started_at, finished_at,
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at
+       FROM agent_runs WHERE id = ?`,
+    )
+    .get(agentRunId);
+
+  if (!runRow) {
+    throw new Error(`Agent run not found: ${agentRunId}`);
+  }
+
+  const logRow = db
+    .query<{ messages_json: string }, [string]>(
+      `SELECT messages_json FROM conversation_log WHERE agent_run_id = ?`,
+    )
+    .get(agentRunId);
+
+  return {
+    run: rowToResult(runRow),
+    messagesJson: logRow?.messages_json ?? null,
+  };
+}
+
+export function markRunsReviewed(db: Database, agentRunIds: string[]): void {
+  if (agentRunIds.length === 0) return;
+  const stmt = db.prepare(`UPDATE agent_runs SET reviewed_at = ? WHERE id = ?`);
+  const updateMany = db.transaction((ids: string[]) => {
+    const now = Date.now();
+    for (const id of ids) {
+      stmt.run(now, id);
+    }
+  });
+  updateMany(agentRunIds);
 }

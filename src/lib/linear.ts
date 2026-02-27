@@ -336,6 +336,7 @@ interface CountIssuesResponse {
 export async function getTriageIssues(
   linearIds: LinearIds,
   limit: number = 50,
+  filters?: { labels?: string[]; projects?: string[] },
 ): Promise<Issue[]> {
   const client = await getLinearClientAsync();
   const result = await withRetry(
@@ -344,6 +345,12 @@ export async function getTriageIssues(
         filter: {
           team: { id: { eq: linearIds.teamId } },
           state: { id: { eq: linearIds.states.triage } },
+          ...(filters?.labels?.length
+            ? { labels: { some: { name: { in: filters.labels } } } }
+            : {}),
+          ...(filters?.projects?.length
+            ? { project: { name: { in: filters.projects } } }
+            : {}),
         },
         first: limit,
       }),
@@ -357,10 +364,15 @@ export async function getTriageIssues(
 /**
  * Get all In Progress issues for the team.
  * Used by recoverStaleIssues() to find orphaned issues.
+ *
+ * Optional filters:
+ * - labels: only return issues matching any of these label names
+ * - projects: only return issues in any of these project names
  */
 export async function getInProgressIssues(
   linearIds: LinearIds,
   limit: number = 50,
+  filters?: { labels?: string[]; projects?: string[] },
 ): Promise<Issue[]> {
   const client = await getLinearClientAsync();
   const result = await withRetry(
@@ -369,6 +381,12 @@ export async function getInProgressIssues(
         filter: {
           team: { id: { eq: linearIds.teamId } },
           state: { id: { eq: linearIds.states.in_progress } },
+          ...(filters?.labels?.length
+            ? { labels: { some: { name: { in: filters.labels } } } }
+            : {}),
+          ...(filters?.projects?.length
+            ? { project: { name: { in: filters.projects } } }
+            : {}),
         },
         first: limit,
       }),
