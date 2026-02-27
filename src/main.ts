@@ -104,6 +104,13 @@ for (const result of preflight.results) {
     error(`${result.name}: ${result.detail}`);
   }
 }
+for (const result of preflight.warnings) {
+  if (result.pass) {
+    ok(`${result.name}: ${result.detail}`);
+  } else {
+    warn(`${result.name}: ${result.detail}`);
+  }
+}
 if (!preflight.passed) {
   fatal(
     "Preflight checks failed. Fix the issues above and try again.\nRun 'bun run validate <project-path>' for detailed diagnostics.",
