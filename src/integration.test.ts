@@ -24,7 +24,7 @@ const _realLinearSdkSnapshot = { ..._realLinearSdk };
 const _realOctokitSnapshot = { ..._realOctokit };
 
 import { executeIssue, fillSlots } from "./executor";
-import { _worktree, resetSpawnGate } from "./lib/claude";
+import { _clone, resetSpawnGate } from "./lib/claude";
 import type { AutopilotConfig, LinearIds } from "./lib/config";
 import { resetClient as resetGithubClient } from "./lib/github";
 import { resetClient as resetLinearClient } from "./lib/linear";
@@ -195,6 +195,10 @@ function makeConfig(
       review_responder_timeout_minutes: 0,
     },
     github: { repo: "", automerge: false },
+    git: {
+      user_name: "autopilot[bot]",
+      user_email: "autopilot[bot]@users.noreply.github.com",
+    },
     persistence: {
       enabled: false,
       db_path: ".claude/autopilot.db",
@@ -277,10 +281,13 @@ beforeEach(() => {
       },
   );
 
-  // Override _worktree functions to skip real git worktree creation/removal.
-  // The _worktree object in claude.ts is intentionally mutable for exactly this purpose.
-  _worktree.createWorktree = async (cwd: string) => cwd;
-  _worktree.removeWorktree = async () => {};
+  // Override _clone functions to skip real git clone creation/removal.
+  // The _clone object in claude.ts is intentionally mutable for exactly this purpose.
+  _clone.createClone = async (cwd: string) => ({
+    path: cwd,
+    branch: "test-branch",
+  });
+  _clone.removeClone = async () => {};
 
   // ---------------------------------------------------------------------------
   // Mock external SDK packages at the lowest level so all internal modules
