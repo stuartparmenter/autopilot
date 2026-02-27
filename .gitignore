@@ -10,8 +10,8 @@ node_modules/
 # Build artifacts
 *.tsbuildinfo
 
-# Test temp dirs (sandbox-safe temp directories next to test files)
-.tmp-*
+# Test temp dirs
+.tmp/
 
 # Agent isolation directories
 .worktrees/

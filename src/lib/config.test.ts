@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+const TEST_TMP = join(process.cwd(), ".tmp", "tests");
+
 import { collectUnknownKeys, DEFAULTS, deepMerge, loadConfig } from "./config";
 
 let tmpDir: string;
@@ -11,7 +14,8 @@ function writeConfig(content: string): string {
 }
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(import.meta.dir, ".tmp-config-test-"));
+  mkdirSync(TEST_TMP, { recursive: true });
+  tmpDir = mkdtempSync(join(TEST_TMP, "config-"));
 });
 
 afterEach(() => {
