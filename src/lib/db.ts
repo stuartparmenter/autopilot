@@ -46,9 +46,10 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   access_token TEXT NOT NULL,
   refresh_token TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
-  token_type TEXT NOT NULL,
-  scope TEXT NOT NULL,
-  actor TEXT NOT NULL
+  token_type TEXT NOT NULL DEFAULT 'Bearer',
+  scope TEXT,
+  actor TEXT,
+  updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS planning_sessions (
   id TEXT PRIMARY KEY,
@@ -131,10 +132,10 @@ async function withDbRetry<T>(
 export interface OAuthTokenRow {
   accessToken: string;
   refreshToken: string;
-  expiresAt: number;
+  expiresAt: number; // Unix timestamp in ms
   tokenType: string;
-  scope: string;
-  actor: string;
+  scope?: string;
+  actor?: string;
 }
 
 export interface AnalyticsResult {
@@ -164,6 +165,7 @@ interface AgentRunRow {
   session_id: string | null;
   reviewed_at: number | null;
   exit_reason: string | null;
+  run_type: string | null;
 }
 
 interface AnalyticsRow {
@@ -220,6 +222,18 @@ export function openDb(dbFilePath: string): Database {
   } catch {
     // Column already exists — safe to ignore
   }
+  try {
+    db.exec("ALTER TABLE agent_runs ADD COLUMN run_type TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+  try {
+    db.exec(
+      "ALTER TABLE oauth_tokens ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+    );
+  } catch {
+    // Column already exists — safe to ignore
+  }
   return db;
 }
 
@@ -231,8 +245,8 @@ export async function insertAgentRun(
     () =>
       db.run(
         `INSERT OR REPLACE INTO agent_runs
-         (id, issue_id, issue_title, status, started_at, finished_at, cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, exit_reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, issue_id, issue_title, status, started_at, finished_at, cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, exit_reason, run_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           result.id,
           result.issueId,
@@ -247,6 +261,7 @@ export async function insertAgentRun(
           result.linearIssueId ?? null,
           result.sessionId ?? null,
           result.exitReason ?? null,
+          result.runType ?? null,
         ],
       ),
     "insertAgentRun",
@@ -270,6 +285,7 @@ function rowToResult(row: AgentRunRow): AgentResult {
     sessionId: row.session_id ?? undefined,
     reviewedAt: row.reviewed_at ?? undefined,
     exitReason: row.exit_reason ?? undefined,
+    runType: row.run_type ?? undefined,
   };
 }
 
@@ -277,7 +293,7 @@ export function getRecentRuns(db: Database, limit = 50): AgentResult[] {
   const rows = db
     .query<AgentRunRow, [number]>(
       `SELECT id, issue_id, issue_title, status, started_at, finished_at,
-              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason, run_type
        FROM agent_runs
        ORDER BY finished_at DESC
        LIMIT ?`,
@@ -316,7 +332,7 @@ export interface DailyCostEntry {
 }
 
 export interface WeeklyCostEntry {
-  weekStart: string; // "YYYY-WW" (ISO year-week)
+  weekStart: string; // "YYYY-MM-DD" (earliest date of runs in the week)
   totalCost: number;
   runCount: number;
 }
@@ -335,6 +351,7 @@ interface DailyCostRow {
 
 interface WeeklyCostRow {
   week: string;
+  week_start: string;
   total_cost: number;
   run_count: number;
 }
@@ -366,12 +383,16 @@ export function getDailyCostTrend(db: Database, days = 30): DailyCostEntry[] {
   }));
 }
 
-export function getWeeklyCostTrend(db: Database, weeks = 8): WeeklyCostEntry[] {
+export function getWeeklyCostTrend(
+  db: Database,
+  weeks = 12,
+): WeeklyCostEntry[] {
   const cutoffMs = Date.now() - weeks * 7 * 24 * 60 * 60 * 1000;
   const rows = db
     .query<WeeklyCostRow, [number]>(
       `SELECT
-         strftime('%Y-%W', datetime(finished_at/1000, 'unixepoch')) AS week,
+         strftime('%Y-%W', finished_at/1000, 'unixepoch') AS week,
+         MIN(strftime('%Y-%m-%d', finished_at/1000, 'unixepoch')) AS week_start,
          SUM(COALESCE(cost_usd, 0)) AS total_cost,
          COUNT(*) AS run_count
        FROM agent_runs
@@ -381,24 +402,26 @@ export function getWeeklyCostTrend(db: Database, weeks = 8): WeeklyCostEntry[] {
     )
     .all(cutoffMs);
   return rows.map((row) => ({
-    weekStart: row.week,
+    weekStart: row.week_start,
     totalCost: row.total_cost,
     runCount: row.run_count,
   }));
 }
 
-export function getCostByStatus(db: Database): CostByStatusEntry[] {
+export function getCostByStatus(db: Database, days = 30): CostByStatusEntry[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
   const rows = db
-    .query<CostByStatusRow, []>(
+    .query<CostByStatusRow, [number]>(
       `SELECT
          status,
          SUM(COALESCE(cost_usd, 0)) AS total_cost,
          COUNT(*) AS run_count
        FROM agent_runs
+       WHERE finished_at >= ?
        GROUP BY status
        ORDER BY status ASC`,
     )
-    .all();
+    .all(cutoffMs);
   return rows.map((row) => ({
     status: row.status,
     totalCost: row.total_cost,
@@ -528,8 +551,8 @@ export function getOAuthToken(
         refresh_token: string;
         expires_at: number;
         token_type: string;
-        scope: string;
-        actor: string;
+        scope: string | null;
+        actor: string | null;
       },
       [string]
     >(
@@ -543,8 +566,8 @@ export function getOAuthToken(
     refreshToken: row.refresh_token,
     expiresAt: row.expires_at,
     tokenType: row.token_type,
-    scope: row.scope,
-    actor: row.actor,
+    scope: row.scope ?? undefined,
+    actor: row.actor ?? undefined,
   };
 }
 
@@ -557,21 +580,26 @@ export async function saveOAuthToken(
     () =>
       db.run(
         `INSERT OR REPLACE INTO oauth_tokens
-         (service, access_token, refresh_token, expires_at, token_type, scope, actor)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (service, access_token, refresh_token, expires_at, token_type, scope, actor, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           service,
           token.accessToken,
           token.refreshToken,
           token.expiresAt,
           token.tokenType,
-          token.scope,
-          token.actor,
+          token.scope ?? null,
+          token.actor ?? null,
+          Date.now(),
         ],
       ),
     "saveOAuthToken",
     { service },
   );
+}
+
+export function deleteOAuthToken(db: Database, service: string): void {
+  db.run("DELETE FROM oauth_tokens WHERE service = ?", [service]);
 }
 
 export function pruneConversationLogs(
@@ -589,7 +617,7 @@ export function getUnreviewedRuns(db: Database, limit = 100): AgentResult[] {
   const rows = db
     .query<AgentRunRow, [number]>(
       `SELECT id, issue_id, issue_title, status, started_at, finished_at,
-              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason, run_type
        FROM agent_runs
        WHERE reviewed_at IS NULL AND status IN ('completed', 'failed', 'timed_out')
        ORDER BY finished_at ASC
@@ -606,7 +634,7 @@ export function getRunWithTranscript(
   const runRow = db
     .query<AgentRunRow, [string]>(
       `SELECT id, issue_id, issue_title, status, started_at, finished_at,
-              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason, run_type
        FROM agent_runs WHERE id = ?`,
     )
     .get(agentRunId);
@@ -627,25 +655,8 @@ export function getRunWithTranscript(
   };
 }
 
-export async function markRunsReviewed(
-  db: Database,
-  agentRunIds: string[],
-): Promise<void> {
-  if (agentRunIds.length === 0) return;
-  const stmt = db.prepare(`UPDATE agent_runs SET reviewed_at = ? WHERE id = ?`);
-  const updateMany = db.transaction((ids: string[]) => {
-    const now = Date.now();
-    for (const id of ids) {
-      stmt.run(now, id);
-    }
-  });
-  await withDbRetry(() => updateMany(agentRunIds), "markRunsReviewed", {
-    ids: agentRunIds,
-  });
-}
-
 export interface FailuresByTypeEntry {
-  status: string;
+  status: string; // "failed" | "timed_out"
   count: number;
 }
 
@@ -675,7 +686,7 @@ interface FailureTrendRow {
   failure_count: number;
 }
 
-interface RepeatFailuresRow {
+interface RepeatFailureRow {
   issue_id: string;
   issue_title: string;
   failure_count: number;
@@ -732,15 +743,17 @@ export function getRepeatFailures(
 ): RepeatFailureEntry[] {
   const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
   const rows = db
-    .query<RepeatFailuresRow, [number, number]>(
+    .query<RepeatFailureRow, [number, number]>(
       `SELECT
          issue_id,
          issue_title,
          COUNT(*) AS failure_count,
          MAX(finished_at) AS last_failed_at,
          (SELECT error FROM agent_runs ar2
-          WHERE ar2.issue_id = agent_runs.issue_id AND ar2.status != 'completed'
-          ORDER BY ar2.finished_at DESC LIMIT 1) AS last_error
+          WHERE ar2.issue_id = agent_runs.issue_id
+            AND ar2.status != 'completed'
+          ORDER BY ar2.finished_at DESC
+          LIMIT 1) AS last_error
        FROM agent_runs
        WHERE status != 'completed' AND finished_at >= ?
        GROUP BY issue_id
@@ -755,6 +768,23 @@ export function getRepeatFailures(
     lastFailedAt: row.last_failed_at,
     lastError: row.last_error,
   }));
+}
+
+export async function markRunsReviewed(
+  db: Database,
+  agentRunIds: string[],
+): Promise<void> {
+  if (agentRunIds.length === 0) return;
+  const stmt = db.prepare(`UPDATE agent_runs SET reviewed_at = ? WHERE id = ?`);
+  const updateMany = db.transaction((ids: string[]) => {
+    const now = Date.now();
+    for (const id of ids) {
+      stmt.run(now, id);
+    }
+  });
+  await withDbRetry(() => updateMany(agentRunIds), "markRunsReviewed", {
+    ids: agentRunIds,
+  });
 }
 
 interface PlanningSessionRow {
