@@ -5,6 +5,8 @@ import type {
   AnalyticsResult,
   CostByStatusEntry,
   DailyCostEntry,
+  DailyCostRow,
+  PerIssueCostRow,
   TodayAnalyticsResult,
   WeeklyCostEntry,
 } from "./lib/db";
@@ -12,7 +14,9 @@ import {
   getActivityLogs,
   getAnalytics,
   getCostByStatus,
+  getDailyCosts,
   getDailyCostTrend,
+  getPerIssueCosts,
   getRecentPlanningSessions,
   getRecentRuns,
   getTodayAnalytics,
@@ -306,6 +310,16 @@ export class AppState {
   getActivityLogsForRun(agentRunId: string): ActivityEntry[] {
     if (!this.db) return [];
     return getActivityLogs(this.db, agentRunId);
+  }
+
+  getDailyCosts(days?: number): DailyCostRow[] {
+    if (!this.db) return [];
+    return getDailyCosts(this.db, days);
+  }
+
+  getPerIssueCosts(limit?: number): PerIssueCostRow[] {
+    if (!this.db) return [];
+    return getPerIssueCosts(this.db, limit);
   }
 
   getPlanningStatus(): PlanningStatus {
