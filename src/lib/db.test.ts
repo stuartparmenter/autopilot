@@ -2,13 +2,21 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ActivityEntry, AgentResult, PlanningSession } from "../state";
 import {
+  deleteOAuthToken,
   getActivityLogs,
   getAnalytics,
   getConversationLog,
+  getCostByStatus,
+  getDailyCostTrend,
+  getFailuresByType,
+  getFailureTrend,
+  getOAuthToken,
   getRecentPlanningSessions,
   getRecentRuns,
+  getRepeatFailures,
   getRunWithTranscript,
   getUnreviewedRuns,
+  getWeeklyCostTrend,
   insertActivityLogs,
   insertAgentRun,
   insertConversationLog,
@@ -18,6 +26,7 @@ import {
   openDb,
   pruneActivityLogs,
   pruneConversationLogs,
+  saveOAuthToken,
 } from "./db";
 import { sanitizeMessage } from "./sanitize";
 
@@ -866,6 +875,104 @@ describe("transcript redaction before storage", () => {
   });
 });
 
+describe("run_type migration", () => {
+  test("migration adds run_type column to existing DB without it", () => {
+    const db2 = new Database(":memory:", { create: true });
+    db2.exec(`
+      CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL,
+        issue_title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER NOT NULL,
+        cost_usd REAL,
+        duration_ms INTEGER,
+        num_turns INTEGER,
+        error TEXT
+      );
+    `);
+    db2.run(
+      `INSERT INTO agent_runs (id, issue_id, issue_title, status, started_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ["pre-migration", "ISSUE-1", "Old Title", "completed", 1000, 2000],
+    );
+
+    // Run the migration
+    try {
+      db2.exec("ALTER TABLE agent_runs ADD COLUMN run_type TEXT");
+    } catch {
+      // ignore duplicate column
+    }
+
+    // Pre-migration row should have null for the new column
+    const row = db2
+      .query<{ run_type: string | null }, [string]>(
+        "SELECT run_type FROM agent_runs WHERE id = ?",
+      )
+      .get("pre-migration");
+    expect(row?.run_type).toBeNull();
+
+    // New rows inserted after migration can use the column
+    db2.run(
+      `INSERT INTO agent_runs (id, issue_id, issue_title, status, started_at, finished_at, run_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "post-migration",
+        "ISSUE-2",
+        "New Title",
+        "completed",
+        3000,
+        4000,
+        "executor",
+      ],
+    );
+    const newRow = db2
+      .query<{ run_type: string | null }, [string]>(
+        "SELECT run_type FROM agent_runs WHERE id = ?",
+      )
+      .get("post-migration");
+    expect(newRow?.run_type).toBe("executor");
+
+    db2.close();
+  });
+
+  test("run_type migration is idempotent on a new DB", () => {
+    // openDb on :memory: creates the schema then runs migrations including run_type
+    // Running it again should not throw
+    expect(() => openDb(":memory:")).not.toThrow();
+  });
+});
+
+describe("insertAgentRun with runType", () => {
+  test("stores and retrieves runType when set", async () => {
+    await insertAgentRun(db, makeResult("a1", { runType: "executor" }));
+    const run = getRecentRuns(db)[0];
+    expect(run.runType).toBe("executor");
+  });
+
+  test("runType is undefined when not set", async () => {
+    await insertAgentRun(db, makeResult("a1"));
+    const run = getRecentRuns(db)[0];
+    expect(run.runType).toBeUndefined();
+  });
+
+  test("getRecentRuns returns runType for all run types", async () => {
+    const types = ["executor", "fixer", "review", "planning", "project-owner"];
+    for (const runType of types) {
+      await insertAgentRun(
+        db,
+        makeResult(runType, { startedAt: 1000, finishedAt: 2000, runType }),
+      );
+    }
+    const runs = getRecentRuns(db);
+    const returnedTypes = runs.map((r) => r.runType);
+    for (const runType of types) {
+      expect(returnedTypes).toContain(runType);
+    }
+  });
+});
+
 describe("insertPlanningSession and getRecentPlanningSessions", () => {
   function makeSession(
     id: string,
@@ -994,5 +1101,669 @@ describe("insertPlanningSession and getRecentPlanningSessions", () => {
 
   test("returns empty array when no sessions exist", () => {
     expect(getRecentPlanningSessions(db)).toEqual([]);
+  });
+});
+
+describe("getFailuresByType", () => {
+  test("returns correct counts for mixed statuses", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "completed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", { status: "failed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r3", { status: "failed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r4", { status: "timed_out", finishedAt: now }),
+    );
+
+    const result = getFailuresByType(db);
+    expect(result).toHaveLength(2);
+    const failedEntry = result.find((e) => e.status === "failed");
+    const timedOutEntry = result.find((e) => e.status === "timed_out");
+    expect(failedEntry?.count).toBe(2);
+    expect(timedOutEntry?.count).toBe(1);
+  });
+
+  test("returns empty array when no failures exist", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "completed", finishedAt: now }),
+    );
+    expect(getFailuresByType(db)).toEqual([]);
+  });
+
+  test("returns empty array when database is empty", () => {
+    expect(getFailuresByType(db)).toEqual([]);
+  });
+
+  test("respects days parameter — excludes runs outside the window", async () => {
+    const now = Date.now();
+    const outside = now - 31 * 24 * 60 * 60 * 1000;
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "failed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", { status: "failed", finishedAt: outside }),
+    );
+
+    const result = getFailuresByType(db, 30);
+    expect(result).toHaveLength(1);
+    expect(result[0].count).toBe(1);
+  });
+
+  test("orders results by count descending", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "timed_out", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", { status: "failed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r3", { status: "failed", finishedAt: now }),
+    );
+
+    const result = getFailuresByType(db);
+    expect(result[0].status).toBe("failed");
+    expect(result[0].count).toBe(2);
+    expect(result[1].status).toBe("timed_out");
+    expect(result[1].count).toBe(1);
+  });
+});
+
+describe("getFailureTrend", () => {
+  test("returns daily breakdown with correct failure rates", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "completed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", { status: "failed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r3", { status: "timed_out", finishedAt: now }),
+    );
+
+    const result = getFailureTrend(db);
+    expect(result).toHaveLength(1);
+    expect(result[0].totalRuns).toBe(3);
+    expect(result[0].failureCount).toBe(2);
+    expect(result[0].failureRate).toBeCloseTo(2 / 3);
+  });
+
+  test("failure rate is 0 for days where all runs completed", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "completed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", { status: "completed", finishedAt: now }),
+    );
+
+    const result = getFailureTrend(db);
+    expect(result).toHaveLength(1);
+    expect(result[0].failureCount).toBe(0);
+    expect(result[0].failureRate).toBe(0);
+  });
+
+  test("respects days cutoff — excludes older runs", async () => {
+    const now = Date.now();
+    const outside = now - 31 * 24 * 60 * 60 * 1000;
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "failed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", { status: "failed", finishedAt: outside }),
+    );
+
+    const result = getFailureTrend(db, 30);
+    expect(result).toHaveLength(1);
+    expect(result[0].totalRuns).toBe(1);
+  });
+
+  test("returns empty array when no runs exist", () => {
+    expect(getFailureTrend(db)).toEqual([]);
+  });
+
+  test("orders results by date ascending", async () => {
+    const now = Date.now();
+    const twoDaysAgo = now - 2 * 24 * 60 * 60 * 1000;
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "failed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", { status: "failed", finishedAt: twoDaysAgo }),
+    );
+
+    const result = getFailureTrend(db);
+    expect(result).toHaveLength(2);
+    expect(result[0].date < result[1].date).toBe(true);
+  });
+});
+
+describe("getRepeatFailures", () => {
+  test("finds issues that failed multiple times", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", {
+        issueId: "ENG-1",
+        issueTitle: "Fix bug",
+        status: "failed",
+        finishedAt: now - 2000,
+        error: "first error",
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", {
+        issueId: "ENG-1",
+        issueTitle: "Fix bug",
+        status: "failed",
+        finishedAt: now - 1000,
+        error: "second error",
+      }),
+    );
+
+    const result = getRepeatFailures(db);
+    expect(result).toHaveLength(1);
+    expect(result[0].issueId).toBe("ENG-1");
+    expect(result[0].issueTitle).toBe("Fix bug");
+    expect(result[0].failureCount).toBe(2);
+  });
+
+  test("returns correct lastError from most recent failure", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", {
+        issueId: "ENG-1",
+        issueTitle: "Fix bug",
+        status: "failed",
+        finishedAt: now - 2000,
+        error: "old error",
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", {
+        issueId: "ENG-1",
+        issueTitle: "Fix bug",
+        status: "timed_out",
+        finishedAt: now - 1000,
+        error: "latest error",
+      }),
+    );
+
+    const result = getRepeatFailures(db);
+    expect(result[0].lastError).toBe("latest error");
+    expect(result[0].lastFailedAt).toBe(now - 1000);
+  });
+
+  test("excludes issues below minFailures threshold", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", {
+        issueId: "ENG-1",
+        issueTitle: "One fail",
+        status: "failed",
+        finishedAt: now,
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", {
+        issueId: "ENG-2",
+        issueTitle: "Two fails",
+        status: "failed",
+        finishedAt: now - 1000,
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r3", {
+        issueId: "ENG-2",
+        issueTitle: "Two fails",
+        status: "failed",
+        finishedAt: now - 500,
+      }),
+    );
+
+    const result = getRepeatFailures(db, 2);
+    expect(result).toHaveLength(1);
+    expect(result[0].issueId).toBe("ENG-2");
+  });
+
+  test("returns empty array when all runs succeed", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", { status: "completed", finishedAt: now }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", { status: "completed", finishedAt: now }),
+    );
+    expect(getRepeatFailures(db)).toEqual([]);
+  });
+
+  test("returns empty array when no runs exist", () => {
+    expect(getRepeatFailures(db)).toEqual([]);
+  });
+
+  test("respects days cutoff", async () => {
+    const now = Date.now();
+    const outside = now - 31 * 24 * 60 * 60 * 1000;
+    await insertAgentRun(
+      db,
+      makeResult("r1", {
+        issueId: "ENG-1",
+        issueTitle: "Old fail",
+        status: "failed",
+        finishedAt: outside,
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", {
+        issueId: "ENG-1",
+        issueTitle: "Old fail",
+        status: "failed",
+        finishedAt: outside - 1000,
+      }),
+    );
+
+    const result = getRepeatFailures(db, 2, 30);
+    expect(result).toEqual([]);
+  });
+
+  test("orders results by failure count descending", async () => {
+    const now = Date.now();
+    // ENG-1: 2 failures
+    for (let i = 0; i < 2; i++) {
+      await insertAgentRun(
+        db,
+        makeResult(`r1-${i}`, {
+          issueId: "ENG-1",
+          issueTitle: "Less fails",
+          status: "failed",
+          finishedAt: now - i * 1000,
+        }),
+      );
+    }
+    // ENG-2: 3 failures
+    for (let i = 0; i < 3; i++) {
+      await insertAgentRun(
+        db,
+        makeResult(`r2-${i}`, {
+          issueId: "ENG-2",
+          issueTitle: "More fails",
+          status: "failed",
+          finishedAt: now - i * 1000,
+        }),
+      );
+    }
+
+    const result = getRepeatFailures(db);
+    expect(result[0].issueId).toBe("ENG-2");
+    expect(result[0].failureCount).toBe(3);
+    expect(result[1].issueId).toBe("ENG-1");
+    expect(result[1].failureCount).toBe(2);
+  });
+
+  test("lastError is null when error field is not set", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("r1", {
+        issueId: "ENG-1",
+        issueTitle: "No error message",
+        status: "failed",
+        finishedAt: now - 1000,
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("r2", {
+        issueId: "ENG-1",
+        issueTitle: "No error message",
+        status: "failed",
+        finishedAt: now,
+      }),
+    );
+
+    const result = getRepeatFailures(db);
+    expect(result[0].lastError).toBeNull();
+  });
+});
+
+describe("getDailyCostTrend", () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  test("returns empty array for empty database", () => {
+    expect(getDailyCostTrend(db)).toEqual([]);
+  });
+
+  test("single day with multiple runs aggregates cost and count", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("d1", { finishedAt: now, costUsd: 0.1 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("d2", { finishedAt: now + 1000, costUsd: 0.2 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("d3", { finishedAt: now + 2000, costUsd: 0.05 }),
+    );
+    const result = getDailyCostTrend(db, 30);
+    expect(result).toHaveLength(1);
+    expect(result[0].runCount).toBe(3);
+    expect(result[0].totalCost).toBeCloseTo(0.35);
+  });
+
+  test("multiple days are returned in ascending date order", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("d1", { finishedAt: now - 2 * dayMs, costUsd: 0.1 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("d2", { finishedAt: now - dayMs, costUsd: 0.2 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("d3", { finishedAt: now, costUsd: 0.15 }),
+    );
+    const result = getDailyCostTrend(db, 30);
+    expect(result.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i].date > result[i - 1].date).toBe(true);
+    }
+  });
+
+  test("runs with null cost_usd are counted but contribute 0 cost", async () => {
+    const now = Date.now();
+    await insertAgentRun(db, makeResult("d1", { finishedAt: now })); // no costUsd
+    await insertAgentRun(
+      db,
+      makeResult("d2", { finishedAt: now + 1000, costUsd: 0.1 }),
+    );
+    const result = getDailyCostTrend(db, 30);
+    expect(result).toHaveLength(1);
+    expect(result[0].runCount).toBe(2);
+    expect(result[0].totalCost).toBeCloseTo(0.1);
+  });
+
+  test("days parameter limits the time window", async () => {
+    const now = Date.now();
+    const fiftyDaysAgo = now - 50 * dayMs;
+    await insertAgentRun(
+      db,
+      makeResult("d1", { finishedAt: fiftyDaysAgo, costUsd: 1.0 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("d2", { finishedAt: now, costUsd: 0.1 }),
+    );
+    const result = getDailyCostTrend(db, 30);
+    expect(result).toHaveLength(1);
+    expect(result[0].totalCost).toBeCloseTo(0.1);
+  });
+
+  test("date field has YYYY-MM-DD format", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("d1", { finishedAt: now, costUsd: 0.1 }),
+    );
+    const result = getDailyCostTrend(db, 30);
+    expect(result[0].date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe("getWeeklyCostTrend", () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  test("returns empty array for empty database", () => {
+    expect(getWeeklyCostTrend(db)).toEqual([]);
+  });
+
+  test("weekly aggregation groups runs from the same week together", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("w1", { finishedAt: now, costUsd: 0.1 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("w2", { finishedAt: now + 3600000, costUsd: 0.2 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("w3", { finishedAt: now + 7200000, costUsd: 0.15 }),
+    );
+    const result = getWeeklyCostTrend(db, 12);
+    expect(result).toHaveLength(1);
+    expect(result[0].runCount).toBe(3);
+    expect(result[0].totalCost).toBeCloseTo(0.45);
+  });
+
+  test("weeks parameter limits the time window", async () => {
+    const now = Date.now();
+    const twentyWeeksAgo = now - 20 * 7 * dayMs;
+    await insertAgentRun(
+      db,
+      makeResult("w1", { finishedAt: twentyWeeksAgo, costUsd: 5.0 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("w2", { finishedAt: now, costUsd: 0.1 }),
+    );
+    const result = getWeeklyCostTrend(db, 12);
+    expect(result).toHaveLength(1);
+    expect(result[0].totalCost).toBeCloseTo(0.1);
+  });
+
+  test("weekStart field is a YYYY-MM-DD date string", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("w1", { finishedAt: now, costUsd: 0.1 }),
+    );
+    const result = getWeeklyCostTrend(db, 12);
+    expect(result[0].weekStart).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  test("runs with null cost_usd contribute 0 cost but are counted", async () => {
+    const now = Date.now();
+    await insertAgentRun(db, makeResult("w1", { finishedAt: now })); // no costUsd
+    const result = getWeeklyCostTrend(db, 12);
+    expect(result).toHaveLength(1);
+    expect(result[0].runCount).toBe(1);
+    expect(result[0].totalCost).toBe(0);
+  });
+});
+
+describe("getCostByStatus", () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  test("returns empty array for empty database", () => {
+    expect(getCostByStatus(db)).toEqual([]);
+  });
+
+  test("groups cost and count by status", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("s1", { finishedAt: now, status: "completed", costUsd: 0.1 }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("s2", {
+        finishedAt: now + 1000,
+        status: "completed",
+        costUsd: 0.2,
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("s3", {
+        finishedAt: now + 2000,
+        status: "failed",
+        costUsd: 0.05,
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("s4", {
+        finishedAt: now + 3000,
+        status: "timed_out",
+        costUsd: 0.15,
+      }),
+    );
+    const result = getCostByStatus(db, 30);
+    expect(result).toHaveLength(3);
+    const completed = result.find((r) => r.status === "completed");
+    expect(completed?.runCount).toBe(2);
+    expect(completed?.totalCost).toBeCloseTo(0.3);
+    const failed = result.find((r) => r.status === "failed");
+    expect(failed?.runCount).toBe(1);
+    expect(failed?.totalCost).toBeCloseTo(0.05);
+    const timedOut = result.find((r) => r.status === "timed_out");
+    expect(timedOut?.runCount).toBe(1);
+    expect(timedOut?.totalCost).toBeCloseTo(0.15);
+  });
+
+  test("days parameter limits the time window", async () => {
+    const now = Date.now();
+    const fiftyDaysAgo = now - 50 * dayMs;
+    await insertAgentRun(
+      db,
+      makeResult("s1", {
+        finishedAt: fiftyDaysAgo,
+        status: "completed",
+        costUsd: 1.0,
+      }),
+    );
+    await insertAgentRun(
+      db,
+      makeResult("s2", { finishedAt: now, status: "completed", costUsd: 0.1 }),
+    );
+    const result = getCostByStatus(db, 30);
+    expect(result).toHaveLength(1);
+    expect(result[0].totalCost).toBeCloseTo(0.1);
+    expect(result[0].runCount).toBe(1);
+  });
+
+  test("runs with null cost_usd contribute 0 cost but are counted", async () => {
+    const now = Date.now();
+    await insertAgentRun(
+      db,
+      makeResult("s1", { finishedAt: now, status: "completed" }),
+    ); // no costUsd
+    const result = getCostByStatus(db, 30);
+    expect(result).toHaveLength(1);
+    expect(result[0].runCount).toBe(1);
+    expect(result[0].totalCost).toBe(0);
+  });
+});
+
+describe("OAuth token CRUD", () => {
+  function makeToken(overrides?: {
+    accessToken?: string;
+    refreshToken?: string;
+    expiresAt?: number;
+  }) {
+    return {
+      accessToken: overrides?.accessToken ?? "access-tok",
+      refreshToken: overrides?.refreshToken ?? "refresh-tok",
+      expiresAt: overrides?.expiresAt ?? Date.now() + 3600_000,
+      tokenType: "Bearer",
+    };
+  }
+
+  test("saveOAuthToken stores a token and getOAuthToken retrieves it", async () => {
+    await saveOAuthToken(db, "linear", makeToken({ accessToken: "my-tok" }));
+    const result = getOAuthToken(db, "linear");
+    expect(result).not.toBeNull();
+    expect(result?.accessToken).toBe("my-tok");
+    expect(result?.refreshToken).toBe("refresh-tok");
+    expect(result?.tokenType).toBe("Bearer");
+  });
+
+  test("getOAuthToken returns null when no token exists", () => {
+    expect(getOAuthToken(db, "linear")).toBeNull();
+    expect(getOAuthToken(db, "github")).toBeNull();
+  });
+
+  test("saveOAuthToken upserts (INSERT OR REPLACE) on same service", async () => {
+    await saveOAuthToken(db, "linear", makeToken({ accessToken: "first" }));
+    await saveOAuthToken(db, "linear", makeToken({ accessToken: "second" }));
+    const result = getOAuthToken(db, "linear");
+    expect(result?.accessToken).toBe("second");
+  });
+
+  test("deleteOAuthToken removes the token", async () => {
+    await saveOAuthToken(db, "linear", makeToken());
+    expect(getOAuthToken(db, "linear")).not.toBeNull();
+    deleteOAuthToken(db, "linear");
+    expect(getOAuthToken(db, "linear")).toBeNull();
+  });
+
+  test("deleteOAuthToken is a no-op when token does not exist", () => {
+    expect(() => deleteOAuthToken(db, "nonexistent")).not.toThrow();
+  });
+
+  test("tokens are scoped by service key", async () => {
+    await saveOAuthToken(db, "linear", makeToken({ accessToken: "lin-tok" }));
+    await saveOAuthToken(db, "github", makeToken({ accessToken: "gh-tok" }));
+    expect(getOAuthToken(db, "linear")?.accessToken).toBe("lin-tok");
+    expect(getOAuthToken(db, "github")?.accessToken).toBe("gh-tok");
+  });
+
+  test("scope and actor are optional and default to undefined", async () => {
+    await saveOAuthToken(db, "linear", makeToken());
+    const result = getOAuthToken(db, "linear");
+    expect(result?.scope).toBeUndefined();
+    expect(result?.actor).toBeUndefined();
+  });
+
+  test("scope and actor are stored and retrieved when provided", async () => {
+    await saveOAuthToken(db, "linear", {
+      ...makeToken(),
+      scope: "read write",
+      actor: "application",
+    });
+    const result = getOAuthToken(db, "linear");
+    expect(result?.scope).toBe("read write");
+    expect(result?.actor).toBe("application");
   });
 });
