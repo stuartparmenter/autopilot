@@ -1018,6 +1018,171 @@ describe("GET /api/cost-trends", () => {
   });
 });
 
+describe("GET /api/costs", () => {
+  test("returns { enabled: false } when no DB connected", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/api/costs");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { enabled: boolean };
+    expect(json.enabled).toBe(false);
+  });
+
+  test("returns enabled: true with empty arrays for empty database", async () => {
+    const state = new AppState();
+    const db = openDb(":memory:");
+    state.setDb(db);
+    const app = createApp(state);
+    const res = await app.request("/api/costs");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      enabled: boolean;
+      totalCostUsd: number;
+      dailyCosts: unknown[];
+      perIssueCosts: unknown[];
+    };
+    expect(json.enabled).toBe(true);
+    expect(json.totalCostUsd).toBe(0);
+    expect(json.dailyCosts).toEqual([]);
+    expect(json.perIssueCosts).toEqual([]);
+    db.close();
+  });
+
+  test("returns populated dailyCosts and perIssueCosts when runs exist", async () => {
+    const state = new AppState();
+    const db = openDb(":memory:");
+    state.setDb(db);
+    const now = Date.now();
+    await insertAgentRun(db, {
+      id: "run-1",
+      issueId: "ENG-10",
+      issueTitle: "Feature A",
+      status: "completed",
+      startedAt: now - 60000,
+      finishedAt: now,
+      costUsd: 0.25,
+      durationMs: 60000,
+      numTurns: 3,
+    });
+    await insertAgentRun(db, {
+      id: "run-2",
+      issueId: "ENG-10",
+      issueTitle: "Feature A",
+      status: "completed",
+      startedAt: now - 30000,
+      finishedAt: now,
+      costUsd: 0.1,
+      durationMs: 30000,
+      numTurns: 2,
+    });
+    const app = createApp(state);
+    const res = await app.request("/api/costs");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      enabled: boolean;
+      totalCostUsd: number;
+      dailyCosts: Array<{
+        date: string;
+        totalCostUsd: number;
+        runCount: number;
+      }>;
+      perIssueCosts: Array<{
+        issueId: string;
+        issueTitle: string;
+        totalCostUsd: number;
+        runCount: number;
+        lastRunAt: number;
+      }>;
+    };
+    expect(json.enabled).toBe(true);
+    expect(json.totalCostUsd).toBeCloseTo(0.35);
+    expect(json.dailyCosts.length).toBeGreaterThan(0);
+    expect(json.dailyCosts[0].totalCostUsd).toBeCloseTo(0.35);
+    expect(json.perIssueCosts.length).toBe(1);
+    expect(json.perIssueCosts[0].issueId).toBe("ENG-10");
+    expect(json.perIssueCosts[0].totalCostUsd).toBeCloseTo(0.35);
+    expect(json.perIssueCosts[0].runCount).toBe(2);
+    db.close();
+  });
+
+  test("returns 401 when auth is enabled and no token provided", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: "test-token" });
+    const res = await app.request("/api/costs");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /api/costs/daily", () => {
+  test("returns dailyCosts array with default 30 days", async () => {
+    const state = new AppState();
+    const db = openDb(":memory:");
+    state.setDb(db);
+    const app = createApp(state);
+    const res = await app.request("/api/costs/daily");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { dailyCosts: unknown[] };
+    expect(Array.isArray(json.dailyCosts)).toBe(true);
+    db.close();
+  });
+
+  test("respects ?days query parameter", async () => {
+    const state = new AppState();
+    const db = openDb(":memory:");
+    state.setDb(db);
+    const now = Date.now();
+    await insertAgentRun(db, {
+      id: "run-1",
+      issueId: "ENG-5",
+      issueTitle: "Issue",
+      status: "completed",
+      startedAt: now - 60000,
+      finishedAt: now,
+      costUsd: 0.1,
+      durationMs: 60000,
+      numTurns: 1,
+    });
+    const app = createApp(state);
+    const res = await app.request("/api/costs/daily?days=7");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      dailyCosts: Array<{
+        date: string;
+        totalCostUsd: number;
+        runCount: number;
+      }>;
+    };
+    expect(Array.isArray(json.dailyCosts)).toBe(true);
+    expect(json.dailyCosts.length).toBeGreaterThan(0);
+    db.close();
+  });
+
+  test("clamps days below 1 to 1", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/api/costs/daily?days=0");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { dailyCosts: unknown[] };
+    expect(Array.isArray(json.dailyCosts)).toBe(true);
+  });
+
+  test("clamps days above 365 to 365", async () => {
+    const state = new AppState();
+    const app = createApp(state);
+    const res = await app.request("/api/costs/daily?days=400");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { dailyCosts: unknown[] };
+    expect(Array.isArray(json.dailyCosts)).toBe(true);
+  });
+
+  test("returns 401 when auth is enabled and no token provided", async () => {
+    const state = new AppState();
+    const app = createApp(state, { authToken: "test-token" });
+    const res = await app.request("/api/costs/daily");
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("GET /api/failure-analysis", () => {
   test("returns enabled:false when no DB connected", async () => {
     const state = new AppState();
