@@ -21,6 +21,7 @@ import {
   getDailyCostTrend,
   getFailuresByType,
   getFailureTrend,
+  getIssueFailureCounts,
   getPerIssueCosts,
   getRecentPlanningSessions,
   getRecentRuns,
@@ -167,6 +168,10 @@ export class AppState {
     this.db = db;
     this.history = getRecentRuns(db, MAX_HISTORY);
     this.planningHistory = getRecentPlanningSessions(db, 20);
+    const counts = getIssueFailureCounts(db, MAX_FAILURE_ENTRIES);
+    for (const [issueId, count] of counts) {
+      this.issueFailureCount.set(issueId, count);
+    }
   }
 
   addAgent(
