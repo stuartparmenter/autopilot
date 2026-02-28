@@ -30,6 +30,7 @@ import { resetLinearAuth } from "./linear-oauth";
 const TEST_IDS: LinearIds = {
   teamId: "team-1",
   teamKey: "ENG",
+  workspaceSlug: "test-workspace",
   managedLabelId: "managed-label-1",
   states: {
     triage: "s1",
@@ -176,6 +177,9 @@ function makeStandardClient(): LinearClient {
     createComment: mockCreateComment,
     get viewer() {
       return Promise.resolve({ name: "Test User", email: "test@example.com" });
+    },
+    get organization() {
+      return Promise.resolve({ urlKey: "test-workspace" });
     },
   } as unknown as LinearClient;
 }
@@ -1364,6 +1368,7 @@ describe("resolveLinearIds", () => {
 
       expect(ids.teamId).toBe("team-123");
       expect(ids.teamKey).toBe("ENG");
+      expect(ids.workspaceSlug).toBe("test-workspace");
       expect(ids.states.triage).toBe("s-triage");
       expect(ids.states.ready).toBe("s-ready");
       expect(ids.states.in_progress).toBe("s-inprogress");

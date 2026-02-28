@@ -245,6 +245,7 @@ function makeLinearIds(): LinearIds {
   return {
     teamId: "team-id",
     teamKey: "ENG",
+    workspaceSlug: "test-workspace",
     initiativeId: "init-id",
     initiativeName: "test-initiative",
     managedLabelId: "managed-label-id",

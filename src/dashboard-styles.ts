@@ -84,10 +84,19 @@ export const DASHBOARD_CSS = `
     border-left: 2px solid var(--accent);
     padding-left: 14px;
   }
-  .agent-card .issue-id {
+  .agent-card .issue-id,
+  .agent-card .issue-link {
     color: var(--accent);
     font-weight: 600;
     font-size: 12px;
+  }
+  .issue-link {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .issue-link:hover {
+    text-decoration: underline;
   }
   .agent-card .title {
     font-size: 12px;
@@ -217,6 +226,27 @@ export const DASHBOARD_CSS = `
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .detail-expandable {
+    margin-top: 4px;
+  }
+  .detail-expandable .detail-text {
+    margin-top: 2px;
+  }
+  .detail-expand-label {
+    font-size: 11px;
+    color: var(--accent);
+    cursor: pointer;
+    list-style: none;
+  }
+  .detail-expand-label::before {
+    content: "▸ ";
+  }
+  details[open] > .detail-expand-label::before {
+    content: "▾ ";
+  }
+  .detail-expand-label::-webkit-details-marker {
+    display: none;
+  }
   .history-card {
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
@@ -232,28 +262,6 @@ export const DASHBOARD_CSS = `
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .triage-card {
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--border);
-    font-size: 12px;
-  }
-  .triage-card .issue-id {
-    font-weight: 600;
-    font-size: 11px;
-    color: var(--accent);
-  }
-  .triage-card .title {
-    color: var(--text-dim);
-    font-size: 11px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .triage-card .triage-actions {
-    display: flex;
-    gap: 6px;
-    margin-top: 4px;
   }
   .action-btn.approve {
     border-color: var(--green);
@@ -334,10 +342,6 @@ export const DASHBOARD_CSS = `
     color: var(--text-dim);
     padding: 0 4px;
   }
-  .cost-trends-bar {
-    font-size: 11px;
-    color: var(--text-dim);
-  }
   .cost-trends-section {
     display: flex;
     flex-direction: column;
@@ -371,10 +375,6 @@ export const DASHBOARD_CSS = `
     color: var(--text-dim);
     margin-top: 2px;
   }
-  .failure-analysis-bar {
-    font-size: 11px;
-    color: var(--text-dim);
-  }
   .failure-analysis-section {
     display: flex;
     flex-direction: column;
@@ -398,5 +398,19 @@ export const DASHBOARD_CSS = `
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 200px;
+  }
+  .sidebar-analytics {
+    padding: 8px 16px;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .sidebar-analytics-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 11px;
   }
 `;

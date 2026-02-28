@@ -50,12 +50,8 @@ export interface DashboardOptions {
   secureCookie?: boolean;
   triggerPlanning?: () => void;
   retryIssue?: (linearIssueId: string) => Promise<void>;
+  linearWorkspaceSlug?: string;
   config?: AutopilotConfig;
-  triageIssues?: () => Promise<
-    Array<{ id: string; identifier: string; title: string; priority: number }>
-  >;
-  approveTriageIssue?: (issueId: string) => Promise<void>;
-  rejectTriageIssue?: (issueId: string) => Promise<void>;
   /** DB instance used to persist OAuth tokens from the callback route. */
   db?: Database;
 }
@@ -251,11 +247,18 @@ export function computeHealth(
   };
 }
 
+function issueLink(identifier: string, slug?: string): string {
+  const escaped = escapeHtml(identifier);
+  if (!slug) return `<span class="issue-id">${escaped}</span>`;
+  return `<a class="issue-link" href="https://linear.app/${escapeHtml(slug)}/issue/${escaped}" target="_blank" rel="noopener">${escaped}</a>`;
+}
+
 export function createApp(
   state: AppState,
   options?: DashboardOptions,
   webhooks?: WebhookOptions,
 ): Hono {
+  const linearSlug = options?.linearWorkspaceSlug;
   const app = new Hono();
 
   app.onError((e, c) => {
@@ -483,24 +486,6 @@ export function createApp(
                 hx-trigger="load, every 30s"
                 hx-swap="innerHTML"
               ></div>
-              <div
-                class="analytics-bar"
-                hx-get="/partials/analytics"
-                hx-trigger="load, every 30s"
-                hx-swap="innerHTML"
-              ></div>
-              <div
-                class="cost-trends-bar"
-                hx-get="/partials/cost-trends"
-                hx-trigger="load, every 60s"
-                hx-swap="innerHTML"
-              ></div>
-              <div
-                class="failure-analysis-bar"
-                hx-get="/partials/failure-analysis"
-                hx-trigger="load, every 60s"
-                hx-swap="innerHTML"
-              ></div>
             </header>
             <div class="layout">
               <div class="sidebar">
@@ -509,13 +494,6 @@ export function createApp(
                   id="agents-list"
                   hx-get="/partials/agents"
                   hx-trigger="load, every 3s"
-                  hx-swap="innerHTML"
-                ></div>
-                <div class="section-title">Needs Review</div>
-                <div
-                  id="triage-list"
-                  hx-get="/partials/triage"
-                  hx-trigger="load, every 10s"
                   hx-swap="innerHTML"
                 ></div>
                 <div class="section-title">History</div>
@@ -529,6 +507,13 @@ export function createApp(
                 <div
                   id="planning-history-list"
                   hx-get="/partials/planning-history"
+                  hx-trigger="load, every 30s"
+                  hx-swap="innerHTML"
+                ></div>
+                <div class="section-title">Analytics</div>
+                <div
+                  id="analytics-section"
+                  hx-get="/partials/sidebar-analytics"
                   hx-trigger="load, every 30s"
                   hx-swap="innerHTML"
                 ></div>
@@ -675,34 +660,6 @@ export function createApp(
     return c.json({ retried: true });
   });
 
-  app.post("/api/triage/:issueId/approve", async (c) => {
-    const issueId = c.req.param("issueId");
-    if (!options?.approveTriageIssue) {
-      return c.json({ error: "Triage not configured" }, 400);
-    }
-    try {
-      await options.approveTriageIssue(issueId);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return c.json({ error: `Approve failed: ${msg}` }, 500);
-    }
-    return c.json({ approved: true });
-  });
-
-  app.post("/api/triage/:issueId/reject", async (c) => {
-    const issueId = c.req.param("issueId");
-    if (!options?.rejectTriageIssue) {
-      return c.json({ error: "Triage not configured" }, 400);
-    }
-    try {
-      await options.rejectTriageIssue(issueId);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return c.json({ error: `Reject failed: ${msg}` }, 500);
-    }
-    return c.json({ rejected: true });
-  });
-
   // --- Partials for htmx ---
 
   app.get("/partials/pause-button", (c) => {
@@ -790,7 +747,7 @@ export function createApp(
             const elapsedStr =
               elapsed > 60 ? `${Math.floor(elapsed / 60)}m` : `${elapsed}s`;
             return `<div class="agent-card" hx-get="/partials/activity/${escapeHtml(a.id)}" hx-target="#main-panel" hx-swap="innerHTML">
-            <div style="display:flex;align-items:center;justify-content:space-between"><span><span class="status-dot running"></span><span class="issue-id">${escapeHtml(a.issueId)}</span></span><button class="action-btn danger" hx-post="/api/cancel/${escapeHtml(a.id)}" hx-confirm="Cancel this agent?" onclick="event.stopPropagation()">Cancel</button></div>
+            <div style="display:flex;align-items:center;justify-content:space-between"><span><span class="status-dot running"></span>${issueLink(a.issueId, linearSlug)}</span><button class="action-btn danger" hx-post="/api/cancel/${escapeHtml(a.id)}" hx-confirm="Cancel this agent?" onclick="event.stopPropagation()">Cancel</button></div>
             <div class="title">${escapeHtml(a.issueTitle)}</div>
             <div class="meta">${elapsedStr} &middot; ${a.activities.length} activities</div>
           </div>`;
@@ -802,7 +759,8 @@ export function createApp(
 
   app.get("/partials/activity/:id", (c) => {
     const id = c.req.param("id");
-    const verbose = c.req.query("verbose") === "true";
+    const compact = c.req.query("compact") === "true";
+    const verbose = !compact;
     const agent = state.getAgent(id);
 
     if (!agent) {
@@ -820,11 +778,11 @@ export function createApp(
               <div style="display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border)">
                 <div>
                   <span class="status-dot ${hist.status}"></span>
-                  <strong>${hist.issueId}</strong> — ${hist.issueTitle}
+                  ${raw(issueLink(hist.issueId, linearSlug))} — ${hist.issueTitle}
                 </div>
                 <div class="meta">${durationStr} &middot; ${String(savedLogs.length)} activities${costStr ? ` &middot; ${costStr}` : ""}</div>
               </div>
-              ${raw(savedLogs.map((act) => renderActivityItem(act)).join(""))}
+              ${raw(savedLogs.map((act) => renderActivityItem(act, verbose)).join(""))}
             </div>
           `);
         }
@@ -832,7 +790,7 @@ export function createApp(
           <div style="padding: 8px 0">
             <div>
               <span class="status-dot ${hist.status}"></span>
-              <strong>${hist.issueId}</strong> — ${hist.issueTitle}
+              ${raw(issueLink(hist.issueId, linearSlug))} — ${hist.issueTitle}
             </div>
             <div class="meta" style="margin-top: 6px">
               Status: ${hist.status} &middot; Duration: ${durationStr}
@@ -851,22 +809,22 @@ export function createApp(
         ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
         : `${elapsed}s`;
 
-    const activities = verbose ? agent.activities : agent.activities.slice(-50);
+    const activities = compact ? agent.activities.slice(-50) : agent.activities;
 
     return c.html(html`
       <div
         id="activity-view"
-        hx-get="/partials/activity/${id}${verbose ? "?verbose=true" : ""}"
+        hx-get="/partials/activity/${id}${compact ? "?compact=true" : ""}"
         hx-trigger="every 3s"
         hx-swap="outerHTML"
       >
         <div style="display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border)">
           <div>
             <span class="status-dot ${agent.status}"></span>
-            <strong>${agent.issueId}</strong> — ${agent.issueTitle}
+            ${raw(issueLink(agent.issueId, linearSlug))} — ${agent.issueTitle}
           </div>
           <div class="meta">${elapsedStr} &middot; ${String(agent.activities.length)} activities</div>
-          ${!verbose ? html`<a href="#" hx-get="/partials/activity/${id}?verbose=true" hx-target="#main-panel" hx-swap="innerHTML" style="color: var(--accent); font-size: 11px; margin-left: auto">verbose</a>` : html`<a href="#" hx-get="/partials/activity/${id}" hx-target="#main-panel" hx-swap="innerHTML" style="color: var(--accent); font-size: 11px; margin-left: auto">compact</a>`}
+          ${compact ? html`<a href="#" hx-get="/partials/activity/${id}" hx-target="#main-panel" hx-swap="innerHTML" style="color: var(--accent); font-size: 11px; margin-left: auto">verbose</a>` : html`<a href="#" hx-get="/partials/activity/${id}?compact=true" hx-target="#main-panel" hx-swap="innerHTML" style="color: var(--accent); font-size: 11px; margin-left: auto">compact</a>`}
         </div>
         ${raw(activities.map((act) => renderActivityItem(act, verbose)).join(""))}
         ${agent.status === "running" ? html`<div class="activity-status"><span class="dot"></span> ${randomSaying()}</div>` : ""}
@@ -899,7 +857,7 @@ export function createApp(
               ? `<button class="action-btn" hx-post="/api/retry/${escapeHtml(h.id)}" onclick="event.stopPropagation()">Retry</button>`
               : "";
             return `<div class="history-card" hx-get="/partials/activity/${escapeHtml(h.id)}" hx-target="#main-panel" hx-swap="innerHTML" style="cursor:pointer">
-            <div style="display:flex;align-items:center;justify-content:space-between"><span><span class="status-dot ${h.status}"></span><span class="issue-id">${escapeHtml(h.issueId)}</span> ${durationStr} ${costStr}</span>${retryBtn}</div>
+            <div style="display:flex;align-items:center;justify-content:space-between"><span><span class="status-dot ${h.status}"></span>${issueLink(h.issueId, linearSlug)} ${durationStr} ${costStr}</span>${retryBtn}</div>
             <div class="title">${escapeHtml(h.issueTitle)}</div>
           </div>`;
           })
@@ -1062,179 +1020,116 @@ export function createApp(
     return c.html(html`<span style="${colorStyle}">${text}</span>`);
   });
 
-  app.get("/partials/triage", async (c) => {
-    if (!options?.triageIssues) {
-      return c.html(html`<div></div>`);
-    }
-    const issues = await options.triageIssues();
-    if (issues.length === 0) {
-      return c.html(
-        html`<div
-          style="padding: 12px 16px; color: var(--text-dim); font-size: 12px"
-        >
-          No issues awaiting review
-        </div>`,
-      );
-    }
-    const priorityNames: Record<number, string> = {
-      1: "Urgent",
-      2: "High",
-      3: "Normal",
-      4: "Low",
-    };
-    return c.html(
-      html`${raw(
-        issues
-          .map((issue) => {
-            const priorityName = priorityNames[issue.priority] ?? "Low";
-            return `<div class="triage-card">
-              <div style="display:flex;align-items:center;justify-content:space-between"><span class="issue-id">${escapeHtml(issue.identifier)}</span><span style="font-size:11px;color:var(--text-dim)">${escapeHtml(priorityName)}</span></div>
-              <div class="title">${escapeHtml(issue.title)}</div>
-              <div class="triage-actions">
-                <button class="action-btn approve" hx-post="/api/triage/${escapeHtml(issue.id)}/approve" onclick="event.stopPropagation()">Approve</button>
-                <button class="action-btn danger" hx-post="/api/triage/${escapeHtml(issue.id)}/reject" onclick="event.stopPropagation()">Reject</button>
-              </div>
-            </div>`;
-          })
-          .join(""),
-      )}`,
-    );
-  });
+  app.get("/partials/sidebar-analytics", (c) => {
+    const parts: string[] = [];
 
-  app.get("/partials/analytics", (c) => {
+    // Analytics stats
     const analytics = state.getAnalytics();
-    if (!analytics) {
+    if (analytics) {
+      const successPct = Math.round(analytics.successRate * 100);
+      const avgDuration =
+        analytics.avgDurationMs > 0
+          ? `${Math.round(analytics.avgDurationMs / 1000)}s`
+          : "n/a";
+      const totalCost =
+        analytics.totalCostUsd > 0
+          ? `$${analytics.totalCostUsd.toFixed(2)}`
+          : "$0.00";
+      parts.push(
+        `<div class="sidebar-analytics-stats">` +
+          `<span>${analytics.totalRuns} runs</span> · ` +
+          `<span>${successPct}% success</span> · ` +
+          `<span>${avgDuration} avg</span> · ` +
+          `<span>${totalCost} total</span>` +
+          `</div>`,
+      );
+    }
+
+    // Cost trends
+    const trends = state.getCostTrends();
+    if (trends) {
+      const recentDays = trends.daily.slice(-7);
+      if (recentDays.length > 0) {
+        const maxCost = Math.max(...recentDays.map((d) => d.totalCost), 0.01);
+        const dayRows = recentDays
+          .map((d) => {
+            const pct = Math.round((d.totalCost / maxCost) * 100);
+            const dateLabel = escapeHtml(d.date.slice(5));
+            const amount = escapeHtml(`$${d.totalCost.toFixed(2)}`);
+            return `<div class="cost-trend-row"><span class="cost-trend-date">${dateLabel}</span><div class="cost-trend-bar-track"><div class="cost-trend-bar-fill" style="width:${pct}%"></div></div><span class="cost-trend-amount">${amount}</span></div>`;
+          })
+          .join("");
+
+        let weekLine = "";
+        if (trends.weekly.length >= 2) {
+          const thisWeek = trends.weekly[trends.weekly.length - 1];
+          const lastWeek = trends.weekly[trends.weekly.length - 2];
+          weekLine = `This wk: $${thisWeek.totalCost.toFixed(2)}  Last wk: $${lastWeek.totalCost.toFixed(2)}`;
+        } else if (trends.weekly.length === 1) {
+          weekLine = `This wk: $${trends.weekly[0].totalCost.toFixed(2)}`;
+        }
+
+        parts.push(
+          `<div class="cost-trends-section">${dayRows}` +
+            (weekLine
+              ? `<div class="cost-trends-summary">${weekLine}</div>`
+              : "") +
+            `</div>`,
+        );
+      }
+    }
+
+    // Failure analysis
+    const analysis = state.getFailureAnalysis();
+    if (analysis) {
+      const typeParts = analysis.byType.map(
+        (b) =>
+          `${escapeHtml(b.status === "timed_out" ? "Timed Out" : "Failed")}: ${b.count}`,
+      );
+      const typeLine = typeParts.join(" | ");
+
+      if (typeLine) {
+        const recentDays = analysis.trend.slice(-7);
+        const maxRate = Math.max(...recentDays.map((d) => d.failureRate), 0.01);
+        const dayRows = recentDays
+          .map((d) => {
+            const pct = Math.round((d.failureRate / maxRate) * 100);
+            const dateLabel = escapeHtml(d.date.slice(5));
+            const rateLabel = escapeHtml(`${Math.round(d.failureRate * 100)}%`);
+            return `<div class="cost-trend-row"><span class="cost-trend-date">${dateLabel}</span><div class="cost-trend-bar-track"><div class="cost-trend-bar-fill" style="width:${pct}%;background:var(--red)"></div></div><span class="cost-trend-amount">${rateLabel}</span></div>`;
+          })
+          .join("");
+
+        const repeatRows = analysis.repeatFailures
+          .map((r) => {
+            const lastError = r.lastError ? escapeHtml(r.lastError) : "";
+            return `<div class="repeat-failure-item"><span class="repeat-failure-count">${r.failureCount}x</span>${issueLink(r.issueId, linearSlug)}${lastError ? `<span class="repeat-failure-error">${lastError}</span>` : ""}</div>`;
+          })
+          .join("");
+
+        parts.push(
+          `<div class="failure-analysis-section">` +
+            `<div class="cost-trends-summary">${typeLine}</div>` +
+            (recentDays.length > 0 ? dayRows : "") +
+            (repeatRows || "") +
+            `</div>`,
+        );
+      }
+    }
+
+    if (parts.length === 0) {
       return c.html(
         html`<div
           style="padding: 12px 16px; color: var(--text-dim); font-size: 12px"
         >
-          Analytics not available (persistence disabled)
+          No analytics data yet
         </div>`,
       );
     }
-    const successPct = Math.round(analytics.successRate * 100);
-    const avgDuration =
-      analytics.avgDurationMs > 0
-        ? `${Math.round(analytics.avgDurationMs / 1000)}s`
-        : "n/a";
-    const totalCost =
-      analytics.totalCostUsd > 0
-        ? `$${analytics.totalCostUsd.toFixed(2)}`
-        : "$0.00";
-    return c.html(html`
-      <div class="stat">
-        <div class="value">${String(analytics.totalRuns)}</div>
-        <div class="label">Total Runs</div>
-      </div>
-      <div class="stat">
-        <div class="value">${String(successPct)}%</div>
-        <div class="label">Success Rate</div>
-      </div>
-      <div class="stat">
-        <div class="value">${avgDuration}</div>
-        <div class="label">Avg Duration</div>
-      </div>
-      <div class="stat">
-        <div class="value">${totalCost}</div>
-        <div class="label">Total Cost</div>
-      </div>
-    `);
-  });
 
-  app.get("/partials/cost-trends", (c) => {
-    const trends = state.getCostTrends();
-    if (!trends) {
-      return c.html(html`<div></div>`);
-    }
-    const recentDays = trends.daily.slice(-7);
-    if (recentDays.length === 0) {
-      return c.html(html`<div></div>`);
-    }
-    const maxCost = Math.max(...recentDays.map((d) => d.totalCost), 0.01);
-    const dayRows = recentDays
-      .map((d) => {
-        const pct = Math.round((d.totalCost / maxCost) * 100);
-        const dateLabel = escapeHtml(d.date.slice(5)); // "MM-DD"
-        const amount = escapeHtml(`$${d.totalCost.toFixed(2)}`);
-        return `<div class="cost-trend-row"><span class="cost-trend-date">${dateLabel}</span><div class="cost-trend-bar-track"><div class="cost-trend-bar-fill" style="width:${pct}%"></div></div><span class="cost-trend-amount">${amount}</span></div>`;
-      })
-      .join("");
-
-    const statusParts = trends.byStatus.map(
-      (b) =>
-        `${escapeHtml(b.status.charAt(0).toUpperCase() + b.status.slice(1))}: $${b.totalCost.toFixed(2)}`,
+    return c.html(
+      html`<div class="sidebar-analytics">${raw(parts.join(""))}</div>`,
     );
-    const statusLine = statusParts.join(" | ");
-
-    let weekLine = "";
-    if (trends.weekly.length >= 2) {
-      const thisWeek = trends.weekly[trends.weekly.length - 1];
-      const lastWeek = trends.weekly[trends.weekly.length - 2];
-      weekLine = `This wk: $${thisWeek.totalCost.toFixed(2)}  Last wk: $${lastWeek.totalCost.toFixed(2)}`;
-    } else if (trends.weekly.length === 1) {
-      weekLine = `This wk: $${trends.weekly[0].totalCost.toFixed(2)}`;
-    }
-
-    return c.html(html`
-      <div class="cost-trends-section">
-        ${raw(dayRows)}
-        ${
-          weekLine
-            ? html`<div class="cost-trends-summary">${weekLine}</div>`
-            : ""
-        }
-        ${
-          statusLine
-            ? html`<div class="cost-trends-summary">${statusLine}</div>`
-            : ""
-        }
-      </div>
-    `);
-  });
-
-  app.get("/partials/failure-analysis", (c) => {
-    const analysis = state.getFailureAnalysis();
-    if (!analysis) {
-      return c.html(html`<div></div>`);
-    }
-
-    const typeParts = analysis.byType.map(
-      (b) =>
-        `${escapeHtml(b.status === "timed_out" ? "Timed Out" : "Failed")}: ${b.count}`,
-    );
-    const typeLine = typeParts.join(" | ");
-
-    if (!typeLine) {
-      return c.html(html`<div></div>`);
-    }
-
-    const recentDays = analysis.trend.slice(-7);
-    const maxRate = Math.max(...recentDays.map((d) => d.failureRate), 0.01);
-    const dayRows = recentDays
-      .map((d) => {
-        const pct = Math.round((d.failureRate / maxRate) * 100);
-        const dateLabel = escapeHtml(d.date.slice(5)); // "MM-DD"
-        const rateLabel = escapeHtml(`${Math.round(d.failureRate * 100)}%`);
-        return `<div class="cost-trend-row"><span class="cost-trend-date">${dateLabel}</span><div class="cost-trend-bar-track"><div class="cost-trend-bar-fill" style="width:${pct}%;background:var(--red)"></div></div><span class="cost-trend-amount">${rateLabel}</span></div>`;
-      })
-      .join("");
-
-    const repeatRows = analysis.repeatFailures
-      .map((r) => {
-        const issueId = escapeHtml(r.issueId);
-        const issueTitle = escapeHtml(r.issueTitle);
-        const lastError = r.lastError ? escapeHtml(r.lastError) : "";
-        return `<div class="repeat-failure-item"><span class="repeat-failure-count">${r.failureCount}x</span><span title="${issueTitle}">${issueId}</span>${lastError ? `<span class="repeat-failure-error">${lastError}</span>` : ""}</div>`;
-      })
-      .join("");
-
-    return c.html(html`
-      <div class="failure-analysis-section">
-        <div class="cost-trends-summary">${typeLine}</div>
-        ${recentDays.length > 0 ? raw(dayRows) : ""}
-        ${repeatRows ? raw(repeatRows) : ""}
-      </div>
-    `);
   });
 
   return app;
@@ -1269,10 +1164,6 @@ export function renderActivityItem(
   const time = new Date(act.timestamp).toLocaleTimeString("en-US", {
     hour12: false,
   });
-  const detailHtml =
-    verbose && act.detail
-      ? `<div class="detail-text">${escapeHtml(act.detail)}</div>`
-      : "";
 
   // Subagent prefix badge
   const subBadge = act.isSubagent
@@ -1292,11 +1183,41 @@ export function renderActivityItem(
     badgeHtml = "";
   }
 
+  // Build detail block for verbose mode
+  let detailHtml = "";
+  let showSummary = true;
+  if (verbose && act.detail) {
+    const detailTrimmed = act.detail.trim();
+    const summaryTrimmed = summaryText.trim();
+
+    // Skip summary line if detail starts with or contains the same text
+    // Limit search window to avoid scanning multi-KB detail blobs
+    if (
+      summaryTrimmed &&
+      (detailTrimmed.startsWith(summaryTrimmed) ||
+        detailTrimmed.slice(0, 500).includes(summaryTrimmed))
+    ) {
+      showSummary = false;
+    }
+
+    // Wrap long detail blocks in <details> for expandability
+    const escapedDetail = escapeHtml(act.detail);
+    const lineCount = act.detail.split("\n").length;
+    if (lineCount > 20) {
+      const previewLabel = showSummary ? "details" : escapeHtml(summaryText);
+      detailHtml = `<details class="detail-expandable"><summary class="detail-expand-label">${previewLabel}</summary><div class="detail-text">${escapedDetail}</div></details>`;
+      showSummary = false;
+    } else {
+      detailHtml = `<div class="detail-text">${escapedDetail}</div>`;
+    }
+  }
+
   const itemClass = act.isSubagent ? "activity-item subagent" : "activity-item";
+  const summaryHtml = showSummary ? escapeHtml(summaryText) : "";
   return `<div class="${itemClass}">
     <span class="time">${time}</span>
     ${subBadge}${badgeHtml}
-    ${escapeHtml(summaryText)}
+    ${summaryHtml}
     ${detailHtml}
   </div>`;
 }

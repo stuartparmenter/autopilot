@@ -193,6 +193,7 @@ const app = createApp(
   {
     authToken: dashboardToken,
     secureCookie: !isLocalhost,
+    linearWorkspaceSlug: linearIds.workspaceSlug,
     config,
     db: authDb,
     triggerPlanning: () => {
@@ -213,39 +214,6 @@ const app = createApp(
         toState: config.linear.states.ready,
         timestamp: Date.now(),
         reason: "Dashboard retry",
-      });
-    },
-    triageIssues: async () => {
-      const issues = await getTriageIssues(linearIds);
-      return issues.map((i) => ({
-        id: i.id,
-        identifier: i.identifier,
-        title: i.title,
-        priority: i.priority ?? 4,
-      }));
-    },
-    approveTriageIssue: async (issueId: string) => {
-      await updateIssue(issueId, { stateId: linearIds.states.ready });
-      state.logStateTransition({
-        id: crypto.randomUUID(),
-        issueId: issueId,
-        issueIdentifier: "unknown",
-        fromState: config.linear.states.triage,
-        toState: config.linear.states.ready,
-        timestamp: Date.now(),
-        reason: "Dashboard triage approval",
-      });
-    },
-    rejectTriageIssue: async (issueId: string) => {
-      await updateIssue(issueId, { stateId: linearIds.states.blocked });
-      state.logStateTransition({
-        id: crypto.randomUUID(),
-        issueId: issueId,
-        issueIdentifier: "unknown",
-        fromState: config.linear.states.triage,
-        toState: config.linear.states.blocked,
-        timestamp: Date.now(),
-        reason: "Dashboard triage rejection",
       });
     },
   },

@@ -28,6 +28,7 @@ export interface LinearConfig {
 export interface LinearIds {
   teamId: string;
   teamKey: string;
+  workspaceSlug: string;
   initiativeId?: string;
   initiativeName?: string;
   managedLabelId: string;

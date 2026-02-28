@@ -588,6 +588,7 @@ export async function testConnection(): Promise<boolean> {
 export async function resolveLinearIds(
   config: LinearConfig,
 ): Promise<LinearIds> {
+  const client = await getLinearClientAsync();
   const team = await findTeam(config.team);
 
   const [
@@ -598,6 +599,7 @@ export async function resolveLinearIds(
     doneState,
     blockedState,
     managedLabel,
+    org,
   ] = await Promise.all([
     findState(team.id, config.states.triage),
     findState(team.id, config.states.ready),
@@ -606,6 +608,7 @@ export async function resolveLinearIds(
     findState(team.id, config.states.done),
     findState(team.id, config.states.blocked),
     findOrCreateLabel(team.id, "autopilot:managed"),
+    withRetry(() => client.organization, "getOrganization"),
   ]);
 
   let initiativeId: string | undefined;
@@ -619,6 +622,7 @@ export async function resolveLinearIds(
   return {
     teamId: team.id,
     teamKey: config.team,
+    workspaceSlug: org.urlKey,
     initiativeId,
     initiativeName,
     managedLabelId: managedLabel.id,

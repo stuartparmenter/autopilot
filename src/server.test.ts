@@ -719,14 +719,14 @@ describe("dashboard HTML includes budget partial div", () => {
     expect(body).toContain("every 30s");
   });
 
-  test("includes triage-list div with 10s poll trigger", async () => {
+  test("includes analytics-section div with /partials/sidebar-analytics and 30s poll", async () => {
     const state = new AppState();
     const app = createApp(state);
     const res = await app.request("/");
     const body = await res.text();
-    expect(body).toContain("triage-list");
-    expect(body).toContain("/partials/triage");
-    expect(body).toContain("every 10s");
+    expect(body).toContain("analytics-section");
+    expect(body).toContain("/partials/sidebar-analytics");
+    expect(body).toContain("every 30s");
   });
 });
 
@@ -841,34 +841,6 @@ describe("CSRF protection", () => {
     const res = await app.request("/api/pause", { method: "POST" });
     expect(res.status).toBe(200);
   });
-
-  test("cookie-only POST to /api/triage/:issueId/approve returns 403", async () => {
-    const state = new AppState();
-    const app = createApp(state, { authToken: TOKEN });
-    const res = await app.request("/api/triage/some-uuid/approve", {
-      method: "POST",
-      headers: { Cookie: `autopilot_token=${TOKEN}` },
-    });
-    expect(res.status).toBe(403);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Forbidden");
-  });
-
-  test("cookie + HX-Request: true allows POST to /api/triage/:issueId/approve", async () => {
-    const state = new AppState();
-    const app = createApp(state, { authToken: TOKEN });
-    const res = await app.request("/api/triage/some-uuid/approve", {
-      method: "POST",
-      headers: {
-        Cookie: `autopilot_token=${TOKEN}`,
-        "HX-Request": "true",
-      },
-    });
-    // 400 because callback not configured, but CSRF check passed
-    expect(res.status).toBe(400);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Triage not configured");
-  });
 });
 
 describe("GET /partials/planning-button", () => {
@@ -895,53 +867,14 @@ describe("GET /partials/planning-button", () => {
   });
 });
 
-describe("dashboard HTML includes analytics partial div", () => {
-  test("includes analytics-bar div with /partials/analytics and 30s poll", async () => {
+describe("dashboard HTML includes analytics in sidebar", () => {
+  test("does not include analytics-bar in header (moved to sidebar)", async () => {
     const state = new AppState();
     const app = createApp(state);
     const res = await app.request("/");
     const body = await res.text();
-    expect(body).toContain("/partials/analytics");
-    expect(body).toContain("analytics-bar");
-    expect(body).toContain("every 30s");
-  });
-});
-
-describe("GET /partials/analytics", () => {
-  test("returns fallback message when no DB connected", async () => {
-    const state = new AppState();
-    const app = createApp(state);
-    const res = await app.request("/partials/analytics");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("Analytics not available");
-  });
-
-  test("returns stat cards with Total Runs, Success Rate, Avg Duration, Total Cost when DB connected", async () => {
-    const state = new AppState();
-    const db = openDb(":memory:");
-    state.setDb(db);
-    const now = Date.now();
-    await insertAgentRun(db, {
-      id: "run-1",
-      issueId: "ENG-1",
-      issueTitle: "Test issue",
-      status: "completed",
-      startedAt: now - 60000,
-      finishedAt: now,
-      costUsd: 0.5,
-      durationMs: 60000,
-      numTurns: 5,
-    });
-    const app = createApp(state);
-    const res = await app.request("/partials/analytics");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("Total Runs");
-    expect(body).toContain("Success Rate");
-    expect(body).toContain("Avg Duration");
-    expect(body).toContain("Total Cost");
-    expect(body).toContain("100%");
+    expect(body).not.toContain("analytics-bar");
+    expect(body).toContain("/partials/sidebar-analytics");
   });
 });
 
@@ -1253,212 +1186,25 @@ describe("GET /api/failure-analysis", () => {
   });
 });
 
-describe("dashboard HTML includes failure-analysis partial div", () => {
-  test("includes failure-analysis-bar div with /partials/failure-analysis and 60s poll", async () => {
+describe("dashboard HTML includes failure-analysis in sidebar", () => {
+  test("failure-analysis is served via sidebar-analytics partial (not header)", async () => {
     const state = new AppState();
     const app = createApp(state);
     const res = await app.request("/");
     const body = await res.text();
-    expect(body).toContain("/partials/failure-analysis");
-    expect(body).toContain("failure-analysis-bar");
-    expect(body).toContain("every 60s");
+    expect(body).not.toContain('hx-get="/partials/failure-analysis"');
+    expect(body).toContain("/partials/sidebar-analytics");
   });
 });
 
-describe("GET /partials/failure-analysis", () => {
-  test("returns empty div when no DB connected", async () => {
-    const state = new AppState();
-    const app = createApp(state);
-    const res = await app.request("/partials/failure-analysis");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("<div></div>");
-  });
-
-  test("returns empty div when DB has no failures", async () => {
-    const state = new AppState();
-    const db = openDb(":memory:");
-    state.setDb(db);
-    const now = Date.now();
-    await insertAgentRun(db, {
-      id: "r1",
-      issueId: "ENG-1",
-      issueTitle: "Test",
-      status: "completed",
-      startedAt: now - 60000,
-      finishedAt: now,
-    });
-    const app = createApp(state);
-    const res = await app.request("/partials/failure-analysis");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("<div></div>");
-    db.close();
-  });
-
-  test("returns failure stats HTML when DB has failed runs", async () => {
-    const state = new AppState();
-    const db = openDb(":memory:");
-    state.setDb(db);
-    const now = Date.now();
-    await insertAgentRun(db, {
-      id: "r1",
-      issueId: "ENG-1",
-      issueTitle: "Test issue",
-      status: "failed",
-      startedAt: now - 60000,
-      finishedAt: now,
-      error: "some error",
-    });
-    const app = createApp(state);
-    const res = await app.request("/partials/failure-analysis");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("Failed");
-    expect(body).toContain("failure-analysis-section");
-    db.close();
-  });
-
-  test("includes repeat-failure-item for issues with multiple failures", async () => {
-    const state = new AppState();
-    const db = openDb(":memory:");
-    state.setDb(db);
-    const now = Date.now();
-    await insertAgentRun(db, {
-      id: "r1",
-      issueId: "ENG-42",
-      issueTitle: "Repeat issue",
-      status: "failed",
-      startedAt: now - 120000,
-      finishedAt: now - 60000,
-      error: "first failure",
-    });
-    await insertAgentRun(db, {
-      id: "r2",
-      issueId: "ENG-42",
-      issueTitle: "Repeat issue",
-      status: "failed",
-      startedAt: now - 60000,
-      finishedAt: now,
-      error: "second failure",
-    });
-    const app = createApp(state);
-    const res = await app.request("/partials/failure-analysis");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("repeat-failure-item");
-    expect(body).toContain("ENG-42");
-    expect(body).toContain("2x");
-    db.close();
-  });
-
-  test("failure trend bars use var(--red) color", async () => {
-    const state = new AppState();
-    const db = openDb(":memory:");
-    state.setDb(db);
-    const now = Date.now();
-    await insertAgentRun(db, {
-      id: "r1",
-      issueId: "ENG-1",
-      issueTitle: "Test",
-      status: "failed",
-      startedAt: now - 60000,
-      finishedAt: now,
-    });
-    const app = createApp(state);
-    const res = await app.request("/partials/failure-analysis");
-    const body = await res.text();
-    expect(body).toContain("var(--red)");
-    db.close();
-  });
-});
-
-describe("dashboard HTML includes cost-trends partial div", () => {
-  test("includes cost-trends-bar div with /partials/cost-trends and 60s poll", async () => {
+describe("dashboard HTML includes cost-trends in sidebar", () => {
+  test("does not include cost-trends-bar in header (moved to sidebar)", async () => {
     const state = new AppState();
     const app = createApp(state);
     const res = await app.request("/");
     const body = await res.text();
-    expect(body).toContain("/partials/cost-trends");
-    expect(body).toContain("cost-trends-bar");
-    expect(body).toContain("every 60s");
-  });
-});
-
-describe("GET /partials/cost-trends", () => {
-  test("returns empty div when no DB connected", async () => {
-    const state = new AppState();
-    const app = createApp(state);
-    const res = await app.request("/partials/cost-trends");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("<div></div>");
-  });
-
-  test("returns empty div when DB has no runs", async () => {
-    const state = new AppState();
-    const db = openDb(":memory:");
-    state.setDb(db);
-    const app = createApp(state);
-    const res = await app.request("/partials/cost-trends");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("<div></div>");
-  });
-
-  test("renders daily cost bars when DB has cost data", async () => {
-    const state = new AppState();
-    const db = openDb(":memory:");
-    state.setDb(db);
-    const now = Date.now();
-    insertAgentRun(db, {
-      id: "run-1",
-      issueId: "ENG-1",
-      issueTitle: "Test issue",
-      status: "completed",
-      startedAt: now - 60000,
-      finishedAt: now,
-      costUsd: 0.75,
-      durationMs: 60000,
-      numTurns: 5,
-    });
-    const app = createApp(state);
-    const res = await app.request("/partials/cost-trends");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("cost-trend-row");
-    expect(body).toContain("cost-trend-bar-fill");
-    expect(body).toContain("$0.75");
-  });
-
-  test("renders cost-by-status summary line", async () => {
-    const state = new AppState();
-    const db = openDb(":memory:");
-    state.setDb(db);
-    const now = Date.now();
-    insertAgentRun(db, {
-      id: "run-1",
-      issueId: "ENG-1",
-      issueTitle: "Test issue",
-      status: "completed",
-      startedAt: now - 60000,
-      finishedAt: now,
-      costUsd: 0.5,
-      durationMs: 60000,
-      numTurns: 5,
-    });
-    const app = createApp(state);
-    const res = await app.request("/partials/cost-trends");
-    const body = await res.text();
-    expect(body).toContain("Completed:");
-    expect(body).toContain("cost-trends-summary");
-  });
-
-  test("returns 401 when auth is enabled and no token provided", async () => {
-    const state = new AppState();
-    const app = createApp(state, { authToken: "test-token" });
-    const res = await app.request("/partials/cost-trends");
-    expect(res.status).toBe(401);
+    expect(body).not.toContain('hx-get="/partials/cost-trends"');
+    expect(body).toContain("/partials/sidebar-analytics");
   });
 });
 
@@ -1553,159 +1299,6 @@ describe("GET /api/analytics", () => {
     expect(json.enabled).toBe(true);
     expect(json.todayRuns).toBe(0);
     expect(json.todaySuccessRate).toBe(0);
-  });
-});
-
-describe("GET /partials/triage", () => {
-  test("returns empty div when triageIssues callback not configured", async () => {
-    const state = new AppState();
-    const app = createApp(state);
-    const res = await app.request("/partials/triage");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("<div></div>");
-  });
-
-  test("shows 'No issues awaiting review' when triage list is empty", async () => {
-    const state = new AppState();
-    const triageIssues = mock(async () => []);
-    const app = createApp(state, { triageIssues });
-    const res = await app.request("/partials/triage");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("No issues awaiting review");
-  });
-
-  test("renders issue identifiers and titles", async () => {
-    const state = new AppState();
-    const triageIssues = mock(async () => [
-      {
-        id: "uuid-1",
-        identifier: "ENG-10",
-        title: "Fix login bug",
-        priority: 2,
-      },
-    ]);
-    const app = createApp(state, { triageIssues });
-    const res = await app.request("/partials/triage");
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).toContain("ENG-10");
-    expect(body).toContain("Fix login bug");
-  });
-
-  test("escapes HTML in issue titles", async () => {
-    const state = new AppState();
-    const triageIssues = mock(async () => [
-      {
-        id: "uuid-xss",
-        identifier: "ENG-99",
-        title: "<script>alert(1)</script>",
-        priority: 3,
-      },
-    ]);
-    const app = createApp(state, { triageIssues });
-    const res = await app.request("/partials/triage");
-    const body = await res.text();
-    expect(body).toContain("&lt;script&gt;");
-    expect(body).not.toContain("<script>alert(1)</script>");
-  });
-
-  test("renders approve and reject buttons", async () => {
-    const state = new AppState();
-    const triageIssues = mock(async () => [
-      {
-        id: "uuid-1",
-        identifier: "ENG-10",
-        title: "Fix login bug",
-        priority: 2,
-      },
-    ]);
-    const app = createApp(state, { triageIssues });
-    const res = await app.request("/partials/triage");
-    const body = await res.text();
-    expect(body).toContain('hx-post="/api/triage/uuid-1/approve"');
-    expect(body).toContain('hx-post="/api/triage/uuid-1/reject"');
-  });
-});
-
-describe("POST /api/triage/:issueId/approve", () => {
-  test("returns 400 when approveTriageIssue callback not configured", async () => {
-    const state = new AppState();
-    const app = createApp(state);
-    const res = await app.request("/api/triage/some-uuid/approve", {
-      method: "POST",
-    });
-    expect(res.status).toBe(400);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Triage not configured");
-  });
-
-  test("calls approveTriageIssue and returns approved: true", async () => {
-    const state = new AppState();
-    const approveTriageIssue = mock(async (_id: string) => {});
-    const app = createApp(state, { approveTriageIssue });
-    const res = await app.request("/api/triage/uuid-1/approve", {
-      method: "POST",
-    });
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as { approved: boolean };
-    expect(json.approved).toBe(true);
-    expect(approveTriageIssue).toHaveBeenCalledWith("uuid-1");
-  });
-
-  test("returns 500 with error when approveTriageIssue throws", async () => {
-    const state = new AppState();
-    const approveTriageIssue = mock(async (_id: string) => {
-      throw new Error("Linear API error");
-    });
-    const app = createApp(state, { approveTriageIssue });
-    const res = await app.request("/api/triage/uuid-1/approve", {
-      method: "POST",
-    });
-    expect(res.status).toBe(500);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Approve failed: Linear API error");
-  });
-});
-
-describe("POST /api/triage/:issueId/reject", () => {
-  test("returns 400 when rejectTriageIssue callback not configured", async () => {
-    const state = new AppState();
-    const app = createApp(state);
-    const res = await app.request("/api/triage/some-uuid/reject", {
-      method: "POST",
-    });
-    expect(res.status).toBe(400);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Triage not configured");
-  });
-
-  test("calls rejectTriageIssue and returns rejected: true", async () => {
-    const state = new AppState();
-    const rejectTriageIssue = mock(async (_id: string) => {});
-    const app = createApp(state, { rejectTriageIssue });
-    const res = await app.request("/api/triage/uuid-1/reject", {
-      method: "POST",
-    });
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as { rejected: boolean };
-    expect(json.rejected).toBe(true);
-    expect(rejectTriageIssue).toHaveBeenCalledWith("uuid-1");
-  });
-
-  test("returns 500 with error when rejectTriageIssue throws", async () => {
-    const state = new AppState();
-    const rejectTriageIssue = mock(async (_id: string) => {
-      throw new Error("Network error");
-    });
-    const app = createApp(state, { rejectTriageIssue });
-    const res = await app.request("/api/triage/uuid-1/reject", {
-      method: "POST",
-    });
-    expect(res.status).toBe(500);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Reject failed: Network error");
   });
 });
 
