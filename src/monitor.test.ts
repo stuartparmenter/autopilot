@@ -105,7 +105,7 @@ beforeEach(() => {
   prData = {
     merged: false,
     mergeable: null,
-    head: { ref: "feature/test", sha: "abc123" },
+    head: { ref: "autopilot-test", sha: "abc123" },
   };
   checkRunsData = { check_runs: [] };
   reviewsData = [];
@@ -327,7 +327,7 @@ describe("checkOpenPRs — basic cases", () => {
     prData = {
       merged: false,
       mergeable: null,
-      head: { ref: "feature/ci-fail", sha: "abc123" },
+      head: { ref: "autopilot-ci-fail", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
@@ -366,7 +366,7 @@ describe("checkOpenPRs — fixer spawn conditions", () => {
     prData = {
       merged: false,
       mergeable: false,
-      head: { ref: "feature/conflict", sha: "abc123" },
+      head: { ref: "autopilot-conflict", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
@@ -387,7 +387,7 @@ describe("checkOpenPRs — fixer spawn conditions", () => {
     prData = {
       merged: false,
       mergeable: null,
-      head: { ref: "feature/ok", sha: "abc123" },
+      head: { ref: "autopilot-ok", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
@@ -407,7 +407,7 @@ describe("checkOpenPRs — fixer spawn conditions", () => {
     prData = {
       merged: false,
       mergeable: null,
-      head: { ref: "feature/pending", sha: "abc123" },
+      head: { ref: "autopilot-pending", sha: "abc123" },
     };
     checkRunsData = { check_runs: [] };
 
@@ -423,7 +423,7 @@ describe("checkOpenPRs — fixer spawn conditions", () => {
     prData = {
       merged: false,
       mergeable: true,
-      head: { ref: "feature/clean", sha: "abc123" },
+      head: { ref: "autopilot-clean", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
@@ -434,6 +434,78 @@ describe("checkOpenPRs — fixer spawn conditions", () => {
     const result = await checkOpenPRs(makeOpts(state));
 
     expect(result).toHaveLength(0);
+  });
+});
+
+describe("checkOpenPRs — branch naming check", () => {
+  let state: AppState;
+
+  beforeEach(() => {
+    state = new AppState();
+    mockRunClaude.mockResolvedValue({
+      timedOut: false,
+      inactivityTimedOut: false,
+      error: undefined,
+      costUsd: 0.05,
+      durationMs: 500,
+      numTurns: 2,
+      result: "",
+    });
+    // Default: CI failure so a fixer would be spawned if the branch passes
+    checkRunsData = {
+      check_runs: [
+        { status: "completed", conclusion: "failure", name: "tests" },
+      ],
+    };
+  });
+
+  test("skips non-autopilot branch and does not spawn fixer when labels configured", async () => {
+    const config = makeConfig();
+    config.linear.labels = ["autopilot:managed"];
+    const issue = makeIssue("branch-skip", "https://github.com/o/r/pull/300");
+    mockIssuesQuery.mockResolvedValue({ nodes: [issue] });
+    prData = {
+      merged: false,
+      mergeable: null,
+      head: { ref: "feature/some-human-branch", sha: "abc123" },
+    };
+
+    const result = await checkOpenPRs(makeOpts(state, config));
+
+    expect(result).toHaveLength(0);
+  });
+
+  test("processes autopilot-prefixed branches normally", async () => {
+    const issue = makeIssue("branch-auto", "https://github.com/o/r/pull/301");
+    mockIssuesQuery.mockResolvedValue({ nodes: [issue] });
+    prData = {
+      merged: false,
+      mergeable: null,
+      head: { ref: "autopilot-ENG-301", sha: "abc123" },
+    };
+
+    const result = await checkOpenPRs(makeOpts(state));
+
+    expect(result).toHaveLength(1);
+    await Promise.all(result);
+  });
+
+  test("processes legacy worktree-prefixed branches normally", async () => {
+    const issue = makeIssue(
+      "branch-worktree",
+      "https://github.com/o/r/pull/302",
+    );
+    mockIssuesQuery.mockResolvedValue({ nodes: [issue] });
+    prData = {
+      merged: false,
+      mergeable: null,
+      head: { ref: "worktree-ENG-302", sha: "abc123" },
+    };
+
+    const result = await checkOpenPRs(makeOpts(state));
+
+    expect(result).toHaveLength(1);
+    await Promise.all(result);
   });
 });
 
@@ -455,7 +527,7 @@ describe("checkOpenPRs — slot limiting and dedup", () => {
     prData = {
       merged: false,
       mergeable: null,
-      head: { ref: "feature/slot", sha: "abc123" },
+      head: { ref: "autopilot-slot", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
@@ -637,7 +709,7 @@ describe("checkOpenPRs — review responder", () => {
     prData = {
       merged: false,
       mergeable: true,
-      head: { ref: "feature/review-test", sha: "abc123" },
+      head: { ref: "autopilot-review-test", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
@@ -722,7 +794,7 @@ describe("checkOpenPRs — review responder", () => {
     prData = {
       merged: false,
       mergeable: false,
-      head: { ref: "feature/review-test", sha: "abc123" },
+      head: { ref: "autopilot-review-test", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
@@ -905,7 +977,7 @@ describe("checkOpenPRs — runClaude throws", () => {
     prData = {
       merged: false,
       mergeable: null,
-      head: { ref: "feature/crash", sha: "abc123" },
+      head: { ref: "autopilot-crash", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
@@ -947,7 +1019,7 @@ describe("checkOpenPRs — fixer timeout and attempt budget", () => {
     prData = {
       merged: false,
       mergeable: null,
-      head: { ref: "feature/budget", sha: "abc123" },
+      head: { ref: "autopilot-budget", sha: "abc123" },
     };
     checkRunsData = {
       check_runs: [
