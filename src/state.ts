@@ -60,6 +60,7 @@ export interface AgentResult {
   numTurns?: number;
   sessionId?: string;
   error?: string;
+  exitReason?: string;
   reviewedAt?: number;
 }
 
@@ -181,6 +182,7 @@ export class AppState {
       numTurns?: number;
       sessionId?: string;
       error?: string;
+      exitReason?: string;
     },
     rawMessages?: unknown[],
   ): Promise<void> {
@@ -209,6 +211,7 @@ export class AppState {
       numTurns: agent.numTurns,
       sessionId: meta?.sessionId,
       error: agent.error,
+      exitReason: meta?.exitReason,
     };
 
     // Update in-memory state synchronously (before any awaits) so callers
