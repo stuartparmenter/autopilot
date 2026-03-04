@@ -202,6 +202,20 @@ export async function createClone(
     );
   }
 
+  // Reset the default branch to match GitHub. The --shared clone copied objects
+  // from the local repo, which may be behind origin. New branches must start
+  // from the latest GitHub commit, not a stale local one.
+  const resetErr = gitSync(dest, [
+    "reset",
+    "--hard",
+    `origin/${defaultBranch}`,
+  ]);
+  if (resetErr) {
+    throw new Error(
+      `Failed to reset '${defaultBranch}' to origin in clone '${name}': ${resetErr}`,
+    );
+  }
+
   if (fromBranch) {
     // Fixer/review mode: check out an existing PR branch.
     // The full fetch above already retrieved all remote tracking refs.
