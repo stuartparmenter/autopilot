@@ -138,6 +138,7 @@ function makeConfig(parallelSlots = 3): AutopilotConfig {
       review_responder_timeout_minutes: 20,
     },
     github: { repo: "", automerge: false },
+    project: { name: "" },
     git: {
       user_name: "autopilot[bot]",
       user_email: "autopilot[bot]@users.noreply.github.com",
@@ -174,6 +175,7 @@ function makeLinearIds(): LinearIds {
   return {
     teamId: "team-id",
     teamKey: "ENG",
+    managedLabelId: "managed-label-id",
     states: {
       triage: "triage-id",
       ready: "ready-id",
@@ -691,11 +693,7 @@ describe("fillSlots", () => {
     const activeIssue = makeIssue();
     const freshIssue = makeIssue();
 
-    const hangingRunClaude = new Promise<
-      typeof mockRunClaude extends (...args: any[]) => Promise<infer R>
-        ? R
-        : never
-    >((resolve) => {
+    const hangingRunClaude = new Promise<ClaudeResult>((resolve) => {
       setTimeout(
         () =>
           resolve({
@@ -710,7 +708,7 @@ describe("fillSlots", () => {
         10000,
       );
     });
-    mockRunClaude.mockReturnValue(hangingRunClaude as any);
+    mockRunClaude.mockReturnValue(hangingRunClaude);
 
     const execPromise = executeIssue({
       issue: activeIssue,
@@ -938,14 +936,20 @@ describe("recoverAgentsOnShutdown", () => {
   });
 
   test("returns 0 and makes no API calls when no agents have linearIssueId", async () => {
-    const agents = [{ linearIssueId: undefined }, { linearIssueId: undefined }];
+    const agents = [
+      { linearIssueId: undefined, issueId: "ENG-1" },
+      { linearIssueId: undefined, issueId: "ENG-2" },
+    ];
     const count = await recoverAgentsOnShutdown(agents, "ready-id");
     expect(count).toBe(0);
     expect(mockUpdateIssue).not.toHaveBeenCalled();
   });
 
   test("calls updateIssue for each agent with a linearIssueId", async () => {
-    const agents = [{ linearIssueId: "issue-1" }, { linearIssueId: "issue-2" }];
+    const agents = [
+      { linearIssueId: "issue-1", issueId: "ENG-1" },
+      { linearIssueId: "issue-2", issueId: "ENG-2" },
+    ];
     const count = await recoverAgentsOnShutdown(agents, "ready-id");
     expect(count).toBe(2);
     expect(mockUpdateIssue).toHaveBeenCalledTimes(2);
@@ -961,9 +965,9 @@ describe("recoverAgentsOnShutdown", () => {
 
   test("skips agents without linearIssueId and recovers those with one", async () => {
     const agents = [
-      { linearIssueId: "issue-a" },
-      { linearIssueId: undefined },
-      { linearIssueId: "issue-b" },
+      { linearIssueId: "issue-a", issueId: "ENG-a" },
+      { linearIssueId: undefined, issueId: "ENG-b" },
+      { linearIssueId: "issue-b", issueId: "ENG-c" },
     ];
     const count = await recoverAgentsOnShutdown(agents, "ready-id");
     expect(count).toBe(2);
@@ -973,7 +977,7 @@ describe("recoverAgentsOnShutdown", () => {
   });
 
   test("uses the provided readyStateId", async () => {
-    const agents = [{ linearIssueId: "issue-x" }];
+    const agents = [{ linearIssueId: "issue-x", issueId: "ENG-x" }];
     await recoverAgentsOnShutdown(agents, "custom-ready-state");
     expect(mockUpdateIssue).toHaveBeenCalledWith(
       "issue-x",
@@ -982,7 +986,7 @@ describe("recoverAgentsOnShutdown", () => {
   });
 
   test("posts a comment explaining the recovery", async () => {
-    const agents = [{ linearIssueId: "issue-y" }];
+    const agents = [{ linearIssueId: "issue-y", issueId: "ENG-y" }];
     await recoverAgentsOnShutdown(agents, "ready-id");
     const call = mockUpdateIssue.mock.calls[0];
     expect(call[1].comment).toContain("Ready for re-execution");

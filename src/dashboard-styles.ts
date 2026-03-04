@@ -334,4 +334,179 @@ export const DASHBOARD_CSS = `
     color: var(--text-dim);
     padding: 0 4px;
   }
+  .cost-trends-bar {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .cost-trends-section {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .cost-trend-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .cost-trend-date {
+    width: 30px;
+  }
+  .cost-trend-bar-track {
+    width: 60px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .cost-trend-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .cost-trend-amount {
+    width: 38px;
+    text-align: right;
+  }
+  .cost-trends-summary {
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .failure-analysis-bar {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .failure-analysis-section {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .repeat-failure-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    padding: 2px 0;
+  }
+  .repeat-failure-count {
+    color: var(--red);
+    font-weight: 600;
+    min-width: 20px;
+  }
+  .repeat-failure-error {
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+  }
+  .planning-card {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .planning-card:hover {
+    background: var(--bg-card);
+  }
+  .planning-card.selected {
+    background: var(--bg-card);
+    border-left: 2px solid var(--purple);
+    padding-left: 14px;
+  }
+  .planning-card .summary {
+    color: var(--text-dim);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+  }
+  .planning-detail {
+    padding: 0;
+  }
+  .planning-findings {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .planning-findings li {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .planning-findings li .reason {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .planning-issues-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .planning-issues-list li {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .planning-issues-list li .issue-id {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 11px;
+  }
+  .cost-section {
+    padding: 8px 16px;
+  }
+  .cost-subtitle {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin: 12px 0 6px;
+    letter-spacing: 0.5px;
+  }
+  .cost-day-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 12px;
+  }
+  .cost-date {
+    width: 40px;
+    color: var(--text-dim);
+  }
+  .cost-bar-bg {
+    flex: 1;
+    height: 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .cost-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.3s;
+  }
+  .cost-amount {
+    width: 60px;
+    text-align: right;
+    color: var(--green);
+  }
+  .cost-runs {
+    width: 30px;
+    text-align: right;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .cost-issue-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 12px;
+  }
+  .cost-issue-row .issue-id {
+    flex: 1;
+  }
 `;

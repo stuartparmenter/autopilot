@@ -191,9 +191,10 @@ export async function findOrCreateInitiative(
   return initiative;
 }
 
-// Single GraphQL query that fetches ready issues with their relations (including
-// related issue states) and children counts in one HTTP request, replacing the
-// previous N+1 SDK lazy-loading pattern.
+// Single GraphQL query that fetches ready issues with their inverseRelations
+// (incoming "blocks" relations, to detect if another issue is blocking this one)
+// and children counts in one HTTP request, replacing the previous N+1 SDK
+// lazy-loading pattern.
 const GET_READY_ISSUES_QUERY = `
   query getReadyIssues($filter: IssueFilter, $first: Int) {
     issues(filter: $filter, first: $first) {
@@ -202,10 +203,10 @@ const GET_READY_ISSUES_QUERY = `
         identifier
         title
         priority
-        relations {
+        inverseRelations {
           nodes {
             type
-            relatedIssue {
+            issue {
               id
               state {
                 type
@@ -228,10 +229,10 @@ interface ReadyIssueNode {
   identifier: string;
   title: string;
   priority?: number | null;
-  relations: {
+  inverseRelations: {
     nodes: Array<{
       type: string;
-      relatedIssue: {
+      issue: {
         id: string;
         state: { type: string } | null;
       } | null;
@@ -298,14 +299,14 @@ export async function getReadyIssues(
     // Skip parent issues — only leaf issues are work units
     if (node.children.nodes.length > 0) continue;
 
-    // Skip issues blocked by an incomplete related issue
-    const isBlocked = node.relations.nodes.some(
+    // Skip issues blocked by an incomplete blocker issue
+    const isBlocked = node.inverseRelations.nodes.some(
       (rel) =>
         rel.type === "blocks" &&
-        rel.relatedIssue !== null &&
-        rel.relatedIssue.state !== null &&
-        rel.relatedIssue.state.type !== "completed" &&
-        rel.relatedIssue.state.type !== "canceled",
+        rel.issue !== null &&
+        rel.issue.state !== null &&
+        rel.issue.state.type !== "completed" &&
+        rel.issue.state.type !== "canceled",
     );
     if (!isBlocked) {
       leafUnblocked.push(node);
@@ -496,8 +497,12 @@ export async function createIssue(opts: {
   priority?: number;
   labelIds?: string[];
   parentId?: string;
+  managedLabelId?: string;
 }): Promise<Issue> {
   const client = await getLinearClientAsync();
+  const labelIds = opts.managedLabelId
+    ? [...(opts.labelIds ?? []), opts.managedLabelId]
+    : opts.labelIds;
   const payload = await withRetry(
     () =>
       client.createIssue({
@@ -507,7 +512,7 @@ export async function createIssue(opts: {
         description: opts.description,
         stateId: opts.stateId,
         priority: opts.priority,
-        labelIds: opts.labelIds,
+        labelIds,
         parentId: opts.parentId,
       }),
     "createIssue",
@@ -592,6 +597,7 @@ export async function resolveLinearIds(
     inReviewState,
     doneState,
     blockedState,
+    managedLabel,
   ] = await Promise.all([
     findState(team.id, config.states.triage),
     findState(team.id, config.states.ready),
@@ -599,6 +605,7 @@ export async function resolveLinearIds(
     findState(team.id, config.states.in_review),
     findState(team.id, config.states.done),
     findState(team.id, config.states.blocked),
+    findOrCreateLabel(team.id, "autopilot:managed"),
   ]);
 
   let initiativeId: string | undefined;
@@ -614,6 +621,7 @@ export async function resolveLinearIds(
     teamKey: config.team,
     initiativeId,
     initiativeName,
+    managedLabelId: managedLabel.id,
     states: {
       triage: triageState.id,
       ready: readyState.id,

@@ -8,6 +8,7 @@ import { getLinearClient } from "./lib/linear";
 import { info, warn } from "./lib/logger";
 import { AUTOPILOT_ROOT, buildPrompt } from "./lib/prompt";
 import { withRetry } from "./lib/retry";
+import { AUTOPILOT_PREFIX } from "./lib/sandbox-clone";
 import type { AppState } from "./state";
 
 // Track issue IDs with active fixers to prevent duplicates
@@ -55,17 +56,23 @@ export async function checkOpenPRs(opts: {
     return [];
   }
 
-  // Query Linear for issues in "In Review" state
+  // Query Linear for issues in "In Review" state, applying label/project
+  // filters when configured so the monitor only acts on autopilot-managed issues.
   const client = getLinearClient();
+  const hasOwnershipFilter =
+    config.linear.labels.length > 0 || config.linear.projects.length > 0;
+  const filter = {
+    team: { id: { eq: linearIds.teamId } },
+    state: { id: { eq: linearIds.states.in_review } },
+    ...(config.linear.labels.length
+      ? { labels: { some: { name: { in: config.linear.labels } } } }
+      : {}),
+    ...(config.linear.projects.length
+      ? { project: { name: { in: config.linear.projects } } }
+      : {}),
+  };
   const result = await withRetry(
-    () =>
-      client.issues({
-        filter: {
-          team: { id: { eq: linearIds.teamId } },
-          state: { id: { eq: linearIds.states.in_review } },
-        },
-        first: 50,
-      }),
+    () => client.issues({ filter, first: 50 }),
     "checkOpenPRs",
   );
 
@@ -158,6 +165,19 @@ export async function checkOpenPRs(opts: {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       warn(`Failed to get status for PR #${prNumber}: ${msg}`);
+      continue;
+    }
+
+    // When labels or projects are configured, also verify this is an
+    // autopilot-managed branch so the monitor never acts on human PRs
+    // that happen to carry matching labels.
+    const isAutopilotBranch =
+      status.branch.startsWith("autopilot-") ||
+      status.branch.startsWith("worktree-");
+    if (hasOwnershipFilter && !isAutopilotBranch) {
+      warn(
+        `Skipping PR #${prNumber} (${issue.identifier}): branch '${status.branch}' is not autopilot-managed`,
+      );
       continue;
     }
 
@@ -288,7 +308,7 @@ async function respondToReview(opts: {
     BLOCKED_STATE: config.linear.states.blocked,
   });
 
-  const cloneName = `review-${issueIdentifier}`;
+  const cloneName = `${AUTOPILOT_PREFIX}review-${issueIdentifier}`;
   const timeoutMs = config.monitor.review_responder_timeout_minutes * 60 * 1000;
   const plugins: SdkPluginConfig[] = [
     {
@@ -322,6 +342,7 @@ async function respondToReview(opts: {
     state,
     agentId,
     `Review responder for ${issueIdentifier}`,
+    "review",
   );
   return status === "completed";
 }
@@ -368,7 +389,7 @@ async function fixPR(opts: {
     projectPath,
   );
 
-  const cloneName = `fix-${issueIdentifier}`;
+  const cloneName = `${AUTOPILOT_PREFIX}fix-${issueIdentifier}`;
   const timeoutMs = config.executor.fixer_timeout_minutes * 60 * 1000;
   const plugins: SdkPluginConfig[] = [
     {
@@ -404,12 +425,16 @@ async function fixPR(opts: {
       state,
       agentId,
       `Fixer for ${issueIdentifier}`,
+      "fixer",
     );
     return status === "completed";
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     warn(`Fixer agent for ${issueIdentifier} crashed: ${msg}`);
-    void state.completeAgent(agentId, "failed", { error: msg });
+    void state.completeAgent(agentId, "failed", {
+      error: msg,
+      runType: "fixer",
+    });
     return false;
   } finally {
     activeFixerIssues.delete(issueId);

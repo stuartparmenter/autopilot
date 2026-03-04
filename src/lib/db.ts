@@ -1,7 +1,12 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ActivityEntry, AgentResult } from "../state";
+import type {
+  ActivityEntry,
+  AgentResult,
+  PlanningSession,
+  StateTransition,
+} from "../state";
 import { error, warn } from "./logger";
 
 const SCHEMA = `
@@ -46,10 +51,35 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   access_token TEXT NOT NULL,
   refresh_token TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
-  token_type TEXT NOT NULL,
-  scope TEXT NOT NULL,
-  actor TEXT NOT NULL
+  token_type TEXT NOT NULL DEFAULT 'Bearer',
+  scope TEXT,
+  actor TEXT,
+  updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS planning_sessions (
+  id TEXT PRIMARY KEY,
+  agent_run_id TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  summary TEXT,
+  issues_filed_count INTEGER NOT NULL DEFAULT 0,
+  issues_filed_json TEXT,
+  findings_rejected_json TEXT,
+  cost_usd REAL
+);
+CREATE INDEX IF NOT EXISTS idx_planning_sessions_finished_at ON planning_sessions(finished_at);
+CREATE TABLE IF NOT EXISTS state_transitions (
+  id TEXT PRIMARY KEY,
+  issue_id TEXT NOT NULL,
+  issue_identifier TEXT NOT NULL,
+  from_state TEXT,
+  to_state TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  agent_id TEXT,
+  reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_state_transitions_issue_id ON state_transitions(issue_id);
 `;
 
 // ---- SQLITE_BUSY retry logic ----
@@ -118,10 +148,10 @@ async function withDbRetry<T>(
 export interface OAuthTokenRow {
   accessToken: string;
   refreshToken: string;
-  expiresAt: number;
+  expiresAt: number; // Unix timestamp in ms
   tokenType: string;
-  scope: string;
-  actor: string;
+  scope?: string;
+  actor?: string;
 }
 
 export interface AnalyticsResult {
@@ -150,6 +180,8 @@ interface AgentRunRow {
   linear_issue_id: string | null;
   session_id: string | null;
   reviewed_at: number | null;
+  exit_reason: string | null;
+  run_type: string | null;
 }
 
 interface AnalyticsRow {
@@ -201,6 +233,23 @@ export function openDb(dbFilePath: string): Database {
   } catch {
     // Column already exists — safe to ignore
   }
+  try {
+    db.exec("ALTER TABLE agent_runs ADD COLUMN exit_reason TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+  try {
+    db.exec("ALTER TABLE agent_runs ADD COLUMN run_type TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+  try {
+    db.exec(
+      "ALTER TABLE oauth_tokens ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+    );
+  } catch {
+    // Column already exists — safe to ignore
+  }
   return db;
 }
 
@@ -212,8 +261,8 @@ export async function insertAgentRun(
     () =>
       db.run(
         `INSERT OR REPLACE INTO agent_runs
-         (id, issue_id, issue_title, status, started_at, finished_at, cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, issue_id, issue_title, status, started_at, finished_at, cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, exit_reason, run_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           result.id,
           result.issueId,
@@ -227,6 +276,8 @@ export async function insertAgentRun(
           result.error ?? null,
           result.linearIssueId ?? null,
           result.sessionId ?? null,
+          result.exitReason ?? null,
+          result.runType ?? null,
         ],
       ),
     "insertAgentRun",
@@ -249,6 +300,8 @@ function rowToResult(row: AgentRunRow): AgentResult {
     linearIssueId: row.linear_issue_id ?? undefined,
     sessionId: row.session_id ?? undefined,
     reviewedAt: row.reviewed_at ?? undefined,
+    exitReason: row.exit_reason ?? undefined,
+    runType: row.run_type ?? undefined,
   };
 }
 
@@ -256,7 +309,7 @@ export function getRecentRuns(db: Database, limit = 50): AgentResult[] {
   const rows = db
     .query<AgentRunRow, [number]>(
       `SELECT id, issue_id, issue_title, status, started_at, finished_at,
-              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason, run_type
        FROM agent_runs
        ORDER BY finished_at DESC
        LIMIT ?`,
@@ -286,6 +339,184 @@ export function getAnalytics(db: Database): AnalyticsResult {
     totalCostUsd: row?.total_cost_usd ?? 0,
     avgDurationMs: row?.avg_duration_ms ?? 0,
   };
+}
+
+export interface DailyCostEntry {
+  date: string; // "YYYY-MM-DD"
+  totalCost: number;
+  runCount: number;
+}
+
+export interface WeeklyCostEntry {
+  weekStart: string; // "YYYY-MM-DD" (earliest date of runs in the week)
+  totalCost: number;
+  runCount: number;
+}
+
+export interface CostByStatusEntry {
+  status: string;
+  totalCost: number;
+  runCount: number;
+}
+
+interface DailyCostSqlRow {
+  date: string;
+  total_cost: number;
+  run_count: number;
+}
+
+interface WeeklyCostRow {
+  week: string;
+  week_start: string;
+  total_cost: number;
+  run_count: number;
+}
+
+interface CostByStatusRow {
+  status: string;
+  total_cost: number;
+  run_count: number;
+}
+
+export function getDailyCostTrend(db: Database, days = 30): DailyCostEntry[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<DailyCostSqlRow, [number]>(
+      `SELECT
+         DATE(finished_at/1000, 'unixepoch') AS date,
+         SUM(COALESCE(cost_usd, 0)) AS total_cost,
+         COUNT(*) AS run_count
+       FROM agent_runs
+       WHERE finished_at >= ?
+       GROUP BY date
+       ORDER BY date ASC`,
+    )
+    .all(cutoffMs);
+  return rows.map((row) => ({
+    date: row.date,
+    totalCost: row.total_cost,
+    runCount: row.run_count,
+  }));
+}
+
+export function getWeeklyCostTrend(
+  db: Database,
+  weeks = 12,
+): WeeklyCostEntry[] {
+  const cutoffMs = Date.now() - weeks * 7 * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<WeeklyCostRow, [number]>(
+      `SELECT
+         strftime('%Y-%W', finished_at/1000, 'unixepoch') AS week,
+         MIN(strftime('%Y-%m-%d', finished_at/1000, 'unixepoch')) AS week_start,
+         SUM(COALESCE(cost_usd, 0)) AS total_cost,
+         COUNT(*) AS run_count
+       FROM agent_runs
+       WHERE finished_at >= ?
+       GROUP BY week
+       ORDER BY week ASC`,
+    )
+    .all(cutoffMs);
+  return rows.map((row) => ({
+    weekStart: row.week_start,
+    totalCost: row.total_cost,
+    runCount: row.run_count,
+  }));
+}
+
+export function getCostByStatus(db: Database, days = 30): CostByStatusEntry[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<CostByStatusRow, [number]>(
+      `SELECT
+         status,
+         SUM(COALESCE(cost_usd, 0)) AS total_cost,
+         COUNT(*) AS run_count
+       FROM agent_runs
+       WHERE finished_at >= ?
+       GROUP BY status
+       ORDER BY status ASC`,
+    )
+    .all(cutoffMs);
+  return rows.map((row) => ({
+    status: row.status,
+    totalCost: row.total_cost,
+    runCount: row.run_count,
+  }));
+}
+
+export interface DailyCostRow {
+  date: string; // "YYYY-MM-DD" in UTC
+  totalCostUsd: number;
+  runCount: number;
+}
+
+export interface PerIssueCostRow {
+  issueId: string;
+  issueTitle: string;
+  totalCostUsd: number;
+  runCount: number;
+  lastRunAt: number;
+}
+
+interface DailyCostQueryRow {
+  date: string;
+  total_cost_usd: number;
+  run_count: number;
+}
+
+interface PerIssueCostQueryRow {
+  issue_id: string;
+  issue_title: string;
+  total_cost_usd: number;
+  run_count: number;
+  last_run_at: number;
+}
+
+export function getDailyCosts(db: Database, days = 30): DailyCostRow[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<DailyCostQueryRow, [number]>(
+      `SELECT
+         DATE(finished_at/1000, 'unixepoch') AS date,
+         SUM(cost_usd) AS total_cost_usd,
+         COUNT(*) AS run_count
+       FROM agent_runs
+       WHERE finished_at >= ? AND cost_usd IS NOT NULL AND cost_usd > 0
+       GROUP BY date
+       ORDER BY date ASC`,
+    )
+    .all(cutoffMs);
+  return rows.map((row) => ({
+    date: row.date,
+    totalCostUsd: row.total_cost_usd,
+    runCount: row.run_count,
+  }));
+}
+
+export function getPerIssueCosts(db: Database, limit = 50): PerIssueCostRow[] {
+  const rows = db
+    .query<PerIssueCostQueryRow, [number]>(
+      `SELECT
+         issue_id,
+         issue_title,
+         SUM(cost_usd) AS total_cost_usd,
+         COUNT(*) AS run_count,
+         MAX(finished_at) AS last_run_at
+       FROM agent_runs
+       WHERE cost_usd IS NOT NULL AND cost_usd > 0
+       GROUP BY issue_id
+       ORDER BY total_cost_usd DESC
+       LIMIT ?`,
+    )
+    .all(limit);
+  return rows.map((row) => ({
+    issueId: row.issue_id,
+    issueTitle: row.issue_title,
+    totalCostUsd: row.total_cost_usd,
+    runCount: row.run_count,
+    lastRunAt: row.last_run_at,
+  }));
 }
 
 export function getTodayAnalytics(db: Database): TodayAnalyticsResult {
@@ -410,8 +641,8 @@ export function getOAuthToken(
         refresh_token: string;
         expires_at: number;
         token_type: string;
-        scope: string;
-        actor: string;
+        scope: string | null;
+        actor: string | null;
       },
       [string]
     >(
@@ -425,8 +656,8 @@ export function getOAuthToken(
     refreshToken: row.refresh_token,
     expiresAt: row.expires_at,
     tokenType: row.token_type,
-    scope: row.scope,
-    actor: row.actor,
+    scope: row.scope ?? undefined,
+    actor: row.actor ?? undefined,
   };
 }
 
@@ -439,21 +670,26 @@ export async function saveOAuthToken(
     () =>
       db.run(
         `INSERT OR REPLACE INTO oauth_tokens
-         (service, access_token, refresh_token, expires_at, token_type, scope, actor)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (service, access_token, refresh_token, expires_at, token_type, scope, actor, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           service,
           token.accessToken,
           token.refreshToken,
           token.expiresAt,
           token.tokenType,
-          token.scope,
-          token.actor,
+          token.scope ?? null,
+          token.actor ?? null,
+          Date.now(),
         ],
       ),
     "saveOAuthToken",
     { service },
   );
+}
+
+export function deleteOAuthToken(db: Database, service: string): void {
+  db.run("DELETE FROM oauth_tokens WHERE service = ?", [service]);
 }
 
 export function pruneConversationLogs(
@@ -471,7 +707,7 @@ export function getUnreviewedRuns(db: Database, limit = 100): AgentResult[] {
   const rows = db
     .query<AgentRunRow, [number]>(
       `SELECT id, issue_id, issue_title, status, started_at, finished_at,
-              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason, run_type
        FROM agent_runs
        WHERE reviewed_at IS NULL AND status IN ('completed', 'failed', 'timed_out')
        ORDER BY finished_at ASC
@@ -488,7 +724,7 @@ export function getRunWithTranscript(
   const runRow = db
     .query<AgentRunRow, [string]>(
       `SELECT id, issue_id, issue_title, status, started_at, finished_at,
-              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at
+              cost_usd, duration_ms, num_turns, error, linear_issue_id, session_id, reviewed_at, exit_reason, run_type
        FROM agent_runs WHERE id = ?`,
     )
     .get(agentRunId);
@@ -509,6 +745,222 @@ export function getRunWithTranscript(
   };
 }
 
+export interface FailureByTypeEntry {
+  status: string;
+  failureType: string;
+  count: number;
+}
+
+export interface DailyFailureRateEntry {
+  date: string; // "YYYY-MM-DD"
+  totalRuns: number;
+  failureCount: number;
+  failureRate: number; // computed: failureCount / totalRuns
+}
+
+export interface RepeatFailingIssueEntry {
+  issueId: string;
+  issueTitle: string;
+  failureCount: number;
+  lastError: string | undefined;
+  lastFailureAt: number;
+}
+
+export interface FailureTrendEntry {
+  date: string; // "YYYY-MM-DD"
+  totalRuns: number;
+  failureCount: number;
+  failureRate: number; // 0.0 - 1.0
+}
+
+export interface RepeatFailureEntry {
+  issueId: string;
+  issueTitle: string;
+  failureCount: number;
+  lastFailedAt: number; // ms timestamp
+  lastError: string | null;
+}
+
+interface FailureByTypeRow {
+  status: string;
+  failure_type: string;
+  count: number;
+}
+
+interface DailyFailureRateRow {
+  date: string;
+  total_runs: number;
+  failure_count: number;
+}
+
+interface RepeatFailingIssueRow {
+  issue_id: string;
+  issue_title: string;
+  failure_count: number;
+  last_error: string | null;
+  last_failure_at: number;
+}
+
+interface FailureTrendRow {
+  date: string;
+  total_runs: number;
+  failure_count: number;
+}
+
+interface RepeatFailureRow {
+  issue_id: string;
+  issue_title: string;
+  failure_count: number;
+  last_failed_at: number;
+  last_error: string | null;
+}
+
+export function getFailuresByType(
+  db: Database,
+  days = 30,
+): FailureByTypeEntry[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<FailureByTypeRow, [number]>(
+      `SELECT
+         status,
+         CASE
+           WHEN error LIKE '%timeout%' OR error LIKE '%Timed out%' THEN 'timeout'
+           WHEN error LIKE '%test%' OR error LIKE '%failing%' THEN 'test_failure'
+           WHEN error LIKE '%lint%' OR error LIKE '%biome%' OR error LIKE '%format%' THEN 'lint_failure'
+           WHEN error LIKE '%type%check%' OR error LIKE '%tsc%' THEN 'type_error'
+           WHEN error LIKE '%merge conflict%' THEN 'merge_conflict'
+           WHEN error IS NULL OR error = '' THEN 'unknown'
+           ELSE 'other'
+         END AS failure_type,
+         COUNT(*) AS count
+       FROM agent_runs
+       WHERE status != 'completed'
+         AND finished_at >= ?
+       GROUP BY status, failure_type
+       ORDER BY count DESC`,
+    )
+    .all(cutoffMs);
+  return rows.map((row) => ({
+    status: row.status,
+    failureType: row.failure_type,
+    count: row.count,
+  }));
+}
+
+export function getDailyFailureRate(
+  db: Database,
+  days = 30,
+): DailyFailureRateEntry[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<DailyFailureRateRow, [number]>(
+      `SELECT
+         DATE(finished_at/1000, 'unixepoch') AS date,
+         COUNT(*) AS total_runs,
+         SUM(CASE WHEN status != 'completed' THEN 1 ELSE 0 END) AS failure_count
+       FROM agent_runs
+       WHERE finished_at >= ?
+       GROUP BY date
+       ORDER BY date ASC`,
+    )
+    .all(cutoffMs);
+  return rows.map((row) => ({
+    date: row.date,
+    totalRuns: row.total_runs,
+    failureCount: row.failure_count,
+    failureRate: row.total_runs > 0 ? row.failure_count / row.total_runs : 0,
+  }));
+}
+
+export function getRepeatFailingIssues(
+  db: Database,
+  days = 30,
+  limit = 20,
+): RepeatFailingIssueEntry[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<RepeatFailingIssueRow, [number, number]>(
+      `SELECT
+         issue_id,
+         issue_title,
+         COUNT(*) AS failure_count,
+         MAX(error) AS last_error,
+         MAX(finished_at) AS last_failure_at
+       FROM agent_runs
+       WHERE status != 'completed'
+         AND finished_at >= ?
+       GROUP BY issue_id
+       HAVING COUNT(*) >= 2
+       ORDER BY failure_count DESC
+       LIMIT ?`,
+    )
+    .all(cutoffMs, limit);
+  return rows.map((row) => ({
+    issueId: row.issue_id,
+    issueTitle: row.issue_title,
+    failureCount: row.failure_count,
+    lastError: row.last_error ?? undefined,
+    lastFailureAt: row.last_failure_at,
+  }));
+}
+
+export function getFailureTrend(db: Database, days = 30): FailureTrendEntry[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<FailureTrendRow, [number]>(
+      `SELECT
+         DATE(finished_at/1000, 'unixepoch') AS date,
+         COUNT(*) AS total_runs,
+         SUM(CASE WHEN status != 'completed' THEN 1 ELSE 0 END) AS failure_count
+       FROM agent_runs
+       WHERE finished_at >= ?
+       GROUP BY date
+       ORDER BY date ASC`,
+    )
+    .all(cutoffMs);
+  return rows.map((row) => ({
+    date: row.date,
+    totalRuns: row.total_runs,
+    failureCount: row.failure_count,
+    failureRate: row.total_runs > 0 ? row.failure_count / row.total_runs : 0,
+  }));
+}
+
+export function getRepeatFailures(
+  db: Database,
+  minFailures = 2,
+  days = 30,
+): RepeatFailureEntry[] {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db
+    .query<RepeatFailureRow, [number, number]>(
+      `SELECT
+         issue_id,
+         issue_title,
+         COUNT(*) AS failure_count,
+         MAX(finished_at) AS last_failed_at,
+         (SELECT error FROM agent_runs ar2
+          WHERE ar2.issue_id = agent_runs.issue_id
+            AND ar2.status != 'completed'
+          ORDER BY ar2.finished_at DESC
+          LIMIT 1) AS last_error
+       FROM agent_runs
+       WHERE status != 'completed' AND finished_at >= ?
+       GROUP BY issue_id
+       HAVING COUNT(*) >= ?
+       ORDER BY failure_count DESC`,
+    )
+    .all(cutoffMs, minFailures);
+  return rows.map((row) => ({
+    issueId: row.issue_id,
+    issueTitle: row.issue_title,
+    failureCount: row.failure_count,
+    lastFailedAt: row.last_failed_at,
+    lastError: row.last_error,
+  }));
+}
+
 export async function markRunsReviewed(
   db: Database,
   agentRunIds: string[],
@@ -524,4 +976,210 @@ export async function markRunsReviewed(
   await withDbRetry(() => updateMany(agentRunIds), "markRunsReviewed", {
     ids: agentRunIds,
   });
+}
+
+interface PlanningSessionRow {
+  id: string;
+  agent_run_id: string;
+  started_at: number;
+  finished_at: number;
+  status: "completed" | "failed" | "timed_out";
+  summary: string | null;
+  issues_filed_count: number;
+  issues_filed_json: string | null;
+  findings_rejected_json: string | null;
+  cost_usd: number | null;
+}
+
+export async function insertPlanningSession(
+  db: Database,
+  session: PlanningSession,
+): Promise<void> {
+  await withDbRetry(
+    () =>
+      db.run(
+        `INSERT OR REPLACE INTO planning_sessions
+         (id, agent_run_id, started_at, finished_at, status, summary, issues_filed_count, issues_filed_json, findings_rejected_json, cost_usd)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          session.id,
+          session.agentRunId,
+          session.startedAt,
+          session.finishedAt,
+          session.status,
+          session.summary ?? null,
+          session.issuesFiledCount,
+          session.issuesFiled ? JSON.stringify(session.issuesFiled) : null,
+          session.findingsRejected
+            ? JSON.stringify(session.findingsRejected)
+            : null,
+          session.costUsd ?? null,
+        ],
+      ),
+    "insertPlanningSession",
+    session,
+  );
+}
+
+interface SpendLogRow {
+  finished_at: number;
+  cost_usd: number;
+}
+
+export function getSpendLogEntries(
+  db: Database,
+  cutoffMs: number,
+): Array<{ timestampMs: number; costUsd: number }> {
+  const rows = db
+    .query<SpendLogRow, [number]>(
+      `SELECT finished_at, cost_usd
+       FROM agent_runs
+       WHERE finished_at >= ? AND cost_usd IS NOT NULL AND cost_usd > 0
+       ORDER BY finished_at ASC`,
+    )
+    .all(cutoffMs);
+  return rows.map((row) => ({
+    timestampMs: row.finished_at,
+    costUsd: row.cost_usd,
+  }));
+}
+
+export function getRecentPlanningSessions(
+  db: Database,
+  limit = 20,
+): PlanningSession[] {
+  const rows = db
+    .query<PlanningSessionRow, [number]>(
+      `SELECT id, agent_run_id, started_at, finished_at, status, summary,
+              issues_filed_count, issues_filed_json, findings_rejected_json, cost_usd
+       FROM planning_sessions
+       ORDER BY finished_at DESC
+       LIMIT ?`,
+    )
+    .all(limit);
+  return rows.map((row) => ({
+    id: row.id,
+    agentRunId: row.agent_run_id,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    status: row.status,
+    summary: row.summary ?? undefined,
+    issuesFiledCount: row.issues_filed_count,
+    issuesFiled: row.issues_filed_json
+      ? (JSON.parse(row.issues_filed_json) as Array<{
+          identifier: string;
+          title: string;
+        }>)
+      : undefined,
+    findingsRejected: row.findings_rejected_json
+      ? (JSON.parse(row.findings_rejected_json) as Array<{
+          finding: string;
+          reason: string;
+        }>)
+      : undefined,
+    costUsd: row.cost_usd ?? undefined,
+  }));
+}
+
+interface StateTransitionRow {
+  id: string;
+  issue_id: string;
+  issue_identifier: string;
+  from_state: string | null;
+  to_state: string;
+  timestamp: number;
+  agent_id: string | null;
+  reason: string | null;
+}
+
+export async function insertStateTransition(
+  db: Database,
+  transition: StateTransition,
+): Promise<void> {
+  await withDbRetry(
+    () =>
+      db.run(
+        `INSERT OR REPLACE INTO state_transitions
+         (id, issue_id, issue_identifier, from_state, to_state, timestamp, agent_id, reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          transition.id,
+          transition.issueId,
+          transition.issueIdentifier,
+          transition.fromState ?? null,
+          transition.toState,
+          transition.timestamp,
+          transition.agentId ?? null,
+          transition.reason ?? null,
+        ],
+      ),
+    "insertStateTransition",
+    transition,
+  );
+}
+
+export function getStateTransitions(
+  db: Database,
+  issueId: string,
+): StateTransition[] {
+  const rows = db
+    .query<StateTransitionRow, [string]>(
+      `SELECT id, issue_id, issue_identifier, from_state, to_state, timestamp, agent_id, reason
+       FROM state_transitions
+       WHERE issue_id = ?
+       ORDER BY timestamp ASC`,
+    )
+    .all(issueId);
+  return rows.map((row) => ({
+    id: row.id,
+    issueId: row.issue_id,
+    issueIdentifier: row.issue_identifier,
+    fromState: row.from_state ?? undefined,
+    toState: row.to_state,
+    timestamp: row.timestamp,
+    agentId: row.agent_id ?? undefined,
+    reason: row.reason ?? undefined,
+  }));
+}
+
+interface IssueFailureCountRow {
+  linear_issue_id: string;
+  failure_count: number;
+}
+
+/**
+ * Returns failure counts per Linear issue UUID, counting only failed/timed_out
+ * runs that occurred after the most recent completed run for each issue.
+ * Issues with no failures after their last success are excluded.
+ * Results are ordered by most recent failure, capped at `limit` entries.
+ */
+export function getIssueFailureCounts(
+  db: Database,
+  limit = 1000,
+): Map<string, number> {
+  const rows = db
+    .query<IssueFailureCountRow, [number]>(
+      `WITH last_success AS (
+         SELECT linear_issue_id, MAX(finished_at) AS success_at
+         FROM agent_runs
+         WHERE linear_issue_id IS NOT NULL AND status = 'completed'
+         GROUP BY linear_issue_id
+       )
+       SELECT a.linear_issue_id, COUNT(*) AS failure_count
+       FROM agent_runs a
+       LEFT JOIN last_success ls ON a.linear_issue_id = ls.linear_issue_id
+       WHERE a.linear_issue_id IS NOT NULL
+         AND a.status IN ('failed', 'timed_out')
+         AND a.finished_at > COALESCE(ls.success_at, 0)
+       GROUP BY a.linear_issue_id
+       ORDER BY MAX(a.finished_at) DESC
+       LIMIT ?`,
+    )
+    .all(limit);
+
+  const result = new Map<string, number>();
+  for (const row of rows) {
+    result.set(row.linear_issue_id, row.failure_count);
+  }
+  return result;
 }

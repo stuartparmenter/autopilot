@@ -2,6 +2,11 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { info, warn } from "./logger";
 
+/** Prefix applied to all autopilot-managed clone names. Used to namespace
+ * autopilot clones and restrict sweepClones() to only remove autopilot-owned
+ * directories, leaving human-created clones untouched. */
+export const AUTOPILOT_PREFIX = "ap-";
+
 function clonePath(projectPath: string, name: string): string {
   return resolve(projectPath, ".claude", "clones", name);
 }
@@ -165,6 +170,12 @@ export async function createClone(
     );
   }
 
+  // Disable commit/tag signing in the clone — the sandbox may not have
+  // access to GPG/SSH signing keys and we don't need signed commits.
+  // This overrides any global config (e.g. commit.gpgsign=true).
+  gitSync(dest, ["config", "commit.gpgsign", "false"]);
+  gitSync(dest, ["config", "tag.gpgsign", "false"]);
+
   // Set bot identity in the clone's local config.
   if (gitIdentity) {
     const nameErr = gitSync(dest, [
@@ -193,6 +204,20 @@ export async function createClone(
   if (fetchErr) {
     throw new Error(
       `Failed to fetch from origin in clone '${name}': ${fetchErr}`,
+    );
+  }
+
+  // Reset the default branch to match GitHub. The --shared clone copied objects
+  // from the local repo, which may be behind origin. New branches must start
+  // from the latest GitHub commit, not a stale local one.
+  const resetErr = gitSync(dest, [
+    "reset",
+    "--hard",
+    `origin/${defaultBranch}`,
+  ]);
+  if (resetErr) {
+    throw new Error(
+      `Failed to reset '${defaultBranch}' to origin in clone '${name}': ${resetErr}`,
     );
   }
 
@@ -281,7 +306,9 @@ export async function sweepClones(
     return;
   }
 
-  const stale = entries.filter((name) => !activeNames.has(name));
+  const stale = entries.filter(
+    (name) => name.startsWith(AUTOPILOT_PREFIX) && !activeNames.has(name),
+  );
   if (stale.length > 0) {
     info(`Sweeping ${stale.length} stale clone(s): ${stale.join(", ")}`);
   }

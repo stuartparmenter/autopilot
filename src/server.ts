@@ -1,16 +1,24 @@
 import type { Database } from "bun:sqlite";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
 import { DASHBOARD_CSS } from "./dashboard-styles";
 import type { AutopilotConfig } from "./lib/config";
+import { deleteOAuthToken, saveOAuthToken } from "./lib/db";
 import { resetClient } from "./lib/linear";
 import {
   buildOAuthUrl,
   exchangeCodeForToken,
   saveStoredToken,
 } from "./lib/linear-oauth";
+import {
+  parseGitHubEventType,
+  parseLinearEventType,
+  verifyGitHubSignature,
+  verifyLinearSignature,
+  type WebhookTrigger,
+} from "./lib/webhooks";
 import type { AppState } from "./state";
 
 const ACTIVITY_SAYINGS = [
@@ -28,6 +36,13 @@ const ACTIVITY_SAYINGS = [
 
 function randomSaying(): string {
   return ACTIVITY_SAYINGS[Math.floor(Math.random() * ACTIVITY_SAYINGS.length)];
+}
+
+export interface WebhookOptions {
+  trigger: WebhookTrigger;
+  linearSecret: string;
+  githubSecret: string;
+  readyStateName: string;
 }
 
 export interface DashboardOptions {
@@ -236,7 +251,11 @@ export function computeHealth(
   };
 }
 
-export function createApp(state: AppState, options?: DashboardOptions): Hono {
+export function createApp(
+  state: AppState,
+  options?: DashboardOptions,
+  webhooks?: WebhookOptions,
+): Hono {
   const app = new Hono();
 
   app.onError((e, c) => {
@@ -312,14 +331,27 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
         400,
       );
     }
+    const state = randomBytes(16).toString("hex");
+    setCookie(c, "oauth_state", state, {
+      httpOnly: true,
+      sameSite: "Lax",
+      path: "/",
+      maxAge: 600, // 10 minutes
+      secure: options?.secureCookie,
+    });
     const redirectUri = new URL("/auth/linear/callback", c.req.url).toString();
-    const url = buildOAuthUrl(clientId, redirectUri);
+    const url = buildOAuthUrl(clientId, redirectUri, state);
     return c.redirect(url);
   });
 
   app.get("/auth/linear/callback", async (c) => {
     const code = c.req.query("code");
+    const stateParam = c.req.query("state");
     const error = c.req.query("error");
+    const storedState = getCookie(c, "oauth_state");
+
+    // Clear the state cookie regardless of outcome
+    deleteCookie(c, "oauth_state", { path: "/" });
 
     if (error) {
       return c.html(
@@ -327,6 +359,15 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
         400,
       );
     }
+
+    // Verify state to prevent CSRF attacks
+    if (!storedState || !stateParam || !safeCompare(stateParam, storedState)) {
+      return c.html(
+        "<p>Error: OAuth state mismatch. Please try again.</p>",
+        400,
+      );
+    }
+
     if (!code) {
       return c.html("<p>Error: No authorization code received.</p>", 400);
     }
@@ -352,18 +393,21 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
         redirectUri,
       );
       if (options?.db) {
+        // Write to legacy table to update in-memory cache for getCurrentLinearToken()
         saveStoredToken(options.db, token);
+        // Also write to oauth_tokens table for ENG-107 auto-refresh client
+        saveOAuthToken(options.db, "linear", {
+          accessToken: token.accessToken,
+          refreshToken: token.refreshToken ?? "",
+          expiresAt: token.expiresAt,
+          tokenType: "Bearer",
+          scope: "read,write,issues:create,comments:create",
+          actor: "application",
+        });
       }
-      // Reset the Linear SDK client so it picks up the new OAuth token
+      // Force the Linear client to re-initialize with the new token
       resetClient();
-      return c.html(`<!doctype html>
-<html lang="en">
-  <head><meta charset="utf-8"><title>Linear Connected</title></head>
-  <body>
-    <p>Linear OAuth connected successfully. The autopilot will now act as the app user.</p>
-    <p><a href="/">Back to dashboard</a></p>
-  </body>
-</html>`);
+      return c.redirect("/");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return c.html(
@@ -371,6 +415,13 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
         500,
       );
     }
+  });
+
+  app.post("/auth/linear/disconnect", (c) => {
+    if (options?.db) {
+      deleteOAuthToken(options.db, "linear");
+    }
+    return c.redirect("/");
   });
 
   // --- HTML Shell ---
@@ -438,6 +489,18 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
                 hx-trigger="load, every 30s"
                 hx-swap="innerHTML"
               ></div>
+              <div
+                class="cost-trends-bar"
+                hx-get="/partials/cost-trends"
+                hx-trigger="load, every 60s"
+                hx-swap="innerHTML"
+              ></div>
+              <div
+                class="failure-analysis-bar"
+                hx-get="/partials/failure-analysis"
+                hx-trigger="load, every 60s"
+                hx-swap="innerHTML"
+              ></div>
             </header>
             <div class="layout">
               <div class="sidebar">
@@ -460,6 +523,20 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
                   id="history-list"
                   hx-get="/partials/history"
                   hx-trigger="load, every 10s"
+                  hx-swap="innerHTML"
+                ></div>
+                <div class="section-title">Planning History</div>
+                <div
+                  id="planning-history-list"
+                  hx-get="/partials/planning-history"
+                  hx-trigger="load, every 30s"
+                  hx-swap="innerHTML"
+                ></div>
+                <div class="section-title">Cost Tracking</div>
+                <div
+                  id="cost-section"
+                  hx-get="/partials/costs"
+                  hx-trigger="load, every 30s"
                   hx-swap="innerHTML"
                 ></div>
               </div>
@@ -503,6 +580,54 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
     }
     const snapshot = state.getBudgetSnapshot(options.config);
     return c.json({ enabled: true, ...snapshot });
+  });
+
+  app.get("/api/cost-trends", (c) => {
+    const trends = state.getCostTrends();
+    if (!trends) {
+      return c.json({ enabled: false });
+    }
+    return c.json({ enabled: true, ...trends });
+  });
+
+  app.get("/api/costs", (c) => {
+    const analytics = state.getAnalytics();
+    if (!analytics) {
+      return c.json({ enabled: false });
+    }
+    const dailyCosts = state.getDailyCosts(30);
+    const perIssueCosts = state.getPerIssueCosts(50);
+    return c.json({
+      enabled: true,
+      totalCostUsd: analytics.totalCostUsd,
+      dailyCosts,
+      perIssueCosts,
+    });
+  });
+
+  app.get("/api/costs/daily", (c) => {
+    const days = parseInt(c.req.query("days") ?? "30", 10);
+    const safeDays = Math.min(Math.max(days, 1), 365);
+    const dailyCosts = state.getDailyCosts(safeDays);
+    return c.json({ dailyCosts });
+  });
+
+  app.get("/api/planning/history", (c) => {
+    const history = state.getPlanningHistory();
+    return c.json({ sessions: history });
+  });
+
+  app.get("/api/failure-analysis", (c) => {
+    const analysis = state.getFailureAnalysis();
+    if (!analysis) {
+      return c.json({ enabled: false });
+    }
+    return c.json({ enabled: true, ...analysis });
+  });
+
+  app.get("/api/planning-history", (c) => {
+    const sessions = state.getPlanningHistory();
+    return c.json({ sessions });
   });
 
   app.get("/health", (c) => {
@@ -795,6 +920,212 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
     );
   });
 
+  app.get("/partials/planning-history", (c) => {
+    const sessions = state.getPlanningHistory();
+    if (sessions.length === 0) {
+      return c.html(
+        html`<div
+          style="padding: 12px 16px; color: var(--text-dim); font-size: 12px"
+        >
+          No planning sessions yet
+        </div>`,
+      );
+    }
+    return c.html(
+      html`${raw(
+        sessions
+          .slice(0, 10)
+          .map((s) => {
+            const durationSec = Math.round((s.finishedAt - s.startedAt) / 1000);
+            const durationStr =
+              durationSec >= 60
+                ? `${Math.floor(durationSec / 60)}m`
+                : `${durationSec}s`;
+            const costStr = s.costUsd ? ` \u00b7 $${s.costUsd.toFixed(4)}` : "";
+            const dateStr = new Date(s.finishedAt).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+            });
+            const timeStr = new Date(s.finishedAt).toLocaleTimeString("en-US", {
+              hour12: false,
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            const summaryText = s.summary
+              ? s.summary.slice(0, 80) + (s.summary.length > 80 ? "\u2026" : "")
+              : "";
+            const dotClass =
+              s.status === "completed"
+                ? "completed"
+                : s.status === "failed"
+                  ? "failed"
+                  : "timed_out";
+            return `<div class="planning-card" hx-get="/partials/planning-session/${escapeHtml(s.id)}" hx-target="#main-panel" hx-swap="innerHTML">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span><span class="status-dot ${dotClass}"></span>Planning</span>
+              <span style="font-size:11px;color:var(--text-dim)">${escapeHtml(dateStr)} ${escapeHtml(timeStr)}</span>
+            </div>
+            <div class="meta">${escapeHtml(durationStr)}${s.issuesFiledCount > 0 ? ` \u00b7 ${String(s.issuesFiledCount)} issues filed` : ""}${escapeHtml(costStr)}</div>
+            ${summaryText ? `<div class="summary">${escapeHtml(summaryText)}</div>` : ""}
+          </div>`;
+          })
+          .join(""),
+      )}`,
+    );
+  });
+
+  app.get("/partials/planning-session/:id", (c) => {
+    const id = c.req.param("id");
+    const sessions = state.getPlanningHistory();
+    const session = sessions.find((s) => s.id === id);
+    if (!session) {
+      return c.html(html`<div class="empty-state">Session not found</div>`);
+    }
+    const durationMs = session.finishedAt - session.startedAt;
+    const durationStr = `${Math.round(durationMs / 1000)}s`;
+    const costStr = session.costUsd ? `$${session.costUsd.toFixed(4)}` : "";
+    const dateStr = new Date(session.startedAt).toLocaleString("en-US", {
+      hour12: false,
+    });
+
+    const issuesHtml =
+      session.issuesFiled && session.issuesFiled.length > 0
+        ? `<ul class="planning-issues-list">${session.issuesFiled
+            .map(
+              (i) =>
+                `<li><span class="issue-id">${escapeHtml(i.identifier)}</span> ${escapeHtml(i.title)}</li>`,
+            )
+            .join("")}</ul>`
+        : `<div style="color:var(--text-dim);font-size:11px">None</div>`;
+
+    const findingsHtml =
+      session.findingsRejected && session.findingsRejected.length > 0
+        ? `<ul class="planning-findings">${session.findingsRejected
+            .map(
+              (f) =>
+                `<li>${escapeHtml(f.finding)}<div class="reason">${escapeHtml(f.reason)}</div></li>`,
+            )
+            .join("")}</ul>`
+        : `<div style="color:var(--text-dim);font-size:11px">None</div>`;
+
+    return c.html(html`
+      <div class="planning-detail">
+        <div
+          style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--border)"
+        >
+          <div>
+            <span class="status-dot ${session.status}"></span>
+            <strong>Planning Session</strong>
+          </div>
+          <div class="meta">
+            ${escapeHtml(dateStr)} &middot; ${durationStr}${
+              costStr ? html` &middot; ${costStr}` : ""
+            }
+          </div>
+        </div>
+        ${
+          session.summary
+            ? html`<div style="margin-top:12px;font-size:12px">
+              ${session.summary}
+            </div>`
+            : ""
+        }
+        <div
+          style="font-size:12px;font-weight:600;color:var(--purple);margin-top:12px;margin-bottom:6px"
+        >
+          Issues Filed (${String(session.issuesFiledCount)})
+        </div>
+        ${raw(issuesHtml)}
+        <div
+          style="font-size:12px;font-weight:600;color:var(--purple);margin-top:12px;margin-bottom:6px"
+        >
+          Findings Rejected
+        </div>
+        ${raw(findingsHtml)}
+      </div>
+    `);
+  });
+
+  // --- Webhook endpoints ---
+
+  if (webhooks) {
+    const { trigger, linearSecret, githubSecret, readyStateName } = webhooks;
+    // Track delivery IDs to deduplicate retried webhook deliveries
+    const processedDeliveries = new Set<string>();
+
+    app.post("/webhooks/linear", async (c) => {
+      const rawBody = await c.req.text();
+      const signature = c.req.header("x-linear-signature") ?? "";
+      if (!verifyLinearSignature(linearSecret, rawBody, signature)) {
+        return c.json({ error: "Invalid signature" }, 401);
+      }
+
+      const deliveryId =
+        c.req.header("x-linear-delivery") ?? crypto.randomUUID();
+      if (processedDeliveries.has(deliveryId)) {
+        return c.json({ ok: true });
+      }
+      processedDeliveries.add(deliveryId);
+
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody);
+      } catch {
+        return c.json({ error: "Invalid JSON" }, 400);
+      }
+
+      const eventType = parseLinearEventType(
+        { event: c.req.header("x-linear-event") },
+        body,
+        readyStateName,
+      );
+      if (eventType === "issue_ready") {
+        trigger.fire();
+      }
+
+      return c.json({ ok: true });
+    });
+
+    app.post("/webhooks/github", async (c) => {
+      const rawBody = await c.req.text();
+      const signature = c.req.header("x-hub-signature-256") ?? "";
+      if (!verifyGitHubSignature(githubSecret, rawBody, signature)) {
+        return c.json({ error: "Invalid signature" }, 401);
+      }
+
+      const deliveryId =
+        c.req.header("x-github-delivery") ?? crypto.randomUUID();
+      if (processedDeliveries.has(deliveryId)) {
+        return c.json({ ok: true });
+      }
+      processedDeliveries.add(deliveryId);
+
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody);
+      } catch {
+        return c.json({ error: "Invalid JSON" }, 400);
+      }
+
+      const eventType = parseGitHubEventType(
+        { event: c.req.header("x-github-event") },
+        body,
+      );
+      if (eventType === "ci_failure") {
+        trigger.fire();
+      }
+
+      return c.json({ ok: true });
+    });
+  } else {
+    app.post("/webhooks/linear", (c) =>
+      c.json({ error: "Webhooks not configured" }, 404),
+    );
+    app.post("/webhooks/github", (c) =>
+      c.json({ error: "Webhooks not configured" }, 404),
+    );
+  }
+
   app.get("/partials/budget", (c) => {
     if (!options?.config) {
       return c.html(html`<div></div>`);
@@ -903,7 +1234,176 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
     `);
   });
 
+  app.get("/partials/cost-trends", (c) => {
+    const trends = state.getCostTrends();
+    if (!trends) {
+      return c.html(html`<div></div>`);
+    }
+    const recentDays = trends.daily.slice(-7);
+    if (recentDays.length === 0) {
+      return c.html(html`<div></div>`);
+    }
+    const maxCost = Math.max(...recentDays.map((d) => d.totalCost), 0.01);
+    const dayRows = recentDays
+      .map((d) => {
+        const pct = Math.round((d.totalCost / maxCost) * 100);
+        const dateLabel = escapeHtml(d.date.slice(5)); // "MM-DD"
+        const amount = escapeHtml(`$${d.totalCost.toFixed(2)}`);
+        return `<div class="cost-trend-row"><span class="cost-trend-date">${dateLabel}</span><div class="cost-trend-bar-track"><div class="cost-trend-bar-fill" style="width:${pct}%"></div></div><span class="cost-trend-amount">${amount}</span></div>`;
+      })
+      .join("");
+
+    const statusParts = trends.byStatus.map(
+      (b) =>
+        `${escapeHtml(b.status.charAt(0).toUpperCase() + b.status.slice(1))}: $${b.totalCost.toFixed(2)}`,
+    );
+    const statusLine = statusParts.join(" | ");
+
+    let weekLine = "";
+    if (trends.weekly.length >= 2) {
+      const thisWeek = trends.weekly[trends.weekly.length - 1];
+      const lastWeek = trends.weekly[trends.weekly.length - 2];
+      weekLine = `This wk: $${thisWeek.totalCost.toFixed(2)}  Last wk: $${lastWeek.totalCost.toFixed(2)}`;
+    } else if (trends.weekly.length === 1) {
+      weekLine = `This wk: $${trends.weekly[0].totalCost.toFixed(2)}`;
+    }
+
+    return c.html(html`
+      <div class="cost-trends-section">
+        ${raw(dayRows)}
+        ${
+          weekLine
+            ? html`<div class="cost-trends-summary">${weekLine}</div>`
+            : ""
+        }
+        ${
+          statusLine
+            ? html`<div class="cost-trends-summary">${statusLine}</div>`
+            : ""
+        }
+      </div>
+    `);
+  });
+
+  app.get("/partials/costs", (c) => {
+    const dailyCosts = state.getDailyCosts(7);
+    const perIssueCosts = state.getPerIssueCosts(10);
+
+    if (dailyCosts.length === 0 && perIssueCosts.length === 0) {
+      return c.html(
+        html`<div
+          style="padding: 12px 16px; color: var(--text-dim); font-size: 12px"
+        >
+          No cost data available yet
+        </div>`,
+      );
+    }
+
+    const maxDailyCost = Math.max(
+      ...dailyCosts.map((d) => d.totalCostUsd),
+      0.01,
+    );
+
+    return c.html(html`
+      <div class="cost-section">
+        ${
+          dailyCosts.length > 0
+            ? html`
+              <div class="cost-subtitle">Last 7 Days</div>
+              ${raw(
+                dailyCosts
+                  .map((d) => {
+                    const pct = Math.round(
+                      (d.totalCostUsd / maxDailyCost) * 100,
+                    );
+                    return `<div class="cost-day-row">
+                  <span class="cost-date">${escapeHtml(d.date.slice(5))}</span>
+                  <div class="cost-bar-bg"><div class="cost-bar-fill" style="width:${pct}%"></div></div>
+                  <span class="cost-amount">$${d.totalCostUsd.toFixed(2)}</span>
+                  <span class="cost-runs">${d.runCount}r</span>
+                </div>`;
+                  })
+                  .join(""),
+              )}
+            `
+            : ""
+        }
+        ${
+          perIssueCosts.length > 0
+            ? html`
+              <div class="cost-subtitle">Top Issues by Cost</div>
+              ${raw(
+                perIssueCosts
+                  .map((i) => {
+                    return `<div class="cost-issue-row">
+                  <span class="issue-id">${escapeHtml(i.issueId)}</span>
+                  <span class="cost-amount">$${i.totalCostUsd.toFixed(2)}</span>
+                  <span class="cost-runs">${i.runCount}r</span>
+                </div>`;
+                  })
+                  .join(""),
+              )}
+            `
+            : ""
+        }
+      </div>
+    `);
+  });
+
+  app.get("/partials/failure-analysis", (c) => {
+    const analysis = state.getFailureAnalysis();
+    if (!analysis) {
+      return c.html(html`<div></div>`);
+    }
+
+    const typeParts = analysis.byType.map(
+      (b) =>
+        `${escapeHtml(b.status === "timed_out" ? "Timed Out" : "Failed")}: ${b.count}`,
+    );
+    const typeLine = typeParts.join(" | ");
+
+    if (!typeLine) {
+      return c.html(html`<div></div>`);
+    }
+
+    const recentDays = analysis.trend.slice(-7);
+    const maxRate = Math.max(...recentDays.map((d) => d.failureRate), 0.01);
+    const dayRows = recentDays
+      .map((d) => {
+        const pct = Math.round((d.failureRate / maxRate) * 100);
+        const dateLabel = escapeHtml(d.date.slice(5)); // "MM-DD"
+        const rateLabel = escapeHtml(`${Math.round(d.failureRate * 100)}%`);
+        return `<div class="cost-trend-row"><span class="cost-trend-date">${dateLabel}</span><div class="cost-trend-bar-track"><div class="cost-trend-bar-fill" style="width:${pct}%;background:var(--red)"></div></div><span class="cost-trend-amount">${rateLabel}</span></div>`;
+      })
+      .join("");
+
+    const repeatRows = analysis.repeatFailures
+      .map((r) => {
+        const issueId = escapeHtml(r.issueId);
+        const issueTitle = escapeHtml(r.issueTitle);
+        const lastError = r.lastError ? escapeHtml(r.lastError) : "";
+        return `<div class="repeat-failure-item"><span class="repeat-failure-count">${r.failureCount}x</span><span title="${issueTitle}">${issueId}</span>${lastError ? `<span class="repeat-failure-error">${lastError}</span>` : ""}</div>`;
+      })
+      .join("");
+
+    return c.html(html`
+      <div class="failure-analysis-section">
+        <div class="cost-trends-summary">${typeLine}</div>
+        ${recentDays.length > 0 ? raw(dayRows) : ""}
+        ${repeatRows ? raw(repeatRows) : ""}
+      </div>
+    `);
+  });
+
   return app;
+}
+
+export function formatRelativeTime(ms: number): string {
+  const diff = Math.round((Date.now() - ms) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
 export function formatDuration(seconds: number): string {

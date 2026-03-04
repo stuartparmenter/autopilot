@@ -1,15 +1,39 @@
 import type { Database } from "bun:sqlite";
 import { type CircuitState, defaultRegistry } from "./lib/circuit-breaker";
 import { type AutopilotConfig, DEFAULTS } from "./lib/config";
-import type { AnalyticsResult, TodayAnalyticsResult } from "./lib/db";
+import type {
+  AnalyticsResult,
+  CostByStatusEntry,
+  DailyCostEntry,
+  DailyCostRow,
+  FailureByTypeEntry,
+  FailureTrendEntry,
+  PerIssueCostRow,
+  RepeatFailureEntry,
+  TodayAnalyticsResult,
+  WeeklyCostEntry,
+} from "./lib/db";
 import {
   getActivityLogs,
   getAnalytics,
+  getCostByStatus,
+  getDailyCosts,
+  getDailyCostTrend,
+  getFailuresByType,
+  getFailureTrend,
+  getIssueFailureCounts,
+  getPerIssueCosts,
+  getRecentPlanningSessions,
   getRecentRuns,
+  getRepeatFailures,
+  getSpendLogEntries,
   getTodayAnalytics,
+  getWeeklyCostTrend,
   insertActivityLogs,
   insertAgentRun,
   insertConversationLog,
+  insertPlanningSession,
+  insertStateTransition,
 } from "./lib/db";
 import { sanitizeMessage } from "./lib/sanitize";
 
@@ -49,7 +73,9 @@ export interface AgentResult {
   numTurns?: number;
   sessionId?: string;
   error?: string;
+  exitReason?: string;
   reviewedAt?: number;
+  runType?: string;
 }
 
 export interface QueueInfo {
@@ -83,6 +109,17 @@ export interface PlanningSession {
   issuesFiled?: Array<{ identifier: string; title: string }>;
   findingsRejected?: Array<{ finding: string; reason: string }>;
   costUsd?: number;
+}
+
+export interface StateTransition {
+  id: string;
+  issueId: string;
+  issueIdentifier: string;
+  fromState?: string;
+  toState: string;
+  timestamp: number;
+  agentId?: string;
+  reason?: string;
 }
 
 export interface ApiHealthStatus {
@@ -132,6 +169,13 @@ export class AppState {
   setDb(db: Database): void {
     this.db = db;
     this.history = getRecentRuns(db, MAX_HISTORY);
+    this.planningHistory = getRecentPlanningSessions(db, 20);
+    const counts = getIssueFailureCounts(db, MAX_FAILURE_ENTRIES);
+    for (const [issueId, count] of counts) {
+      this.issueFailureCount.set(issueId, count);
+    }
+    const cutoffMs = Date.now() - 32 * 24 * 60 * 60 * 1000;
+    this.spendLog = getSpendLogEntries(db, cutoffMs);
   }
 
   addAgent(
@@ -169,6 +213,8 @@ export class AppState {
       numTurns?: number;
       sessionId?: string;
       error?: string;
+      exitReason?: string;
+      runType?: string;
     },
     rawMessages?: unknown[],
   ): Promise<void> {
@@ -197,6 +243,8 @@ export class AppState {
       numTurns: agent.numTurns,
       sessionId: meta?.sessionId,
       error: agent.error,
+      exitReason: meta?.exitReason,
+      runType: meta?.runType,
     };
 
     // Update in-memory state synchronously (before any awaits) so callers
@@ -278,9 +326,45 @@ export class AppState {
     return getTodayAnalytics(this.db);
   }
 
+  getCostTrends(): {
+    daily: DailyCostEntry[];
+    weekly: WeeklyCostEntry[];
+    byStatus: CostByStatusEntry[];
+  } | null {
+    if (!this.db) return null;
+    return {
+      daily: getDailyCostTrend(this.db),
+      weekly: getWeeklyCostTrend(this.db),
+      byStatus: getCostByStatus(this.db),
+    };
+  }
+
+  getFailureAnalysis(): {
+    byType: FailureByTypeEntry[];
+    trend: FailureTrendEntry[];
+    repeatFailures: RepeatFailureEntry[];
+  } | null {
+    if (!this.db) return null;
+    return {
+      byType: getFailuresByType(this.db),
+      trend: getFailureTrend(this.db),
+      repeatFailures: getRepeatFailures(this.db),
+    };
+  }
+
   getActivityLogsForRun(agentRunId: string): ActivityEntry[] {
     if (!this.db) return [];
     return getActivityLogs(this.db, agentRunId);
+  }
+
+  getDailyCosts(days?: number): DailyCostRow[] {
+    if (!this.db) return [];
+    return getDailyCosts(this.db, days);
+  }
+
+  getPerIssueCosts(limit?: number): PerIssueCostRow[] {
+    if (!this.db) return [];
+    return getPerIssueCosts(this.db, limit);
   }
 
   getPlanningStatus(): PlanningStatus {
@@ -295,6 +379,15 @@ export class AppState {
     this.planningHistory.unshift(session);
     if (this.planningHistory.length > 20) {
       this.planningHistory = this.planningHistory.slice(0, 20);
+    }
+    if (this.db) {
+      void insertPlanningSession(this.db, session);
+    }
+  }
+
+  logStateTransition(transition: StateTransition): void {
+    if (this.db) {
+      void insertStateTransition(this.db, transition);
     }
   }
 
