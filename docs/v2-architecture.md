@@ -879,6 +879,216 @@ Gastown supports per-rig MCP configuration:
 One knowledge graph database per rig (project). The CTO crew member is the
 primary maintainer but all agents read from and write to it.
 
+## Autonomous Behavior: The Loop Problem
+
+### How Gastown Works (Interactive, Not Autonomous)
+
+The Mayor is an **interactive coordinator** — you talk to it, it dispatches
+work. When there's nothing on its hook and no mail, it waits for instructions.
+
+The **autonomous** pieces of Gastown are:
+- **Deacon** — background patrol loop (25 steps, runs continuously). Monitors
+  health, cleans up orphans, checks convoys, resolves cross-rig dependencies.
+- **Witness** — per-rig patrol loop. Surveys polecats, nudges stuck ones,
+  restarts crashed ones, recovers abandoned beads.
+- **Refinery** — per-rig merge queue processor. Sequential merge, gate
+  execution, bisection on failure.
+- **Dogs** — short-lived Deacon helpers for specific infrastructure tasks
+  (convoy feeding, orphan scanning, session GC).
+- **Daemon** — Go process that monitors heartbeats and restarts dead sessions.
+
+But **none of these automatically plan when the backlog is empty** or
+**automatically sling beads to polecats** on their own initiative.
+Convoy feeding happens, but only for existing convoys — nobody creates
+the convoys in the first place without the Mayor or a human.
+
+### What v1 Does Autonomously
+
+Autopilot v1's event loop (`main.ts`) runs four things on a timer:
+1. **Auto-execute** — poll for Ready issues, spawn agents up to `parallel` limit
+2. **Auto-monitor** — check In Review issues for CI failures, spawn fixers
+3. **Auto-plan** — when backlog drops below threshold, spawn CTO planning agent
+4. **Auto-triage** — check projects for triage issues, spawn project owners
+
+This is the behavior we need to preserve.
+
+### The Deacon Dog Approach
+
+Gastown's Deacon + Dog pattern is designed exactly for this. The Deacon runs
+a continuous patrol loop, and when it detects conditions that need action,
+it dispatches Dogs to handle them. The `mol-convoy-feed` formula is the
+existing example: the Deacon detects a stranded convoy (ready beads, no
+workers), dispatches a Dog to feed it.
+
+We extend this pattern with two new Dogs:
+
+#### Dog: `backlog-planner`
+
+Dispatched by the Deacon when the ready bead count drops below threshold.
+
+```
+Deacon patrol step: "check-backlog-health"
+  1. bd ready --json | count
+  2. If count < threshold AND last planning run > min_interval:
+     → Dispatch backlog-planner dog
+  3. If count == 0 AND no active convoys:
+     → Dispatch backlog-planner dog (urgent)
+```
+
+The dog runs the `autopilot-planning` formula:
+- Spawns specialist investigation convoy (Scout, Security, Quality, Architect)
+- Synthesizes findings
+- Creates beads with dependency chains
+- Mails CTO with new beads for pre-flight review
+- Returns to kennel
+
+This replaces `src/planner.ts` + the `shouldRunPlanning()` threshold check.
+
+#### Dog: `convoy-launcher`
+
+Dispatched by the Deacon when ready beads exist but no active convoy
+is tracking them. Distinct from `convoy-feed` which feeds *existing*
+convoys — this creates new convoys and triggers CTO pre-flight.
+
+```
+Deacon patrol step: "check-untracked-ready-beads"
+  1. bd ready --json → list of ready beads
+  2. gt convoy list --json → list of active convoys
+  3. Filter: beads not tracked by any convoy
+  4. If untracked ready beads exist:
+     → Group beads by subsystem / area (using knowledge graph)
+     → Create convoy(s) for each group
+     → Mail CTO to run pre-flight review
+     → After CTO approves, sling beads to polecats
+```
+
+This replaces v1's `fillSlots()` in `src/executor.ts`, but adds the CTO
+pre-flight step that v1 never had.
+
+### New Deacon Patrol Steps
+
+Added to `mol-deacon-patrol` (or as a custom extension):
+
+```toml
+[[steps]]
+id = "check-backlog-health"
+title = "Check backlog health and trigger planning if needed"
+needs = ["check-convoy-completion"]
+description = """
+Check if the ready bead backlog is healthy.
+
+1. Count ready beads:
+   bd ready --json | jq length
+
+2. Check planning cooldown:
+   - Read last planning timestamp from knowledge graph or bead
+   - If elapsed < min_interval (default 4h), skip
+
+3. If ready count < threshold (default 5):
+   Dispatch backlog-planner dog:
+   gt dog dispatch backlog-planner --var threshold={{threshold}}
+
+4. Log backlog health for patrol report:
+   ready_count=N, threshold=M, planning_triggered=yes/no
+"""
+
+[[steps]]
+id = "check-untracked-ready-beads"
+title = "Launch convoys for untracked ready beads"
+needs = ["check-backlog-health"]
+description = """
+Find ready beads not tracked by any active convoy, group them,
+and launch convoys with CTO pre-flight review.
+
+1. Get ready beads not in any convoy:
+   bd ready --json → ready list
+   gt convoy list --json → active convoys
+   Filter beads not tracked by any convoy
+
+2. If untracked beads exist:
+   - Query knowledge graph to group by subsystem/area
+   - Create convoy per group:
+     gt convoy create "Auto: <area>" <bead-ids> --notify
+   - Mail CTO for pre-flight review:
+     gt mail send <rig>/crew/cto -s "Pre-flight: <convoy>" \
+       -m "New convoy ready for architectural review"
+
+3. If no untracked beads:
+   Skip. All work is tracked.
+"""
+```
+
+### The Complete Autonomous Flow
+
+```
+                    Deacon Patrol (continuous loop)
+                              │
+               ┌──────────────┼──────────────┐
+               │              │              │
+        check-backlog    check-untracked   check-convoy
+        -health          -ready-beads      -completion
+               │              │              │
+               ▼              ▼              ▼
+        ┌────────────┐ ┌────────────┐ ┌────────────┐
+        │ Backlog    │ │ Convoy     │ │ Convoy     │
+        │ low?       │ │ launch     │ │ complete?  │
+        │            │ │ needed?    │ │            │
+        │ Yes → Dog: │ │ Yes → Dog: │ │ Yes →      │
+        │ backlog-   │ │ convoy-    │ │ auto-close │
+        │ planner    │ │ launcher   │ │ + notify   │
+        └─────┬──────┘ └─────┬──────┘ └────────────┘
+              │              │
+              ▼              ▼
+     Planning formula   CTO pre-flight
+     → new beads        → arch contract
+                         → sling to polecats
+                              │
+                              ▼
+                    ┌────────────────────┐
+                    │ Polecats execute   │
+                    │ (autopilot-work    │
+                    │  formula)          │
+                    │                    │
+                    │ Witness monitors   │
+                    └─────────┬──────────┘
+                              │
+                              ▼
+                    ┌────────────────────┐
+                    │ CTO post-flight    │
+                    │ (coherence review) │
+                    └─────────┬──────────┘
+                              │
+                              ▼
+                    ┌────────────────────┐
+                    │ Refinery merges    │
+                    └────────────────────┘
+```
+
+The entire flow is autonomous. The human can interact with the Mayor at
+any point to redirect, reprioritize, or add work — but the system runs
+on its own when left alone. This preserves v1's "start it and walk away"
+behavior while adding architectural coherence (CTO pre/post-flight) and
+proper merge queue processing (Refinery).
+
+### Why Dogs, Not an External Loop
+
+Dogs are better than an external script because:
+
+1. **They're inside the system** — they use `gt` commands, have access to
+   Beads, can mail other agents. An external script would need to shell
+   out to everything.
+2. **They're monitored** — the Deacon tracks Dog health. If a Dog crashes,
+   the Deacon notices and can retry. An external script is invisible.
+3. **They're audited** — Dog completions are logged in Beads. An external
+   script's actions are opaque.
+4. **They self-clean** — `gt dog done` returns them to the pool. No zombie
+   processes.
+5. **They follow the Gastown contract** — hook → execute → done. Consistent
+   with how everything else in the system works.
+
+The external loop (Option A) is a fallback if the Dog approach proves too
+complex, but the Dog approach is architecturally cleaner.
+
 ## What Gets Deleted from v1
 
 | v1 Component | Lines | Replacement |
