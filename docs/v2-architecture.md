@@ -59,112 +59,238 @@ v2 replaces the custom orchestration with Beads + Gastown, adds an agentic memor
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Agent Roles
+## Agent Organization
 
-### Mayor (CEO)
+### The Analogy
 
-The strategic layer. Decides *what* gets built and *why*. Does not make architectural decisions or write code.
+A medium-sized tech org exists to manage context and leverage expertise.
+The same forces that drive org design drive agent architecture:
 
-**Responsibilities:**
-- Strategic prioritization — what's worth building next
-- Resource allocation — how many agents, on what
-- Owns the "why" — reads and writes to the decision ledger
-- Kills work that no longer makes sense
-- Delegates all technical decisions to the CTO
+- **Context scope** — a CEO has broad/shallow context, an IC has narrow/deep
+- **Specialization** — security engineers see threats, product managers see user value
+- **Coordination cost** — too many reviewers on every change = expensive and slow
+- **Cross-team coherence** — architects exist because teams optimize locally
 
-**Replaces:** The human operator's role in v1 (manually curating the Linear backlog).
+Agents have advantages over humans (instant context loading, easy to multiply)
+but the same structural problems apply: without hierarchy and scoped expertise,
+10+ parallel agents produce locally correct but globally incoherent work.
 
-### CTO (new persistent role)
+### The Org Chart
 
-The architectural coherence layer. Owns *how* things fit together. This is the key missing piece in both v1 and current Gastown.
+```
+Mayor (CEO)
+│
+├── CTO ─────────────────────────────────────────────────────────
+│   │   Technical strategy, architectural coherence, owns the
+│   │   knowledge graph. The "keeper of how things fit together."
+│   │
+│   ├── Architects (ephemeral, convoy review legs)
+│   │   Cross-cutting coherence. Spawned by CTO when a convoy
+│   │   touches multiple subsystems. Not always needed.
+│   │
+│   ├── Tech Leads (ephemeral, per-project)
+│   │   Decompose epics into implementable beads with proper
+│   │   dependency chains. v1's "implementation planner" role.
+│   │   Understand the domain deeply enough to sequence work.
+│   │
+│   ├── Engineers (polecats)
+│   │   Implement individual beads. The bulk of the workforce.
+│   │   Ephemeral — do the work, self-clean, gone.
+│   │
+│   └── Fixers (polecats, spawned by Witness/Refinery)
+│       Repair CI failures, merge conflicts, test regressions.
+│
+├── Product ─────────────────────────────────────────────────────
+│   │   "Are we building the right thing? Does this deliver
+│   │   user value? Do the acceptance criteria make sense?"
+│   │
+│   ├── Product Manager (persistent crew, or planning convoy leg)
+│   │   Requirements, user stories, prioritization rationale.
+│   │   Participates in planning. Reviews beads for product
+│   │   coherence before engineers start.
+│   │
+│   └── Product Analyst (ephemeral, planning convoy leg)
+│       Data-driven prioritization. "This feature is used by
+│       3 callers. This one is used by 300."
+│
+├── Quality ─────────────────────────────────────────────────────
+│   │   "Is this reliable? Is it tested? Will it break at scale?"
+│   │
+│   └── QA Engineer (ephemeral, post-flight review leg)
+│       Test coverage, edge cases, reliability concerns.
+│       Spawned conditionally — not every change needs QA review.
+│
+├── Security ────────────────────────────────────────────────────
+│   │   "Does this introduce vulnerabilities? Does it handle
+│   │   auth/data correctly?"
+│   │
+│   └── Security Reviewer (ephemeral, review leg)
+│       Spawned when beads touch: auth, data handling, external
+│       APIs, user input, crypto, permissions. Not on every convoy.
+│
+└── Reviewer (persistent crew) ──────────────────────────────────
+    Reviews completed agent runs for patterns, cost, quality
+    trends. Feeds findings back into knowledge graph and
+    surfaces systemic issues to the CTO.
+```
 
-**Responsibilities:**
+### How This Maps to Reality
 
-1. **Pre-flight** — Before a batch of agents starts:
-   - Reviews the convoy of beads for internal coherence
-   - Queries the knowledge graph for relevant decisions, patterns, and constraints
-   - Produces an **architectural contract**: "These N tasks touch overlapping subsystems. Here are the interfaces they must respect. Here's what already exists that you must use rather than reinvent."
-   - Each agent receives this contract as context alongside its bead
+**Persistent agents (Crew members):** CTO, Product Manager, Reviewer.
+These maintain context across convoys. They're the institutional memory
+holders — they read from and write to the knowledge graph continuously.
 
-2. **In-flight** — While agents work:
-   - Periodically reviews agent branches for architectural consistency (not just "is the agent stuck?" which is the Witness's job)
-   - Flags when two agents are building toward conflicting designs
-   - Can pause or redirect agents via Beads messaging
+**Ephemeral specialists (Polecats, spawned as convoy legs):** Architects,
+Tech Leads, Engineers, Fixers, QA, Security. These are spawned for
+specific work, do their job, and self-clean. Their knowledge survives
+through the knowledge graph, not through their context window.
 
-3. **Post-flight** — Before the Refinery merges:
-   - Reviews completed work for architectural coherence as a set, not just individually
-   - "These two PRs merge cleanly but they've built two separate caching layers"
-   - Can block merge and create follow-up beads for reconciliation
+**The key difference from v1:** v1 has a flat structure — CTO plans,
+executors execute, monitor watches. There's no product perspective in the
+review cycle, no conditional specialist review, no tech lead decomposition
+step between "filed an issue" and "engineer starts coding."
 
-4. **Retrospective** — After work lands:
-   - Updates the knowledge graph: new components, changed interfaces, new patterns
-   - Records decisions with rationale, constraints, and invalidation conditions
-   - Surfaces stale assumptions to the Mayor
+### When Each Role Activates
 
-**Replaces:** The CTO planning agent from v1 (`prompts/cto.md`), but persistent rather than batch.
+Not every role participates in every convoy. The CTO decides which
+perspectives are needed based on what the beads touch:
 
-### Planner (adapted from v1 CTO agent)
+```
+                    ┌─────────────────────────────────────┐
+                    │         CTO Pre-Flight              │
+                    │                                     │
+                    │  Reads the convoy beads.             │
+                    │  Queries knowledge graph.            │
+                    │  Decides which review legs to spawn: │
+                    └─────────┬───────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              │               │               │
+         Always run     Conditional      Conditional
+              │               │               │
+              ▼               ▼               ▼
+     ┌─────────────┐ ┌──────────────┐ ┌─────────────┐
+     │ Architecture │ │   Security   │ │   Product   │
+     │   Review     │ │   Review     │ │   Review    │
+     │              │ │              │ │             │
+     │ "Do these    │ │ Triggered    │ │ Triggered   │
+     │  beads fit   │ │ when beads   │ │ when beads  │
+     │  together?"  │ │ touch auth,  │ │ change user │
+     │              │ │ data, APIs,  │ │ behavior,   │
+     │              │ │ permissions  │ │ add features│
+     └─────────────┘ └──────────────┘ └─────────────┘
+```
 
-Investigates the codebase and creates beads. Runs when the Mayor decides the backlog needs work.
+```
+                    ┌─────────────────────────────────────┐
+                    │         CTO Post-Flight             │
+                    │                                     │
+                    │  Reviews completed branches.         │
+                    │  Decides which review legs to spawn: │
+                    └─────────┬───────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              │               │               │
+         Always run     Conditional      Conditional
+              │               │               │
+              ▼               ▼               ▼
+     ┌─────────────┐ ┌──────────────┐ ┌─────────────┐
+     │ Architecture │ │   Security   │ │     QA      │
+     │  Coherence   │ │   Audit      │ │   Review    │
+     │              │ │              │ │             │
+     │ "Do these    │ │ "Did the     │ │ "Is test    │
+     │  branches    │ │  impl intro  │ │  coverage   │
+     │  create a    │ │  vulns?"     │ │  adequate?" │
+     │  coherent    │ │              │ │             │
+     │  system?"    │ │              │ │             │
+     └─────────────┘ └──────────────┘ └─────────────┘
+```
 
-**Responsibilities:**
-- Spawns specialist sub-agents (Scout, Security Analyst, Quality Engineer) to investigate
-- Groups findings into projects
-- Files beads with proper dependency chains
-- Reads knowledge graph to avoid duplicating past work or re-treading rejected ideas
-- Writes findings back to knowledge graph
+**Cost control:** A convoy of 5 routine bug fixes might only get
+architecture review. A convoy touching auth + API redesign gets
+architecture + security + product. The CTO's pre-flight step tags each
+convoy with `review_legs` based on heuristics:
 
-**Replaces:** `src/planner.ts` + `prompts/cto.md` from v1. The planning *methodology* survives; the TypeScript orchestration does not.
+| Bead touches... | Triggers |
+|---|---|
+| Multiple subsystems | Architecture review (always) |
+| Auth, crypto, permissions, user data | Security review |
+| User-facing behavior, new features, API changes | Product review |
+| Core infrastructure, data layer, performance | QA review |
+| Single file, isolated bugfix | Architecture only (lightweight) |
 
-### Project Owner (adapted from v1)
+This keeps the cost proportional to the risk. Simple changes flow fast.
+Complex changes get the scrutiny they need.
 
-Manages project scope and triages incoming beads.
+### Planning Cycle Roles
 
-**Responsibilities:**
-- Accepts or rejects triage beads
-- Spawns technical planners to decompose beads into sub-tasks
-- Monitors project health
-- Completes projects when all work is done
-- Queries knowledge graph for relevant context when triaging
+The planning cycle also uses specialist perspectives, but differently:
 
-**Replaces:** `src/projects.ts` + `prompts/project-owner.md` from v1.
+```
+Mayor says "backlog needs work"
+        │
+        ▼
+CTO runs autopilot-planning formula
+        │
+        ├── Scout — explore codebase, find improvement opportunities
+        ├── Security Analyst — identify security gaps
+        ├── Quality Engineer — find testing gaps, reliability issues
+        ├── Product Analyst — assess user impact, usage patterns
+        └── Architect — evaluate structural health, tech debt
+        │
+        ▼
+CTO synthesizes findings into beads
+Product Manager reviews for prioritization and product coherence
+Tech Lead decomposes epics into implementable sub-beads
+```
 
-### Executor / Polecat (adapted from v1)
+### Why This Scales Differently Than a Human Org
 
-Implements individual beads. The core worker role.
+In a real company, the CTO can't review every PR — they can't context-switch
+fast enough. So you delegate to VPs, directors, managers, and the CTO only
+sees escalations. The org chart exists because human memory and attention
+are bottlenecks.
 
-**Workflow (preserved from v1):**
-1. **Understand** — Read the bead, check dependencies, gather context
-2. **Query knowledge graph** — Find relevant decisions, patterns, constraints. Check the CTO's architectural contract for this batch.
-3. **Plan** — List files to change, approach, tests, risks
-4. **Implement** — Minimal changes, follow existing patterns
-5. **Validate** — Run tests, typecheck, lint
-6. **Record** — Write any non-trivial design decisions to knowledge graph
-7. **Ship** — Push branch, update bead status
+An agent CTO with a well-maintained knowledge graph doesn't have this
+limitation. It doesn't need to *remember* that you chose stateless JWT three
+months ago — it queries for it in 200ms. Pre-flight review for a convoy of
+10 beads looks like:
 
-**Key addition over v1:** Steps 2 and 6. Agents now *read from* and *write to* the knowledge graph as part of their workflow.
+1. For each bead: `search_hybrid("<bead summary>")` → relevant decisions
+2. `get_neighbors("<affected modules>")` → blast radius + concurrent work
+3. Cross-reference the set for conflicts
+4. Produce architectural contract
 
-**Replaces:** `src/executor.ts` + `prompts/executor.md` from v1.
+That's seconds, not hours. The CTO agent can plausibly review 30+ convoys
+per day because each review is targeted queries against the knowledge graph,
+not a deep re-read of the codebase.
 
-### Fixer (adapted from v1)
+**The scaling limit is the quality of the knowledge graph, not the CTO's
+attention.** If engineers are disciplined about the "record decisions" step
+in the executor workflow, the knowledge graph stays current and the CTO's
+queries return useful results. If they skip it, the graph decays and the
+CTO loses its advantage.
 
-Repairs CI failures and merge issues on in-flight work.
+This inverts the normal org design problem: instead of "how do we limit
+what the CTO needs to see?" it's "how do we make sure the knowledge graph
+has what the CTO needs to query?" The bottleneck moves from attention
+to data quality.
 
-**Replaces:** `prompts/fixer.md` from v1. Workflow unchanged but queries knowledge graph for relevant context.
+### Role Lifecycle Summary
 
-### Reviewer (adapted from v1)
-
-Reviews completed agent runs for quality, cost, and patterns.
-
-**Replaces:** `prompts/reviewer.md` from v1. Feeds findings into knowledge graph as observations.
-
-### Witness (Gastown native)
-
-Monitors agent lifecycle — stuck, crashed, looping agents. Gastown provides this out of the box.
-
-### Refinery (Gastown native)
-
-Sequential merge queue with conflict resolution. Gastown provides this, but the CTO reviews for architectural coherence *before* the Refinery processes the merge.
+| Role | Gastown Primitive | Persistence | When Active |
+|---|---|---|---|
+| Mayor (CEO) | Mayor (native) | Permanent | Strategic decisions, backlog triggers |
+| CTO | Crew member | Persistent | Pre/post-flight, retrospective, knowledge graph |
+| Product Manager | Crew member | Persistent | Planning, pre-flight product review |
+| Reviewer | Crew member | Persistent | Post-convoy run analysis, trend detection |
+| Tech Lead | Polecat (convoy leg) | Ephemeral | Epic decomposition into sub-beads |
+| Architect | Polecat (review leg) | Ephemeral | Pre/post-flight coherence checks |
+| Security Reviewer | Polecat (review leg) | Ephemeral | When beads touch security-sensitive areas |
+| QA Engineer | Polecat (review leg) | Ephemeral | Post-flight test coverage review |
+| Product Analyst | Polecat (planning leg) | Ephemeral | Planning investigations |
+| Engineer | Polecat | Ephemeral | Bead implementation |
+| Fixer | Polecat | Ephemeral | CI failures, merge conflicts |
 
 ## Knowledge Layer
 
