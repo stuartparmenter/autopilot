@@ -752,15 +752,9 @@ These principles from v1 are preserved:
 - **Stop on design concerns** — escalation to CTO via mail
 - **Coexistence** — agents only touch their assigned work
 
-### What Gets Deleted
+### What Gets Scrapped
 
-| v1 Component | Replacement |
-|---|---|
-| `src/lib/linear.ts` (~700 lines) | Beads MCP tools (orchestration calls `bd`) |
-| Linear MCP server config | Removed — beads tools live on autopilot MCP |
-| `getReadyIssues()`, `getInProgressIssues()`, etc. | Beads MCP tools (`list_ready_beads`, etc.) |
-| Linear webhook handling | Beads state detection |
-| `src/lib/sandbox-clone.ts` (~200 lines) | Agent SDK built-in worktrees |
+See Part 7 for the full list. Summary: Linear SDK + OAuth (~1000 lines), sandbox-clone.ts, SQLite database, Linear webhooks. All replaced by beads, Dolt, and worktrees.
 
 ### What Gets Added
 
@@ -883,11 +877,208 @@ sync:
 
 For teams using beads-only, this phase is skipped entirely — no config, no overhead, no sync agent.
 
+## Part 7: Operational Infrastructure
+
+### Single Database: Dolt
+
+Dolt runs as a MySQL-compatible server on port 3307 (avoids conflict with MySQL's 3306). One Dolt instance handles everything:
+
+| Data | v1 Storage | v2 Storage |
+|---|---|---|
+| Beads (task tracking) | Linear API | Dolt (beads tables) |
+| Agent messages (mail) | N/A | Dolt (`agent_messages` table) |
+| Agent runs (history) | SQLite (`agent_runs`) | Dolt (`agent_runs`) |
+| Activity logs | SQLite (`activity_logs`) | Dolt (`activity_logs`) |
+| Planning sessions | SQLite (`planning_sessions`) | Knowledge graph (decisions/findings persist as entities) |
+| State transitions | SQLite (`state_transitions`) | Dolt (`state_transitions`) — or knowledge graph if we want temporal queries |
+| Conversation logs | SQLite (`conversation_log`) | Dolt (`conversation_log`) |
+| OAuth tokens | SQLite (`oauth_tokens`) | Removed — no Linear OAuth needed. GitHub tokens via env/MCP headers. |
+
+**Why one DB?** Dolt is already running for beads. Running SQLite alongside means two persistence layers, two backup strategies, two failure modes. Consolidate into Dolt for everything.
+
+**Planning sessions → knowledge graph:** Planning findings, decisions, and session summaries are knowledge graph entities — they're the institutional memory v2 is built around. Agent runs and activity logs are operational data (cost tracking, debugging) and stay in relational tables.
+
+### Bead State Machine
+
+Beads supports custom state dimensions via `bd set-state` and external references via `--external-ref`. Our state machine:
+
+```
+Inbox → (human approves via CEO) → Triage
+Triage → (Project Owner accepts) → Ready
+Ready → (orchestration claims via bd update --claim) → In Progress
+In Progress → (agent pushes PR, attaches ref) → In Review
+In Review → (PR merged) → Done
+In Review → (CI fails / merge conflict / review feedback) → PR Maintenance
+Any → Blocked
+```
+
+Beads operations for each transition:
+
+| Transition | Beads Command |
+|---|---|
+| Claim for execution | `bd update <id> --claim` (atomic, fails if already claimed) |
+| Attach PR | `bd update <id> --external-ref "github:owner/repo#42"` |
+| Move to In Review | `bd set-state <id> status=in_review --reason "PR #42 created"` |
+| Move to Done | `bd close <id> --reason "PR #42 merged"` |
+| Move to Blocked | `bd set-state <id> status=blocked --reason "..."` |
+| Find ready work | `bd ready --json` (excludes claimed and blocked) |
+| Find stale claims | `bd stale --days 1 --status in_progress --json` |
+
+### Stale Recovery & Shutdown
+
+**Stale bead recovery:** Beads has `bd stale --status in_progress` to find abandoned claims. The orchestration loop runs this periodically (like v1's `recoverStaleIssues()`):
+
+```
+every stale_check_interval:
+  bd stale --status in_progress --days 0 --json  (configurable threshold)
+  → for each stale bead: unclaim it (bd update <id> --status ready)
+```
+
+**Graceful shutdown (SIGINT/SIGTERM):**
+1. Stop spawning new agents
+2. Wait for running agents to complete (drain phase, configurable timeout)
+3. Unclaim any beads still in-progress for crashed/timed-out agents
+4. Dolt server stays running (managed separately, like a database)
+
+**Crash recovery:** On startup, check for beads claimed by this instance that have no running agent → unclaim them. Beads' atomic claim (`--claim` fails if already claimed) prevents double-pickup even without graceful shutdown.
+
+### Inactivity Timeout vs Mail Wait
+
+v1's inactivity watchdog kills agents that produce no output for N minutes. With `send_and_wait()`, an agent waiting for a mail reply looks inactive — no tool calls, no text output.
+
+**Solution:** The `send_and_wait()` MCP tool implementation sends periodic heartbeat activities to the orchestration while polling for replies. The watchdog sees activity (heartbeats) and doesn't kill the agent. If the mail reply never comes, `send_and_wait()` times out and the agent handles the fallback — the watchdog only fires if the agent stops doing anything at all after the timeout.
+
+```
+Engineer calls send_and_wait(CTO, "guidance needed?", timeout=5m)
+  → MCP tool sends message to agent_messages table
+  → Polls for reply every 10s
+  → Sends heartbeat activity to orchestration each poll
+  → Reply arrives → return to agent
+  → Timeout → return timeout error to agent → agent decides fallback
+```
+
+### CLI Entry Points
+
+| Command | Purpose |
+|---|---|
+| `bun run start <project-path>` | Main orchestration loop + dashboard (v1, evolves) |
+| `bun run ceo <project-path>` | Interactive CEO agent session (new) |
+| `bun run setup <project-path>` | Onboard new project (evolves — adds `bd init`, Dolt check, knowledge graph init) |
+| `bun run check` | Biome lint + format (unchanged) |
+| `bun run typecheck` | TypeScript type check (unchanged) |
+| `bun test` | Bun test runner (unchanged) |
+
+**Setup flow** (`bun run setup`):
+1. Validate git repo, remote, env vars (existing)
+2. Check/install Dolt, start Dolt server if not running
+3. `bd init` in project (or `bd init --team` for team mode)
+4. Initialize knowledge graph MCP server (seed with codebase scan or empty)
+5. Generate `.autopilot.yml` with beads config (no Linear config unless sync enabled)
+6. Generate `CLAUDE.md` and `.claude/settings.json` (existing)
+
+### Configuration Schema (v2)
+
+No migration from v1 config — fresh schema for the new world.
+
+```yaml
+# .autopilot.yml (v2)
+project:
+  name: "my-project"
+
+beads:
+  dolt_port: 3307                      # Local Dolt server port
+  dolt_data_dir: ".beads/dolt"         # Dolt data directory
+
+executor:
+  parallel: 5                          # Max concurrent agents
+  timeout_minutes: 60                  # Per-agent hard timeout
+  inactivity_timeout_minutes: 10       # No-output timeout
+  stale_timeout_minutes: 15            # Unclaim threshold
+  model: "sonnet"                      # Default model for engineers
+  branch_pattern: "autopilot/{{id}}"   # Git branch naming
+  commit_pattern: "{{id}}: {{title}}"  # Commit message format
+
+planning:
+  schedule: "when_idle"                # or cron expression
+  min_ready_threshold: 5               # Trigger planning below this
+  max_issues_per_run: 5
+  model: "opus"
+
+monitor:
+  poll_interval_minutes: 5
+  max_fixer_attempts: 3
+  fixer_timeout_minutes: 60
+
+mail:
+  delivery_interval_minutes: 1         # How often deliverMail() runs
+  wait_timeout_minutes: 5              # Default send_and_wait timeout
+
+knowledge_graph:
+  provider: "gk"                       # or "engram", etc.
+  db_path: ".beads/knowledge.db"       # Co-located with beads
+
+budget:
+  daily_limit_usd: 0                   # 0 = unlimited
+  monthly_limit_usd: 0
+  warn_at_percent: 80
+
+sandbox:
+  enabled: true
+  network_restricted: false
+  extra_allowed_domains: []
+
+git:
+  user_name: "autopilot[bot]"
+  user_email: "autopilot[bot]@users.noreply.github.com"
+
+github:
+  automerge: false
+
+sync:                                  # Phase 6, all optional
+  linear:
+    enabled: false
+    label: "autopilot:managed"
+  github_issues:
+    enabled: false
+    label: "autopilot"
+
+dashboard:
+  port: 7890
+  host: "127.0.0.1"
+```
+
+### What Gets Scrapped
+
+| v1 Component | Why |
+|---|---|
+| `src/lib/linear.ts` (~700 lines) | Replaced by beads MCP tools |
+| `src/lib/linear-oauth.ts` | No Linear OAuth needed |
+| `oauth_tokens` / `linear_oauth_tokens` tables | No Linear auth |
+| Linear MCP server config | Replaced by beads tools on autopilot MCP |
+| Linear webhook handling (`/webhook/linear`, `/webhook/github`) | Beads state detection + GitHub MCP |
+| `src/lib/sandbox-clone.ts` (~200 lines) | Agent SDK built-in worktrees |
+| SQLite database (`src/lib/db.ts`) | Consolidated into Dolt |
+| `AUTOPILOT_DASHBOARD_TOKEN` cookie auth | Revisit — dashboard auth needs redesign for v2 |
+
+### Dashboard
+
+The dashboard needs a refresh for v2 but the architecture stays the same (Hono + htmx). Changes:
+
+- **Status**: Show beads state instead of Linear issue state
+- **Agent view**: Show mail activity (sent/received/waiting) alongside tool use
+- **Budget**: Carry forward cost tracking, add per-bead cost view
+- **Planning**: Show knowledge graph health, recent decisions
+- **Mail queue**: New section — unread messages, delivery status, wait times
+- **Health**: Add Dolt server status, knowledge graph connectivity
+- **CEO integration**: Dashboard doubles as read-only view; CEO agent handles interactive actions
+
+Pause/resume API carries forward. Triage approval moves to CEO agent (interactive) rather than dashboard buttons.
+
 ## Open Questions
 
 1. **Knowledge graph choice** — Build on gk, adopt Engram, extend Beads,
-   or something else? Key factors: SQLite vs. external DB, temporal
-   awareness, hybrid search quality, MCP integration.
+   or something else? Key factors: temporal awareness, hybrid search
+   quality, MCP integration. Should use Dolt as backend to stay single-DB.
 
 2. **Knowledge graph seeding** — How do we bootstrap the knowledge graph
    for a new project? Agent-driven codebase scan? Manual? Import from
@@ -901,12 +1092,16 @@ For teams using beads-only, this phase is skipped entirely — no config, no ove
    Serena/LSP tools for structural code understanding? Startup cost?
    Per-agent scoping?
 
-5. **Beads + Dolt dependency** — Beads requires a Dolt SQL server.
-   How lightweight is this in practice? Can it run embedded?
+5. **Dolt operational weight** — Dolt is a MySQL-compatible server
+   (port 3307). How much memory/CPU does it use idle? Startup time?
+   Is it reasonable to require for all users?
 
-6. **Linear integration** — Phase 6 covers an optional sync agent.
-   Open: which sync approach (poll vs. webhook vs. dual-write)?
-   Poll is simplest and consistent with v1.
+6. **Conversation API migration** — Moving from `query()` to conversation
+   API enables mid-session mail interrupts. How much of `runClaude()`
+   needs to change? What does the Agent SDK conversation API look like?
+
+7. **Beads leaf-only filtering** — Does `bd ready` skip parents with
+   open children? If not, our MCP tool layer needs to add this filter.
 
 ## Appendix: Gastown Evaluation
 
