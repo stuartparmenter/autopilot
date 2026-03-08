@@ -1236,16 +1236,214 @@ Neither Beads nor Gastown tracks costs well. This is a gap we'd need to fill —
 - Iterate on CTO pre-flight contracts based on real coherence failures
 - Build or adopt a dashboard
 
+## Resolved Design Decisions
+
+### 1. Human's Role: The Human is the Mayor
+
+The human talks to the Mayor (CEO). They give strategic direction, drop
+ideas, reprioritize, or just watch. The system runs autonomously unless
+prompted. The Mayor can pause the system (dock rigs).
+
+The human does NOT micromanage the CTO, review individual PRs by default,
+or assign work to polecats. They operate at the "what should we build"
+level, not "how should we build it" level. Just like a real CEO.
+
+```
+Human → Mayor: "We should improve our error handling"
+Mayor: creates bead, system takes over
+Human goes to lunch
+System: plans → pre-flight → execute → post-flight → merge
+Human comes back: reads daily summary, sees what shipped
+```
+
+### 2. PRs over Direct Merge
+
+We want GitHub PRs for visibility, CI checks, and a review surface.
+Gastown's Refinery normally merges directly to main via rebase. We
+modify the workflow:
+
+- Polecats push branches and create GitHub PRs (like v1)
+- CTO post-flight reviews PRs for architectural coherence
+- Refinery merges via PR merge (not direct push) after CTO approval
+- CI runs on the PR as a gate before merge
+
+This gives us:
+- PR as a visible artifact for each piece of work
+- CI verification before merge (not just local tests)
+- A place for the CTO post-flight review to live
+- Git history that shows PRs, not mysterious direct pushes
+
+The Refinery's sequential processing still applies — PRs merge one
+at a time in dependency order, with rebase to prevent conflicts.
+
+### 3. One Rig = One Project = One Knowledge Graph
+
+The CTO and knowledge graph are per-rig (per-project). Most work is
+in monorepos for simplicity. One knowledge graph per repo means:
+- Decisions, components, patterns, constraints are all project-scoped
+- The CTO has full context for one project, not diluted across many
+- If projects need to share knowledge, that's a future concern
+
+This maps cleanly to Gastown: one rig wraps one git repository.
+
+### 4. Dashboard: Adopt gastown-gui
+
+gastown-gui (Express + WebSocket, vanilla JS/CSS) provides:
+- Rig management, bead tracking, task assignment
+- Real-time WebSocket updates
+- PR tracking, mail inbox, health monitoring
+
+It's a standalone npm package (`gastown-gui start --open`). Being
+vanilla JS/CSS/HTML (~900KB), it's straightforward to extend with
+custom panels for our needs (cost tracking, knowledge graph viewer,
+daily summaries). Not React, not complex — just Express routes and
+WebSocket events we can add to.
+
+### 5. Failure Recovery via Bead State Machine
+
+Beads state machine handles failure naturally:
+- CTO blocks a PR post-flight → bead stays open, gets re-queued
+  as a new bead with CTO's feedback attached
+- Dog crashes mid-planning → Deacon detects, retries next patrol
+- Polecat crashes → Witness detects, restarts or recovers bead
+  to open status, Deacon redispatches
+- CTO pre-flight slow → polecats only pick up beads in "ready"
+  state. Until CTO marks convoy as reviewed, beads aren't slung.
+
+Nothing picks up work that isn't explicitly in a ready state.
+The knowledge graph and bead notes persist across all failures.
+
+### 6. Meta-Review: The System Reviews Itself
+
+A daily review agent (Dog or scheduled formula) that:
+- Reviews the day's agent conversations and output
+- Analyzes: what worked, what failed, what was inefficient
+- Builds a daily summary for the human
+- Identifies systemic improvements (to prompts, formulas, review legs)
+
+This is the "improve autopilot itself" loop. The feedback goes to
+the autopilot system (better prompts, better formulas, better review
+calibration), not to the target project.
+
+```toml
+# autopilot-daily-review.formula.toml
+[[steps]]
+id = "gather"
+title = "Gather the day's agent activity"
+description = """
+- All completed convoys and their outcomes
+- All agent runs: cost, duration, success/failure
+- All CTO pre/post-flight reviews: what was caught
+- All review leg reports: which legs found real issues
+- Any beads that were blocked, re-queued, or failed
+"""
+
+[[steps]]
+id = "analyze"
+title = "Analyze patterns and inefficiencies"
+needs = ["gather"]
+description = """
+- Which polecats produced clean merges vs. needed fixers?
+- Which review legs caught real issues vs. burned tokens?
+- Were CTO pre-flight contracts useful? Did agents follow them?
+- What was the total cost? Cost per merged bead?
+- Any beads that churned (multiple attempts)?
+"""
+
+[[steps]]
+id = "summarize"
+title = "Build daily summary for the human"
+needs = ["analyze"]
+description = """
+Mail the Mayor a daily digest:
+- Beads completed, PRs merged, cost
+- Notable successes and failures
+- Systemic issues identified
+- Recommended prompt/formula improvements (if any)
+"""
+
+[[steps]]
+id = "improve"
+title = "File improvement beads if warranted"
+needs = ["analyze"]
+description = """
+If analysis reveals clear improvements (high confidence):
+- File beads against the autopilot rig for prompt/formula changes
+- Tag as 'meta-improvement' so they're distinguishable from project work
+- Only file if the improvement would save more than it costs to implement
+"""
+```
+
+This is the v2 equivalent of v1's reviewer agent, but broader —
+it reviews the *system's* performance, not just individual runs.
+
+### 7. Onboarding / Setup
+
+Needs a setup script similar to v1's `bun run setup`. The v2
+equivalent:
+
+```bash
+# Install prerequisites
+brew install beads gastown
+npm install -g gastown-gui
+
+# Initialize workspace
+gt install ~/gt --git
+
+# Add target project as a rig
+gt rig add <project-name> <git-url>
+
+# Initialize beads in the project
+cd ~/gt/<project-name>/crew/<username>/rig
+bd init
+
+# Configure MCP servers (knowledge graph)
+# → writes .mcp.json with gk or equivalent
+
+# Configure autopilot formulas
+# → copies our formula TOMLs into the right location
+
+# Configure crew members (CTO, PM, Reviewer)
+gt crew add cto --rig <project-name>
+gt crew add pm --rig <project-name>
+gt crew add reviewer --rig <project-name>
+
+# Seed knowledge graph (optional)
+# → agent scans codebase, extracts initial entities/decisions
+
+# Start the system
+gt up
+gt rig undock <project-name>
+gt mayor attach
+```
+
+This should be wrapped in a single `autopilot-setup` script that
+handles prerequisites checking, rig creation, formula installation,
+crew member setup, and optional knowledge graph seeding.
+
 ## Open Questions
 
-1. **Knowledge graph choice** — Build on gk, adopt Engram, extend Beads, or something else? Key factors: SQLite vs. external DB, temporal awareness, hybrid search quality, MCP integration.
+1. **Knowledge graph choice** — Build on gk, adopt Engram, extend Beads,
+   or something else? Key factors: SQLite vs. external DB, temporal
+   awareness, hybrid search quality, MCP integration. Per-rig (resolved).
 
-2. **Beads as knowledge store?** — Can Beads' data model (with graph links and Dolt backend) serve as both task tracker and knowledge graph? This would simplify the stack but may strain Beads beyond its design intent.
+2. **Cost tracking** — Neither Beads nor Gastown tracks spend well.
+   Need something that monitors Claude API usage and can enforce budgets.
+   Could be a Deacon patrol step, a separate monitor, or a knowledge
+   graph concern. Deferred for now.
 
-3. **CTO agent granularity** — How often does the CTO review in-flight work? Every N minutes? On every branch push? Only at convoy boundaries? Too frequent = expensive, too infrequent = coherence failures slip through.
+3. **CTO review granularity** — At convoy boundaries only? Or also
+   periodic in-flight checks? Convoy boundaries are the natural trigger,
+   but large convoys with 10+ polecats might need mid-flight review.
 
-4. **Linear integration** — Do we keep Linear as an optional sync target, or drop it entirely? Some teams may want both.
+4. **Linear integration** — Drop entirely, or keep as optional sync?
+   Beads replaces it as source of truth, but some teams may want
+   Linear for non-engineering stakeholder visibility.
 
-5. **Dashboard** — Adopt gastown-gui, build a new one, or rely on CLI (`gt convoy list`, `bd ready`)?
+5. **Refinery + PR workflow** — Need to validate that Gastown's Refinery
+   can be configured to merge via GitHub PR merge API instead of direct
+   push. If not, may need a custom Refinery formula or a wrapper.
 
-6. **Cost tracking** — Where does budget management live in the new stack?
+6. **Knowledge graph seeding** — How do we bootstrap the knowledge graph
+   for a new project? Agent-driven codebase scan? Manual? Import from
+   existing docs? This affects onboarding quality significantly.
