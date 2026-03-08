@@ -321,9 +321,11 @@ CREATE TABLE agent_messages (
 ```
 
 Exposed via MCP tools on the autopilot server (same pattern as beads access):
-- `send_mail(to, subject, body, priority?)` — send a message
+- `send_mail(to, subject, body, priority?)` — fire-and-forget message
+- `send_and_wait(to, subject, body, timeout?)` — send and block until a threaded reply arrives (polls `agent_messages` for response). Agent pauses cheaply (DB poll, not token burn). Falls back on timeout.
 - `check_inbox()` — list unread messages
 - `read_mail(id)` — read a specific message
+- `reply_mail(id, body)` — reply in thread
 - `archive_mail(id)` — mark as handled
 
 If we move to Gastown in v3, migrating to `gt mail` is straightforward — the semantics are identical (send/inbox/read/archive), only the transport changes.
@@ -337,12 +339,44 @@ CTO pre-flight:
 Engineer escalation:
   Engineer → CTO: "This bead conflicts with decision X in knowledge graph"
 
-Review-responder escalation:
-  Review-responder → CTO: "Human reviewer raised a design concern on PR #42"
+PR Maintenance escalation:
+  PR Maintenance → CTO: "Human reviewer raised a design concern on PR #42"
 
 CTO post-flight:
   CTO → Orchestration: "APPROVE bd-x1, BLOCK bd-x3"
 ```
+
+#### Orchestration: Mail Delivery Loop
+
+Mail delivery is a dedicated step in the TypeScript orchestration loop — separate from fillSlots, checkOpenPRs, and planning. The orchestration checks for unread messages and spawns recipients to handle them. Agents don't poll their own mail (that would burn tokens on empty inbox checks).
+
+```
+every poll_interval:
+  1. fillSlots()          — spawn engineers for ready beads
+  2. checkOpenPRs()       — spawn PR maintenance for CI failures
+  3. deliverMail()         — check for unread messages, spawn recipients
+  4. checkPlanningNeeded() — spawn CTO for planning cycle
+```
+
+`deliverMail()` queries `agent_messages` for unread messages, groups by recipient role, and spawns each recipient once with their pending messages as context:
+
+- **CTO has 3 unread messages** → spawn CTO (persona + inbox-dispatch task + messages)
+- **No unread mail for anyone** → no-op (a SQL query, not an agent invocation)
+
+Each step is independent. An engineer working on a bead doesn't check mail — if it sends a message to the CTO, that message sits in the table until the next `deliverMail()` iteration spawns the CTO to handle it. No waiting, no doubling up with other prompt types.
+
+Mail-spawned agents count against the slot budget like any other agent. The orchestration decides when and whether to spawn based on available slots and priority (urgent mail can preempt non-urgent work).
+
+#### In-flight mail: waiting and interrupts
+
+Agents can choose to wait on a response during execution. An engineer that needs CTO guidance calls `send_and_wait()` — sends a message and polls the DB for a threaded reply. The engineer pauses cheaply (DB poll, no token burn) while `deliverMail()` spawns the CTO to respond. On timeout, the engineer falls back (block the bead, proceed with best judgment, or escalate).
+
+For the reverse — delivering mail TO a running agent — two approaches:
+
+1. **Poll-based** (v2): Running agents that expect replies periodically check their inbox via `check_inbox()`. Works today, no new infrastructure.
+2. **Interrupt-based** (future): The orchestration uses the agent controller handle (`onControllerReady`) to inject a nudge into a running agent's context when mail arrives. More responsive, depends on Agent SDK support for mid-session message injection.
+
+Start with poll-based. Interrupts may be achievable via the Agent SDK's conversation API (vs. the current single-shot `query()` in `runClaude()`). The conversation API allows pushing messages into a running session — exactly what's needed for mid-execution mail delivery. This would require migrating from `query()` to the conversation API, which is a meaningful change to `src/lib/claude.ts` but unlocks real-time agent-to-agent communication.
 
 ### 5. Smarter Fixer
 
@@ -623,18 +657,81 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 
 ## Part 5: What Survives and Evolves
 
-### Prompts (the real product)
+### Prompt Architecture (persona + task separation)
 
-| v1 Prompt | v2 Role | Changes |
+v1 prompts are monolithic scripts: each prompt IS the task. `cto.md` says "you are the CTO, now execute these 4 phases in order." This works for one-shot execution but breaks with mail — agents need to wake up, read context, and decide what to do.
+
+v2 separates prompts into three layers:
+
+```
+┌──────────────────────────────────────────────┐
+│ Persona (who you are)                         │
+│ - Role identity, expertise, authority level   │
+│ - Decision-making principles                  │
+│ - Tool access and constraints                 │
+│ - Stable across all invocations               │
+└──────────────────────┬───────────────────────┘
+                       │
+┌──────────────────────┴───────────────────────┐
+│ Context (what's happening)                    │
+│ - Mail inbox (unread messages)                │
+│ - Relevant knowledge graph state              │
+│ - Current beads/project state                 │
+│ - Injected dynamically each invocation        │
+└──────────────────────┬───────────────────────┘
+                       │
+┌──────────────────────┴───────────────────────┐
+│ Task (what to do now)                         │
+│ - Specific action to take                     │
+│ - OR: "check your inbox and decide"           │
+│ - Multiple task prompts per persona           │
+└──────────────────────────────────────────────┘
+```
+
+**Reactive agents** (CTO, Reviewer, Project Owner) get persona + context and decide from their inbox:
+- CTO wakes up → inbox has escalation from engineer → respond with guidance
+- CTO wakes up → orchestration says backlog low → run planning cycle
+- CTO wakes up → batch complete → run post-flight review
+
+**Directed agents** (Engineer, PR Maintenance, Tech Lead) get persona + context + explicit task:
+- Engineer gets persona + bead assignment + CTO contract from mail
+- PR Maintenance gets persona + PR number + failure type
+
+This means the orchestration layer's job changes too. Instead of "spawn CTO with the planning script", it becomes "spawn CTO, inject context, let it decide" — or "spawn CTO with explicit task: run post-flight for batch X."
+
+#### Prompt file structure
+
+```
+prompts/
+  personas/
+    cto.md              — identity, authority, principles, tool access
+    engineer.md         — identity, methodology, constraints
+    pr-maintenance.md   — identity, escalation rules
+    reviewer.md         — identity, analysis approach
+    project-owner.md    — identity, triage rules
+  tasks/
+    planning-cycle.md   — CTO: investigate, synthesize, file beads
+    pre-flight.md       — CTO: architectural contracts for a batch
+    post-flight.md      — CTO: coherence review, merge verdicts
+    implement-bead.md   — Engineer: understand, plan, implement, validate
+    fix-pr.md           — PR Maintenance: diagnose, fix, push
+    respond-review.md   — PR Maintenance: address human feedback
+    triage.md           — Project Owner: accept/defer/decompose
+    inbox-dispatch.md   — Generic: check mail, decide next action
+```
+
+The orchestration composes: `persona + context + task` → final prompt passed to `runClaude()`.
+
+#### v1 → v2 prompt mapping
+
+| v1 Prompt | v2 Persona | v2 Task(s) |
 |---|---|---|
-| `executor.md` | Engineer | Add knowledge graph query (pre) and write (post) steps. Add mail inbox check for CTO contract. |
-| `cto.md` | Planner + CTO (split) | Planning methodology stays. Add pre/post-flight review. Add knowledge graph as primary input. |
-| `fixer.md` + `review-responder.md` | PR Maintenance (merged) | Unified agent. Add knowledge graph context. Add pattern escalation. |
-| `project-owner.md` | Project Owner | Adapt from Linear to Beads. Add knowledge graph queries. |
-| `reviewer.md` | Reviewer | Feed findings into knowledge graph instead of just Linear issues. |
-| `explain.md` | Read-only preview | Adapt from Linear to Beads. Keep as dry-run diagnostic. |
-| (new) | CTO Pre-flight | Architectural contracts, conflict detection, review leg dispatch. |
-| (new) | CTO Post-flight | Coherence review, merge verdicts, knowledge graph updates. |
+| `cto.md` | `personas/cto.md` | `planning-cycle.md`, `pre-flight.md`, `post-flight.md`, `inbox-dispatch.md` |
+| `executor.md` | `personas/engineer.md` | `implement-bead.md` |
+| `fixer.md` + `review-responder.md` | `personas/pr-maintenance.md` | `fix-pr.md`, `respond-review.md` |
+| `project-owner.md` | `personas/project-owner.md` | `triage.md`, `inbox-dispatch.md` |
+| `reviewer.md` | `personas/reviewer.md` | (analysis task TBD) |
+| `explain.md` | `personas/cto.md` | (read-only diagnostic task) |
 
 ### Plugins (specialized knowledge)
 
