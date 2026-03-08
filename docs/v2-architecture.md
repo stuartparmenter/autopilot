@@ -244,6 +244,81 @@ Product Manager reviews for prioritization and product coherence
 Tech Lead decomposes epics into implementable sub-beads
 ```
 
+### Decision Authority and Pushback
+
+Agents at each level should have opinions grounded in the knowledge graph
+and the authority to push back with evidence — but within a clear chain
+of command that prevents endless debate.
+
+**The one-pushback rule:** When you receive direction that conflicts with
+what you know (from the knowledge graph, from in-flight work, from past
+decisions), you push back **once** with evidence. If your superior
+acknowledges and reaffirms, you execute. No relitigating. No reply-all
+threads. One round, then move.
+
+**Examples:**
+
+Mayor → CTO: "Add a caching layer to the API"
+CTO queries knowledge graph, finds: "Decision bd-x4f2: No caching layer.
+Reason: data invalidation problem unsolved."
+CTO → Mayor: "We decided against caching 6 weeks ago because of
+invalidation complexity. Has something changed, or should I proceed anyway?"
+Mayor → CTO: "The read volume tripled. Proceed."
+CTO: executes. Records updated decision in knowledge graph with new rationale.
+
+CTO → Engineer (via architectural contract): "Use the existing retry
+pattern from lib/retry.ts"
+Engineer finds retry.ts doesn't handle the specific case:
+Engineer → CTO (via bead notes): "retry.ts doesn't support streaming
+responses. I need to either extend it or use a different approach."
+CTO → Engineer: "Extend retry.ts. Don't create a parallel implementation."
+Engineer: executes. No further discussion.
+
+Witness → Polecat: "You've been stuck 30 minutes. Restart."
+Polecat: restarts. No argument. Witness owns lifecycle decisions.
+
+**The principle: disagree and commit.** You can raise concerns once
+with evidence. After that, you commit fully. "Complain and don't
+commit" is a firing offense — an agent that drags its feet or
+half-implements something it disagrees with is worse than one that
+does nothing.
+
+**What this prevents:**
+- Agents mailing back and forth debating approaches
+- Work stalling because an agent disagrees with direction
+- Token burn on negotiation instead of execution
+- Passive resistance through poor implementation
+
+**The directive escape hatch:** For genuine pivots, the Mayor can mark
+a bead as a `directive` (priority 0). This signals to the CTO: don't
+evaluate whether to do it, evaluate how. Normal beads get merit-based
+review. Directives get execution planning.
+
+```bash
+# Normal bead — CTO evaluates on merit, may push back
+bd create "Add caching layer" --type task --priority 1
+
+# Directive — CTO plans execution, doesn't question the goal
+bd create "Migrate to OAuth2" --type task --priority 0 --tag directive
+```
+
+**Authority flows down, evidence flows up:**
+
+| Level | Can push back on | Pushes back to | Pushback limit |
+|---|---|---|---|
+| Mayor | Nobody (human overrides only) | — | — |
+| CTO | Mayor's beads | Mayor | Once with evidence |
+| Product Manager | Mayor's priorities | Mayor | Once with evidence |
+| Tech Lead | CTO's decomposition | CTO | Once with evidence |
+| Engineer | Tech Lead's approach | Tech Lead (via bead notes) | Once with evidence |
+| Witness | Nobody (lifecycle authority) | — | — |
+| Refinery | Nobody (merge authority) | — | — |
+
+The Witness and Refinery are special — they have **absolute authority**
+in their domain (lifecycle and merging respectively). An agent doesn't
+argue with the Witness about being restarted, just as a process doesn't
+argue with the OOM killer.
+
 ### The CTO Does Not Read Code
 
 This is a deliberate constraint. The CTO operates at the architecture level,
