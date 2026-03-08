@@ -244,6 +244,32 @@ Product Manager reviews for prioritization and product coherence
 Tech Lead decomposes epics into implementable sub-beads
 ```
 
+### The CTO Does Not Read Code
+
+This is a deliberate constraint. The CTO operates at the architecture level,
+never at the code level. Its inputs are:
+
+- **Knowledge graph** — decisions, components, patterns, constraints, relationships
+- **Bead descriptions** — what each task intends to change
+- **Engineer summaries** — the "record decisions" step output, not diffs
+- **Review leg reports** — architecture/security/QA/product verdicts
+
+Never raw source code. A human CTO who reviews every PR is a bottleneck
+doing an engineer's job at executive cost. Same principle applies to agents.
+
+If the CTO needs to read `server.ts` to do its job, the knowledge graph
+has failed — it means engineers aren't recording decisions, or the graph
+doesn't capture the architecture at the right abstraction level.
+
+This constraint also keeps the CTO's context window clean. An agent that
+reads 10 source files per convoy burns context on implementation details
+and loses the ability to think about system-level coherence. The CTO
+stays effective by staying abstract.
+
+The review legs (Architecture, Security, QA) *do* read code — that's
+their job. They report findings *up* to the CTO in structured summaries.
+The CTO synthesizes those into verdicts and knowledge graph updates.
+
 ### Why This Scales Differently Than a Human Org
 
 In a real company, the CTO can't review every PR — they can't context-switch
