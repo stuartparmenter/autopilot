@@ -44,10 +44,10 @@ v2 keeps the orchestration layer simple (it's plumbing, not product), replaces L
 │  Our TypeScript loop (simplified from v1)                     │
 │  - Agent SDK query() with sandbox + MCP injection             │
 │  - Per-agent plugins and tool scoping                         │
-│  - SQLite-backed inter-agent mail                             │
+│  - Inter-agent mail (Dolt table, exposed via MCP tools)        │
 │  - Budget tracking, slot management                           │
 │  - Activity streaming to dashboard                            │
-│  - Clone management, credential isolation                     │
+│  - Built-in worktrees (replaces shared clones)                │
 │  - Intentionally simple — v3 may hand this to Gastown         │
 └──────────────────────────┬───────────────────────────────────┘
                            │
@@ -74,28 +74,29 @@ Beads (`bd`) is a git-backed issue tracker. It replaces Linear as the source of 
 - Dependency graph — `bd dep add` creates proper blocking relationships
 - `bd ready` / `bd claim` / `bd close` — clean state machine for agent workflows
 - No API key management — no `LINEAR_API_KEY`, no MCP server for issue tracking
-- Works offline, works in CI, works in any clone
+- Works offline, works in CI, works in any worktree
+
+**Storage and access model:**
+
+Beads stores data in `.beads/dolt/` in the **project root** (shared across all agents). All agents access the same beads database via a Dolt SQL server process. Agents access beads through MCP tools on the autopilot server — they never talk to Dolt directly. This keeps the sandbox clean (no Dolt network access, no `bd` binary needed in worktrees) and gives the orchestration layer an audit/validation point.
+
+MCP tools (~6 total): `list_ready_beads`, `claim_bead`, `update_bead`, `close_bead`, `get_bead`, `search_beads`. Under the hood, the orchestration shells out to `bd` against the shared database.
 
 **What changes in the codebase:**
 
 | v1 | v2 |
 |---|---|
-| `src/lib/linear.ts` (~700 lines) | `bd` CLI calls (agents run `bd` directly) |
-| Linear MCP server (HTTP) | Removed — agents use `bd` CLI |
-| `getReadyIssues()`, `updateIssue()` | `bd ready`, `bd update`, `bd close` |
-| Issue state via Linear API | Bead state via `bd` CLI |
-| `withRetry()` for Linear calls | Not needed — `bd` operates on local state |
+| `src/lib/linear.ts` (~700 lines) | Beads MCP tools on autopilot server |
+| Linear MCP server (HTTP) | Replaced by beads tools on autopilot MCP |
+| `getReadyIssues()`, `updateIssue()` | `list_ready_beads`, `update_bead`, `close_bead` |
+| Issue state via Linear API | Bead state via MCP tools (backed by `bd` CLI) |
+| `withRetry()` for Linear calls | Not needed — `bd` operates on local Dolt |
 | Label-based ownership (`autopilot:managed`) | Bead metadata or tags |
 
 **What stays the same:**
 - Our orchestration loop polls for ready work and spawns agents
 - Agents still get a task ID, implement it, push a PR, update status
-- The prompts define the workflow — they just reference `bd` instead of Linear MCP
-
-**Migration approach:**
-- Phase 1: Agents use `bd` CLI inside their prompts (replace `{{ISSUE_ID}}` with bead ID)
-- Phase 2: Orchestration reads from `bd ready` instead of `getReadyIssues()`
-- Phase 3: Remove `src/lib/linear.ts` and Linear MCP server
+- The prompts define the workflow — they just use beads MCP tools instead of Linear MCP
 
 ### 2. Knowledge Graph (Institutional Memory)
 
@@ -293,25 +294,8 @@ v1 has no inter-agent communication. Agents are fully isolated — they don't kn
 
 #### Implementation
 
-Since Dolt is already running for Beads, mail lives in Dolt too — one fewer persistence layer. Two options:
+Since Dolt is already running for Beads, mail lives in Dolt too — one persistence layer. Gastown uses a dedicated mail system separate from beads (its own `gt mail` commands with Dolt-backed storage). We follow the same pattern: purpose-built mail table in Dolt, not beads-as-mail. Messages aren't issues — they don't need dependency graphs, hash IDs, or the full bead lifecycle.
 
-**Option A: Mail as beads** (simplest)
-Messages are just beads with `type=message`. Agents use the same `bd` CLI they already know:
-```bash
-# Send mail
-bd create --type message --assignee <agent-id> --title "Arch Contract: batch-7" \
-  --description "..."
-
-# Read inbox
-bd list --type message --assignee me --status open
-
-# Mark read
-bd close <message-bead-id>
-```
-
-Same CLI, same state machine, same audit trail. Zero new tools for agents to learn. This is how Gastown does it — their mail system stores messages as beads with `gt:message` labels.
-
-**Option B: Custom Dolt table** (more structured)
 ```sql
 CREATE TABLE agent_messages (
   id VARCHAR(64) PRIMARY KEY,
@@ -325,9 +309,14 @@ CREATE TABLE agent_messages (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
-Exposed via MCP tools on the autopilot server. More structured but requires writing query logic.
 
-**Recommendation: Option A.** Using beads-as-mail means agents don't need new tools, the audit trail is unified, and if we move to Gastown in v3 the mail is already in the right format. The key insight is that a message and a task are structurally identical — both have an assignee, a body, a status, and a lifecycle.
+Exposed via MCP tools on the autopilot server (same pattern as beads access):
+- `send_mail(to, subject, body, priority?)` — send a message
+- `check_inbox()` — list unread messages
+- `read_mail(id)` — read a specific message
+- `archive_mail(id)` — mark as handled
+
+If we move to Gastown in v3, migrating to `gt mail` is straightforward — the semantics are identical (send/inbox/read/archive), only the transport changes.
 
 #### Message Flows
 
@@ -351,7 +340,7 @@ v1's fixer is mechanical: read CI logs, apply minimal fix, push. It has no memor
 
 #### Current v1 Fixer Behavior
 
-1. Check out PR branch in a clone
+1. Check out PR branch in a worktree
 2. Diagnose: read CI failure logs or detect merge conflict
 3. Fix: apply minimal change (max 3 attempts)
 4. Push and let CI re-run
@@ -396,7 +385,10 @@ The unified agent checks the PR state and handles whatever needs handling, rathe
 ### The Org Chart
 
 ```
-Human (CEO/Mayor)
+CEO (interactive agent — human's interface into the system)
+│   Run: bun run ceo <project-path>
+│   Tools: beads, knowledge graph, mail, planning, dashboard
+│   The human talks to the org through this agent.
 │
 ├── CTO ─────────────────────────────────────────────────────────
 │   │   Technical strategy, architectural coherence, owns the
@@ -444,7 +436,7 @@ Human (CEO/Mayor)
 
 | Role | Persistence | When Active |
 |---|---|---|
-| Human (CEO) | Permanent | Strategic decisions, direction |
+| CEO | Interactive | Human launches via CLI to interact with the system |
 | CTO | Persistent | Pre/post-flight review, knowledge graph maintenance |
 | Product Manager | Planning cycle | Planning, prioritization |
 | Reviewer | Persistent | Post-run analysis, trend detection |
@@ -455,6 +447,31 @@ Human (CEO/Mayor)
 | Product Analyst | Ephemeral | Planning investigations |
 | Engineer | Ephemeral | Bead implementation |
 | PR Maintenance | Ephemeral | CI failures, merge conflicts, review feedback |
+
+### The CEO Agent
+
+The CEO agent is the human's interactive interface into the system. Instead of managing work through Linear's UI or raw CLI commands, you launch an interactive Claude session with all the right tools loaded:
+
+```bash
+bun run ceo <project-path>
+```
+
+This starts a Claude Code session with:
+- **Beads MCP tools** — create/prioritize/assign beads, review the backlog
+- **Knowledge graph** — query architectural decisions, review component relationships
+- **Mail** — send directives to CTO, read escalations from agents
+- **Dashboard access** — check running agents, costs, queue status
+- **Planning skills** — trigger planning cycles, review findings
+
+The CEO agent replaces Gastown's "mayor" concept. Where Gastown runs a persistent mayor in a tmux session, we launch an interactive session on demand. The human is in the loop when they want to be, and the orchestration loop runs autonomously otherwise.
+
+**What the CEO can do:**
+- "Create a bead for improving error handling in the API layer"
+- "What architectural decisions affect the auth module?"
+- "Send the CTO a directive to prioritize security work"
+- "Show me what agents are running and their costs"
+- "Why was ENG-42 blocked? What would unblock it?"
+- "Run a planning cycle focused on test coverage gaps"
 
 ### Planning Cycle
 
@@ -490,9 +507,9 @@ Per-agent MCP servers injected via Agent SDK `query()`:
 
 | Server | Type | v2 Status |
 |---|---|---|
-| **Linear** | HTTP | Removed — replaced by `bd` CLI |
+| **Linear** | HTTP | Removed — replaced by beads tools on autopilot MCP |
 | **GitHub** | HTTP | Stays — agents still create PRs, read reviews |
-| **Autopilot** | SDK-inline | Evolves — add mail tools, knowledge graph tools |
+| **Autopilot** | SDK-inline | Evolves — add beads tools, mail tools |
 | **Knowledge Graph** | MCP (new) | New — gk or similar, per-project DB |
 
 #### 2. Plugins — The Brain
@@ -516,11 +533,13 @@ The planning-skills plugin defines subagent types (scout, security-analyst, arch
 
 When `config.sandbox.enabled`, agents run in bubblewrap isolation:
 
-- **Filesystem**: Write only to clone directory, `/tmp`, per-agent tmpdir, `~/.claude`
+- **Filesystem**: Write only to worktree directory, `/tmp`, per-agent tmpdir, `~/.claude`
 - **Network**: Optional domain allowlist (GitHub, knowledge graph MCP, configurable extras)
 - **Guard hook**: PreToolUse hook denies Write/Edit outside cwd — catches escape attempts
 - **Credential isolation**: Tokens stay in MCP server headers, never in agent env
 - **Per-agent tmpdir**: Each agent gets unique `mkdtemp()` directory
+
+**v2 change: worktrees replace shared clones.** The Agent SDK has built-in worktree support (`isolation: "worktree"`), so we drop `src/lib/sandbox-clone.ts` and let Claude Code manage worktree lifecycle. Worktrees live in `<project-root>/.claude/worktrees/`. This trades a clean sandbox boundary (shared clones had their own `.git/`) for less custom infrastructure. The sandbox must allow writes to `<project-root>/.git/` (worktree tracking metadata) and the worktree directory itself. Beads and mail access go through MCP tools, so no additional project-root filesystem access is needed.
 
 #### Agent Tool Scoping
 
@@ -531,18 +550,18 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 | Serena/LSP | Yes | Yes | Maybe | Maybe | No |
 | Knowledge Graph MCP | Read+Write | Read | Read | Read | Read+Write |
 | GitHub MCP | Yes | Read-only | No | No | No |
-| `bd` CLI | Yes | Read-only | No | No | Read-only |
-| Mail MCP | Yes | No | No | No | Yes |
+| Beads MCP tools | Yes | Read-only | No | No | Read-only |
+| Mail MCP tools | Yes | No | No | No | Yes |
 | File search | Yes | Yes | Yes | Yes | No (reads reports) |
 
 ## Part 4: The Complete Workflow
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Human (CEO)                                                      │
-│ "We need to improve error handling across the API"               │
+│ CEO Agent (bun run ceo <project>)                                │
+│ Human: "We need to improve error handling across the API"        │
 │                                                                  │
-│ → Creates bead(s) via bd create                                  │
+│ → Creates bead(s) via beads MCP tools                            │
 │ → Or triggers planning when backlog is low                       │
 └──────────────────────────┬───────────────────────────────────────┘
                            │ beads ready
@@ -631,17 +650,18 @@ These principles from v1 are preserved:
 
 | v1 Component | Replacement |
 |---|---|
-| `src/lib/linear.ts` (~700 lines) | `bd` CLI (agents call directly) |
-| Linear MCP server config | Removed |
-| `getReadyIssues()`, `getInProgressIssues()`, etc. | `bd ready`, `bd list --status=...` |
+| `src/lib/linear.ts` (~700 lines) | Beads MCP tools (orchestration calls `bd`) |
+| Linear MCP server config | Removed — beads tools live on autopilot MCP |
+| `getReadyIssues()`, `getInProgressIssues()`, etc. | Beads MCP tools (`list_ready_beads`, etc.) |
 | Linear webhook handling | Beads state detection |
+| `src/lib/sandbox-clone.ts` (~200 lines) | Agent SDK built-in worktrees |
 
 ### What Gets Added
 
 | Component | Purpose |
 |---|---|
 | Knowledge graph MCP server | Institutional memory for all agents |
-| Mail via beads | Inter-agent communication (messages as beads in Dolt) |
+| Mail (Dolt table + MCP tools) | Inter-agent communication via autopilot MCP |
 | CTO pre/post-flight logic | Batch review dispatch in orchestration loop |
 | Review leg spawning | Conditional specialist agents |
 | PR maintenance agent | Unified fixer + review-responder |
@@ -653,9 +673,10 @@ v1's budget tracking (cost aggregation, daily/monthly limits) carries forward. T
 
 ## Part 6: Migration Path
 
-### Phase 1: Beads as task layer
+### Phase 1: Beads as task layer + worktrees
 - `bd init` in target projects
-- Adapt prompts to use `bd` CLI instead of Linear MCP
+- Add beads MCP tools to autopilot server (agents access beads via MCP, not `bd` CLI directly)
+- Switch from shared clones to Agent SDK built-in worktrees (drop `sandbox-clone.ts`)
 - Keep v1 orchestration loop but read from Beads instead of Linear
 - Linear becomes optional (can still sync if desired)
 
@@ -667,7 +688,7 @@ v1's budget tracking (cost aggregation, daily/monthly limits) carries forward. T
 
 ### Phase 3: CTO + review legs
 - Add CTO pre/post-flight logic to orchestration loop
-- Implement mail system (SQLite table + MCP tools)
+- Implement mail system (Dolt table + MCP tools on autopilot server)
 - Wire conditional review leg spawning
 - Build architectural contract prompt
 
@@ -682,6 +703,35 @@ v1's budget tracking (cost aggregation, daily/monthly limits) carries forward. T
 - Calibrate which review legs fire when (cost vs. value)
 - Improve knowledge graph seeding and maintenance
 - Scale parallelism (target: 15-30 agents with coherence)
+
+### Phase 6: Optional Linear Sync Agent
+
+Not all users will drop Linear. For teams that want Linear for stakeholder visibility, planning boards, or existing workflows, an optional sync agent bridges the two systems.
+
+```
+Linear (labeled autopilot:managed)  ←→  Beads (source of truth for execution)
+
+Ingest:  Linear issue created/updated → create/update bead
+Execute: Agents work against beads (via MCP tools)
+Report:  Bead state changes → update Linear issue status
+```
+
+The sync is scoped to labeled issues only — `autopilot:managed` issues in Linear mirror to beads, everything else is untouched. State mapping:
+
+| Linear State | Bead State | Sync Direction |
+|---|---|---|
+| Ready | ready | Linear → Bead |
+| In Progress | claimed | Bead → Linear |
+| In Review | (PR created) | Bead → Linear |
+| Done | closed | Bead → Linear |
+| Blocked | blocked | Bidirectional |
+
+Implementation options:
+1. **Poll-based sync agent** — runs as an optional loop in the orchestration (like the monitor). Polls Linear for labeled changes, polls Beads for state changes. Simplest, consistent with v1's polling model.
+2. **Webhook-driven** — Linear webhooks trigger bead creates/updates. Bead state change hook triggers Linear updates. Real-time but requires webhook endpoint.
+3. **Planning writes to both** — the CTO/planner files to Linear (for visibility) AND creates beads (for execution). Simpler than sync but requires dual-write logic.
+
+For users running beads-only (no Linear), this phase is skipped entirely — no config, no overhead, no sync agent.
 
 ## Open Questions
 
@@ -704,9 +754,9 @@ v1's budget tracking (cost aggregation, daily/monthly limits) carries forward. T
 5. **Beads + Dolt dependency** — Beads requires a Dolt SQL server.
    How lightweight is this in practice? Can it run embedded?
 
-6. **Linear integration** — Drop entirely, or keep as optional sync?
-   Beads replaces it as source of truth, but some teams may want
-   Linear for non-engineering stakeholder visibility.
+6. **Linear integration** — Phase 6 covers an optional sync agent.
+   Open: which sync approach (poll vs. webhook vs. dual-write)?
+   Poll is simplest and consistent with v1.
 
 ## Appendix: Gastown Evaluation
 
