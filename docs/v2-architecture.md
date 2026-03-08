@@ -31,7 +31,7 @@ v2 keeps the orchestration layer simple (it's plumbing, not product), replaces L
 │                                                               │
 │  Beads (bd)                                                   │
 │  - Replaces Linear as source of truth                         │
-│  - Git-backed (Dolt) dependency graph                         │
+│  - Dolt-backed (git-like model for SQL data)                  │
 │  - Hash IDs (no merge collisions)                             │
 │  - bd ready / bd claim / bd close                             │
 │  - Hierarchical: epics → tasks → sub-tasks                    │
@@ -66,10 +66,10 @@ v2 keeps the orchestration layer simple (it's plumbing, not product), replaces L
 
 ### 1. Beads Replaces Linear
 
-Beads (`bd`) is a git-backed issue tracker. It replaces Linear as the source of truth for task management.
+Beads (`bd`) is a Dolt-backed issue tracker. It replaces Linear as the source of truth for task management.
 
 **Why switch:**
-- Git-native — tasks live in the repo, not a SaaS API
+- Local-first — tasks live alongside the repo in `.beads/dolt/`, not in a SaaS API. Dolt uses a git-like model (commits, branches, merges) for SQL data, synced via `bd dolt push/pull`. The Dolt database is gitignored; JSONL exports can optionally be committed to git for portability.
 - Hash-based IDs — no collision risk with parallel agents
 - Dependency graph — `bd dep add` creates proper blocking relationships
 - `bd ready` / `bd claim` / `bd close` — clean state machine for agent workflows
@@ -78,9 +78,19 @@ Beads (`bd`) is a git-backed issue tracker. It replaces Linear as the source of 
 
 **Storage and access model:**
 
-Beads stores data in `.beads/dolt/` in the **project root** (shared across all agents). All agents access the same beads database via a Dolt SQL server process. Agents access beads through MCP tools on the autopilot server — they never talk to Dolt directly. This keeps the sandbox clean (no Dolt network access, no `bd` binary needed in worktrees) and gives the orchestration layer an audit/validation point.
+Beads stores data in `.beads/dolt/` in the **project root** (shared across all agents). A local Dolt SQL server process serves all reads/writes. Agents access beads through MCP tools on the autopilot server — they never talk to Dolt directly. This keeps the sandbox clean (no Dolt network access, no `bd` binary needed in worktrees) and gives the orchestration layer an audit/validation point.
 
 MCP tools (~6 total): `list_ready_beads`, `claim_bead`, `update_bead`, `close_bead`, `get_bead`, `search_beads`. Under the hood, the orchestration shells out to `bd` against the shared database.
+
+**Dependency traversal:** `bd ready` natively handles blocking dependencies (issues with open `blocks` deps are excluded) and parent-child hierarchy (children blocked if parent is blocked). In v1 we built this manually in `getReadyIssues()` — filtering for leaf issues with no incomplete blockers. The `list_ready_beads` MCP tool wraps `bd ready` and adds leaf-only filtering if beads doesn't skip parents with open children natively (needs verification).
+
+**Team use:** For teams, Dolt replication syncs the beads database across machines. `bd init --team` sets up shared sync; `bd dolt push/pull` keeps everyone current. DoltHub (GitHub-for-Dolt) provides hosted remotes and a web UI for browsing beads. Teammates create beads from their machines, autopilot claims and works on them, status changes replicate back.
+
+```
+Teammates ←→ Dolt remote (DoltHub / self-hosted) ←→ Local Dolt server ←→ MCP tools ←→ Agents
+```
+
+For solo use, no remote is needed — everything stays local.
 
 **What changes in the codebase:**
 
@@ -392,11 +402,26 @@ CEO (interactive agent — human's interface into the system)
 │
 ├── CTO ─────────────────────────────────────────────────────────
 │   │   Technical strategy, architectural coherence, owns the
-│   │   knowledge graph. The "keeper of how things fit together."
+│   │   knowledge graph. Coordinator, not investigator.
 │   │
-│   ├── Architects (ephemeral, review legs)
-│   │   Cross-cutting coherence. Spawned by CTO when a batch
-│   │   touches multiple subsystems. Not always needed.
+│   ├── Specialists (spawned by CTO for planning/review) ───────
+│   │   │
+│   │   ├── Product Manager (planning cycle)
+│   │   │   Strategic continuity, requirements, prioritization.
+│   │   │   Maintains Product Brief across planning sessions.
+│   │   │
+│   │   ├── Scout (ephemeral, planning)
+│   │   │   Codebase exploration, tooling inventory.
+│   │   │
+│   │   ├── Architect (ephemeral, planning + review leg)
+│   │   │   Structural health, cross-cutting coherence.
+│   │   │
+│   │   ├── Security Analyst (ephemeral, always spawned)
+│   │   │   Vulnerabilities, auth, crypto. Bypasses lifecycle
+│   │   │   filtering — critical findings always filed.
+│   │   │
+│   │   └── Quality Engineer (ephemeral, planning + review leg)
+│   │       Test coverage gaps, reliability, edge cases.
 │   │
 │   ├── Tech Leads (ephemeral, per-project)
 │   │   Decompose epics into implementable beads with proper
@@ -409,44 +434,28 @@ CEO (interactive agent — human's interface into the system)
 │       Combined fixer + review-responder. Handles CI failures,
 │       merge conflicts, and human review feedback on open PRs.
 │
-├── Product ─────────────────────────────────────────────────────
-│   │
-│   ├── Product Manager (planning cycle)
-│   │   Requirements, user stories, prioritization rationale.
-│   │
-│   └── Product Analyst (ephemeral, planning leg)
-│       Data-driven prioritization.
-│
-├── Quality ─────────────────────────────────────────────────────
-│   │
-│   └── QA Engineer (ephemeral, post-flight review leg)
-│       Test coverage, edge cases, reliability concerns.
-│
-├── Security ────────────────────────────────────────────────────
-│   │
-│   └── Security Reviewer (ephemeral, review leg)
-│       Spawned when beads touch security-sensitive areas.
-│
 └── Reviewer (persistent) ──────────────────────────────────────
     Reviews completed agent runs for patterns, cost, quality
     trends. Feeds findings into knowledge graph.
 ```
 
+All specialists report findings **back to the CTO**, not to each other. The CTO cross-pollinates findings across specialists and synthesizes them into beads. This matches v1's actual behavior — the CTO spawns specialists in small batches, reads their reports, and asks follow-ups.
+
 ### Role Lifecycle Summary
 
-| Role | Persistence | When Active |
-|---|---|---|
-| CEO | Interactive | Human launches via CLI to interact with the system |
-| CTO | Persistent | Pre/post-flight review, knowledge graph maintenance |
-| Product Manager | Planning cycle | Planning, prioritization |
-| Reviewer | Persistent | Post-run analysis, trend detection |
-| Tech Lead | Ephemeral | Epic decomposition into sub-beads |
-| Architect | Ephemeral | Pre/post-flight coherence checks |
-| Security Reviewer | Ephemeral | When beads touch security-sensitive areas |
-| QA Engineer | Ephemeral | Post-flight test coverage review |
-| Product Analyst | Ephemeral | Planning investigations |
-| Engineer | Ephemeral | Bead implementation |
-| PR Maintenance | Ephemeral | CI failures, merge conflicts, review feedback |
+| Role | Reports to | Persistence | When Active |
+|---|---|---|---|
+| CEO | Human | Interactive | Human launches via CLI to interact with the system |
+| CTO | CEO | Persistent | Planning, pre/post-flight review, knowledge graph |
+| Product Manager | CTO | Planning cycle | Strategic continuity, requirements, prioritization |
+| Scout | CTO | Ephemeral | Codebase exploration during planning |
+| Architect | CTO | Ephemeral | Planning + pre/post-flight coherence checks |
+| Security Analyst | CTO | Ephemeral | Always spawned during planning + security review legs |
+| Quality Engineer | CTO | Ephemeral | Planning + post-flight test coverage review |
+| Tech Lead | CTO | Ephemeral | Epic decomposition into sub-beads |
+| Engineer | CTO | Ephemeral | Bead implementation |
+| PR Maintenance | CTO | Ephemeral | CI failures, merge conflicts, review feedback |
+| Reviewer | CEO | Persistent | Post-run analysis, trend detection |
 
 ### The CEO Agent
 
@@ -704,19 +713,23 @@ v1's budget tracking (cost aggregation, daily/monthly limits) carries forward. T
 - Improve knowledge graph seeding and maintenance
 - Scale parallelism (target: 15-30 agents with coherence)
 
-### Phase 6: Optional Linear Sync Agent
+### Phase 6: Optional External Tracker Sync
 
-Not all users will drop Linear. For teams that want Linear for stakeholder visibility, planning boards, or existing workflows, an optional sync agent bridges the two systems.
+Beads is the source of truth for execution, but teams may want external trackers for stakeholder visibility or contributor access.
+
+#### Linear Sync
+
+For teams keeping Linear for planning boards and stakeholder visibility:
 
 ```
 Linear (labeled autopilot:managed)  ←→  Beads (source of truth for execution)
 
-Ingest:  Linear issue created/updated → create/update bead
+Ingest:  Linear issue created/updated → create/update bead (→ Triage)
 Execute: Agents work against beads (via MCP tools)
 Report:  Bead state changes → update Linear issue status
 ```
 
-The sync is scoped to labeled issues only — `autopilot:managed` issues in Linear mirror to beads, everything else is untouched. State mapping:
+Scoped to `autopilot:managed` labeled issues only. State mapping:
 
 | Linear State | Bead State | Sync Direction |
 |---|---|---|
@@ -726,12 +739,52 @@ The sync is scoped to labeled issues only — `autopilot:managed` issues in Line
 | Done | closed | Bead → Linear |
 | Blocked | blocked | Bidirectional |
 
-Implementation options:
-1. **Poll-based sync agent** — runs as an optional loop in the orchestration (like the monitor). Polls Linear for labeled changes, polls Beads for state changes. Simplest, consistent with v1's polling model.
-2. **Webhook-driven** — Linear webhooks trigger bead creates/updates. Bead state change hook triggers Linear updates. Real-time but requires webhook endpoint.
-3. **Planning writes to both** — the CTO/planner files to Linear (for visibility) AND creates beads (for execution). Simpler than sync but requires dual-write logic.
+#### GitHub Issues Sync
 
-For users running beads-only (no Linear), this phase is skipped entirely — no config, no overhead, no sync agent.
+For open-source projects or teams using GitHub Issues as their contributor-facing tracker:
+
+```
+GitHub Issue (labeled autopilot) → Beads (Triage state) → Human/CTO approves → Ready
+```
+
+This enables external contributors to file issues that autopilot can work on, without requiring contributors to install Dolt or know about beads.
+
+#### Security: Untrusted Input
+
+External issues (especially GitHub Issues from public repos) are **untrusted user input**. A malicious issue could contain prompt injection payloads that, if passed to an agent, cause unintended behavior.
+
+**The core problem:** In v1/v2, Triage → Ready is fully automated (Project Owner agent auto-promotes). If external issues land in Triage, they'd be auto-executed — no human review.
+
+**Solution: Inbox state.** External issues land in a separate **Inbox** state that is never auto-processed. Only a human (via the CEO agent) can promote Inbox → Triage or Inbox → Ready. This separates trust origins:
+
+| Source | Lands in | Promotion |
+|---|---|---|
+| Planning system (internal) | Triage | Auto (Project Owner agent) |
+| Linear sync (team-controlled) | Triage | Auto (trusted internal tool) |
+| GitHub Issues (external/public) | **Inbox** | **Human only** (via CEO agent) |
+
+The CEO agent is the natural review interface: "Show me the inbox" → human approves, rejects, or edits before anything executes.
+
+Defense-in-depth beyond the Inbox gate:
+1. **Label gate** — only issues labeled by a maintainer (e.g., `autopilot`) get synced at all. Unlabeled drive-by issues are ignored entirely.
+2. **Input sanitization** — strip template markers (`{{}}`), control characters, shell metacharacters from titles and bodies before creating beads. Extend v1's `sanitizeMessage()` pattern.
+3. **Sandbox containment** — even if injection succeeds, agents can't escape their worktree, access credentials directly, or reach the network beyond allowlisted domains.
+4. **Content scanning** — the sync agent flags suspicious patterns (known injection phrases, encoded payloads, suspicious URLs) for human review.
+
+#### Implementation
+
+Poll-based sync agent running as an optional loop in the orchestration (like the monitor). Configurable per-tracker:
+```yaml
+sync:
+  linear:
+    enabled: true
+    label: "autopilot:managed"
+  github_issues:
+    enabled: false
+    label: "autopilot"
+```
+
+For teams using beads-only, this phase is skipped entirely — no config, no overhead, no sync agent.
 
 ## Open Questions
 
