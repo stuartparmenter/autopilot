@@ -1329,6 +1329,172 @@ The dashboard needs a refresh for v2 but the architecture stays the same (Hono +
 
 Pause/resume API carries forward. Triage approval moves to CEO agent (interactive) rather than dashboard buttons.
 
+## Dependency Map
+
+What depends on what. Read top-to-bottom as rough build order. Items at the same level can be built in parallel. Arrows show "requires."
+
+```mermaid
+graph TD
+    subgraph "Infrastructure (build first)"
+        DOLT[Dolt server setup]
+        BEADS_MCP[Beads MCP tools<br/>list_ready, claim, update, close, search]
+        GK[gk v2 MCP server<br/>✅ v0.1.0 built]
+        WORKTREE[Agent SDK worktree integration]
+        MAIL_MCP[Mail MCP tools<br/>send_mail, check_inbox, reply, archive, send_and_wait]
+    end
+
+    subgraph "Orchestration (build second)"
+        LOOP[Main loop<br/>fillSlots + checkOpenPRs + deliverMail + checkPlanning]
+        SLOTS[Slot management + budget tracking]
+        STALE[Stale recovery]
+        SHUTDOWN[Graceful shutdown + crash recovery]
+        WORKFLOW[Workflow dimension mgmt<br/>bd set-state workflow=X]
+    end
+
+    subgraph "Personas (build in parallel with orchestration)"
+        P_CTO[personas/cto.md]
+        P_DIR[personas/director.md]
+        P_STAFF[personas/staff-engineer.md]
+        P_ENG[personas/engineer.md]
+        P_PRMAINT[personas/pr-maintenance.md]
+        P_REVIEW[personas/architect.md<br/>security-reviewer.md<br/>qa-reviewer.md<br/>product-reviewer.md]
+        P_CEO[personas/ceo.md]
+    end
+
+    subgraph "Tasks (build after personas)"
+        T_PLAN[planning-cycle.md]
+        T_PREFLIGHT[pre-flight.md]
+        T_POSTFLIGHT[post-flight.md]
+        T_PROJECT[own-project.md]
+        T_DECOMPOSE[decompose-epic.md]
+        T_REVIEWBATCH[review-batch.md]
+        T_IMPLEMENT[implement-bead.md]
+        T_FIX[fix-pr.md + respond-review.md]
+        T_REVIEWPR[review-pr.md]
+        T_INBOX[inbox-dispatch.md]
+    end
+
+    subgraph "Skills"
+        S_KG[Knowledge graph skill<br/>query/write conventions]
+        S_MAIL[Mail skill<br/>when/how to communicate]
+        S_CONTRACT[CTO contract skill<br/>interpret arch contracts]
+    end
+
+    subgraph "Integration"
+        DASHBOARD[Dashboard refresh<br/>beads state, mail queue, KG health]
+        CEO_CLI[bun run ceo CLI entry point]
+        SETUP[bun run setup updates<br/>bd init, Dolt check, gk init]
+    end
+
+    %% Infrastructure dependencies
+    DOLT --> BEADS_MCP
+    DOLT --> GK
+    BEADS_MCP --> MAIL_MCP
+    BEADS_MCP --> WORKFLOW
+
+    %% Orchestration dependencies
+    BEADS_MCP --> LOOP
+    MAIL_MCP --> LOOP
+    WORKTREE --> LOOP
+    WORKFLOW --> LOOP
+    LOOP --> SLOTS
+    LOOP --> STALE
+    LOOP --> SHUTDOWN
+
+    %% Task dependencies on infrastructure
+    BEADS_MCP --> T_IMPLEMENT
+    BEADS_MCP --> T_DECOMPOSE
+    GK --> T_PREFLIGHT
+    GK --> T_POSTFLIGHT
+    GK --> T_IMPLEMENT
+    GK --> T_PROJECT
+    MAIL_MCP --> T_PREFLIGHT
+    MAIL_MCP --> T_PLAN
+    MAIL_MCP --> T_INBOX
+
+    %% Task dependencies on personas
+    P_CTO --> T_PLAN
+    P_CTO --> T_PREFLIGHT
+    P_CTO --> T_POSTFLIGHT
+    P_DIR --> T_PROJECT
+    P_STAFF --> T_DECOMPOSE
+    P_STAFF --> T_REVIEWBATCH
+    P_ENG --> T_IMPLEMENT
+    P_PRMAINT --> T_FIX
+    P_REVIEW --> T_REVIEWPR
+
+    %% Review pipeline
+    T_REVIEWBATCH --> T_REVIEWPR
+    T_IMPLEMENT --> T_REVIEWBATCH
+
+    %% Skills feed into personas
+    S_KG --> P_CTO
+    S_KG --> P_ENG
+    S_KG --> P_DIR
+    S_MAIL --> P_CTO
+    S_MAIL --> P_ENG
+    S_MAIL --> P_STAFF
+    S_CONTRACT --> P_ENG
+
+    %% Integration
+    LOOP --> DASHBOARD
+    BEADS_MCP --> DASHBOARD
+    GK --> DASHBOARD
+    P_CEO --> CEO_CLI
+    BEADS_MCP --> CEO_CLI
+    GK --> CEO_CLI
+    MAIL_MCP --> CEO_CLI
+    DOLT --> SETUP
+```
+
+### Component × Dependency Matrix
+
+What each buildable component **requires** (must exist) and **produces** (enables others).
+
+| Component | Requires | Produces | Status |
+|-----------|----------|----------|--------|
+| **Dolt server** | — | SQL database for beads, gk, operational tables | Not started |
+| **Beads MCP tools** | Dolt, `bd` CLI | `list_ready`, `claim`, `update`, `close`, `search` for agents | Not started |
+| **gk v2** | Dolt (or SQLite) | Knowledge graph read/write for all agents | **v0.1.0 done** |
+| **Mail MCP tools** | Beads MCP (messages are beads) | `send_mail`, `check_inbox`, `reply`, `send_and_wait` | Not started |
+| **Workflow dimension** | Beads MCP | `bd set-state workflow=X`, orchestration queries by label | Not started |
+| **Agent SDK worktrees** | — | Isolated working dirs, replaces sandbox-clone.ts | Not started |
+| **Main orchestration loop** | Beads MCP, Mail MCP, Worktrees, Workflow | fillSlots, checkOpenPRs, deliverMail, checkPlanning | Evolves from v1 |
+| **CTO persona + planning** | gk, Mail, Beads MCP | Project epics, architectural contracts, KG entries | Not started |
+| **Director persona + project** | gk, Beads MCP | Project grooming, status updates (KG obs), completion | Not started |
+| **Staff Eng persona + decompose** | Beads MCP, gk | Ready beads with deps, approach notes, acceptance criteria | Not started |
+| **Staff Eng persona + review** | Mail, Review leg personas | PR verdicts (approve/block), escalations to CTO | Not started |
+| **Engineer persona + implement** | Beads MCP, gk, Worktrees, CTO contract skill | PRs, KG observations, bead status updates | Evolves from v1 |
+| **PR Maintenance persona** | Beads MCP, Mail | CI fixes, merge conflict resolution, review responses | Evolves from v1 |
+| **Review leg personas** | gk, Worktrees | PR verdicts with rationale | Not started |
+| **CEO CLI** | Beads MCP, gk, Mail | Interactive human interface | Not started |
+| **KG skill** | gk v2 | Teaches agents query/write conventions | Not started |
+| **Mail skill** | Mail MCP | Teaches agents communication patterns | Not started |
+| **Dashboard** | Beads MCP, gk, Main loop | Web UI for monitoring | Evolves from v1 |
+| **Setup script** | Dolt, `bd` CLI, gk | Project onboarding | Evolves from v1 |
+
+### What This Reveals
+
+**Critical path:** Dolt → Beads MCP → {Workflow, Mail MCP, Main loop} → everything else. Dolt and Beads MCP unblock the most downstream work. gk is off the critical path (already built).
+
+**Parallel tracks once Beads MCP exists:**
+1. **Orchestration track:** Main loop, slot management, stale recovery, shutdown
+2. **Persona track:** All personas can be written in parallel (they're markdown + iteration)
+3. **Skill track:** KG skill, Mail skill, Contract skill
+4. **Integration track:** Dashboard, CEO CLI, Setup script
+
+**Interface gaps (things consumed but not clearly produced):**
+- **CTO architectural contracts** — CTO produces them, engineers consume them via mail. The contract format isn't specified. Deliberate: the CTO persona defines this, not the architecture doc.
+- **Review verdicts** — Review legs produce verdicts, Staff Engineer consumes them. Format? Structured mail? Labels on the bead? Needs definition.
+- **Director ↔ Staff Engineer handoff** — Director says "decompose this epic." How? Mail? Or does the orchestration detect epics in the right state and spawn Staff Engineer? Needs definition.
+- **Specialist findings** — Specialists report to CTO via mail during planning. What does a finding look like? Structured? Free-form? Enough for CTO to synthesize, but format matters for quality.
+- **Project completion signal** — Director closes a project "when all beads are done." How does the Director detect this? Poll beads? Orchestration notifies? Needs definition.
+
+**Not-yet-specified integration points:**
+- How does `deliverMail()` decide which persona to spawn for a message? By `assignee` field → persona mapping?
+- How does the orchestration know when to spawn the Director vs Staff Engineer vs CTO? Trigger conditions for each role.
+- How do review leg verdicts get applied? Staff Engineer calls `bd set-state` directly? Or sends mail to orchestration?
+
 ## Open Questions
 
 1. ~~**Knowledge graph choice**~~ — **Resolved: gk v2.** Rewrite of gk in TypeScript with pluggable SQLite/Dolt backend, Hebbian + Ebbinghaus temporal dynamics, FTS (no vector search / Ollama). Full spec at `~/Builds/gk/v2.md`.
