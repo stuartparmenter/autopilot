@@ -312,32 +312,33 @@ A persistent agent role (runs as part of the orchestration loop, not a one-off) 
 2. Detect conflicts: two beads changing the same module incompatibly, beads violating existing constraints
 3. Write an **architectural contract** — context each agent receives via mail before starting
 
-**Post-flight review** (after agents complete but before PRs merge):
-1. Review the actual diffs (or structured summaries from agents)
-2. Cross-check branches against each other for duplicate functionality, incompatible interfaces
-3. Issue verdicts: APPROVE, APPROVE WITH NOTES, BLOCK
+**Post-flight** (after a batch completes):
+1. Curate the knowledge graph — validate engineer observations, elevate patterns, prune noise, adjust confidence
+2. Read batch summary from Staff Engineer (via mail) — what was approved, blocked, escalated
+3. Handle escalations — systemic issues the Staff Engineer flagged
+4. Update roadmap knowledge — link completed work to strategic entities
 
-**The CTO does NOT read code.** This is deliberate. Its inputs are:
+**The CTO does NOT review PRs, read diffs, or approve individual changes.** This is deliberate. The CTO operates at the strategic/architectural level. PR review is the Staff Engineer's job. If the CTO is reading `server.ts`, something went wrong.
+
+The CTO's inputs are:
 - Knowledge graph queries (decisions, components, patterns, constraints)
 - Bead descriptions (what each task intends to change)
-- Agent summaries (the "record decisions" step output, not diffs)
-- Review leg reports (architecture/security/QA/product verdicts)
-
-If the CTO needs to read `server.ts` to do its job, the knowledge graph has failed.
+- Staff Engineer summaries (batch results, escalations)
+- Agent observations written to knowledge graph during work
 
 #### Conditional Review Legs
 
-Not every change needs every reviewer. The CTO decides which specialist perspectives are needed based on what the beads touch:
+The Staff Engineer decides which specialist review legs to trigger for each PR, based on what changed:
 
-| Bead touches... | Triggers |
+| PR touches... | Triggers |
 |---|---|
-| Multiple subsystems | Architecture review (always) |
+| Multiple subsystems | Architect review (always) |
 | Auth, crypto, permissions, user data | Security review |
 | User-facing behavior, new features, API changes | Product review |
 | Core infrastructure, data layer, performance | QA review |
-| Single file, isolated bugfix | Architecture only (lightweight) |
+| Single file, isolated bugfix | Staff Engineer only (lightweight) |
 
-Review legs are ephemeral agents spawned by the CTO for specific batches.
+Review legs are ephemeral agents spawned by the Staff Engineer, running in parallel. Verdicts flow back to the Staff Engineer, who makes the approve/block decision. Systemic concerns get escalated to CTO via mail.
 
 #### Decision Authority and Pushback
 
@@ -527,9 +528,9 @@ CEO (interactive agent — human's interface into the system)
 │
 ├── CTO ─────────────────────────────────────────────────────────
 │   │   Technical strategy, architectural coherence, owns the
-│   │   knowledge graph. Coordinator, not investigator.
+│   │   knowledge graph. Thinks in systems, never reads diffs.
 │   │
-│   ├── Specialists (spawned by CTO for planning/review) ───────
+│   ├── Specialists (spawned by CTO for planning) ────────────
 │   │   │
 │   │   ├── Product Manager (planning cycle)
 │   │   │   Strategic continuity, requirements, prioritization.
@@ -538,49 +539,77 @@ CEO (interactive agent — human's interface into the system)
 │   │   ├── Scout (ephemeral, planning)
 │   │   │   Codebase exploration, tooling inventory.
 │   │   │
-│   │   ├── Architect (ephemeral, planning + review leg)
-│   │   │   Structural health, cross-cutting coherence.
-│   │   │
 │   │   ├── Security Analyst (ephemeral, always spawned)
 │   │   │   Vulnerabilities, auth, crypto. Bypasses lifecycle
 │   │   │   filtering — critical findings always filed.
 │   │   │
-│   │   └── Quality Engineer (ephemeral, planning + review leg)
+│   │   └── Quality Engineer (ephemeral, planning)
 │   │       Test coverage gaps, reliability, edge cases.
 │   │
-│   ├── Tech Leads (ephemeral, per-project)
-│   │   Decompose epics into implementable beads with proper
-│   │   dependency chains. v1's "technical planner" role.
-│   │
-│   ├── Engineers (ephemeral, per-bead)
-│   │   Implement individual beads. The bulk of the workforce.
-│   │
-│   └── PR Maintenance (ephemeral, per-PR)
-│       Combined fixer + review-responder. Handles CI failures,
-│       merge conflicts, and human review feedback on open PRs.
+│   ├── Director (ephemeral, per-project) ────────────────────
+│   │   │   Owns a project (epic). Wears multiple hats depending
+│   │   │   on what the project needs — engineer + product + UX +
+│   │   │   security lens. Grooms beads, writes status updates,
+│   │   │   tracks health, closes project when complete.
+│   │   │   v1's "project owner" role, elevated.
+│   │   │
+│   │   └── Staff Engineer (ephemeral, per-batch) ────────────
+│   │       │   Decomposes Director's epics into implementable
+│   │       │   beads. Reviews PRs for design intent. Owns
+│   │       │   pre-Ready quality gate and post-PR review pipeline.
+│   │       │
+│   │       ├── Engineers (ephemeral, per-bead)
+│   │       │   Implement individual beads. The bulk of the workforce.
+│   │       │
+│   │       ├── PR Maintenance (ephemeral, per-PR)
+│   │       │   Combined fixer + review-responder. Handles CI failures,
+│   │       │   merge conflicts, and human review feedback on open PRs.
+│   │       │
+│   │       └── Review Legs (ephemeral, per-PR, conditional)
+│   │           │
+│   │           ├── Architect (cross-cutting coherence)
+│   │           ├── Security Reviewer (code-level audit)
+│   │           ├── QA Reviewer (test coverage, edge cases)
+│   │           └── Product Reviewer (feature correctness)
 │
 └── Reviewer (persistent) ──────────────────────────────────────
     Reviews completed agent runs for patterns, cost, quality
     trends. Feeds findings into knowledge graph.
 ```
 
-All specialists report findings **back to the CTO**, not to each other. The CTO cross-pollinates findings across specialists and synthesizes them into beads. This matches v1's actual behavior — the CTO spawns specialists in small batches, reads their reports, and asks follow-ups.
+**Key structural changes from v1:**
+
+- **CTO never reviews PRs.** The CTO operates at the strategic/architectural level — planning, pre-flight contracts, knowledge graph curation. If the CTO is reading diffs, something went wrong. The CTO hears about problems via mail escalation: "Security reviewer found a systemic auth pattern issue across 3 PRs."
+
+- **Director owns projects.** v1's Project Owner role, elevated. A Director owns a project (epic) end-to-end — grooming beads, writing status updates, tracking project health, closing the project when all work is done. The Director wears whatever hat the project needs: engineer lens for technical projects, product + UX lens for user-facing work, security lens for hardening efforts. This fills the gap v1 had where projects drifted without clear ownership or completion. Status updates go to the knowledge graph as observations on the project's roadmap entity — temporal, queryable, and linked to the beads via `implemented_by` relationships. The CEO can query "what's the status of active projects?" and get the latest observations.
+
+- **Staff Engineer is the tactical layer.** Decomposes Director's epics into implementable beads (pre-Ready), then reviews PRs for design intent after implementation (post-PR). Collects specialist review verdicts and applies approve/block. This is the senior IC who ensures tactical quality.
+
+- **Specialists split across two phases.** Planning specialists (Scout, PM, Security, QA) report to CTO during planning. Review specialists (Architect, Security, QA, Product) report to Staff Engineer during PR review. Some roles appear in both phases with different scope — Security during planning does threat modeling, Security during review does code-level audit.
+
+- **Agents delegate.** CTO, Director, and Staff Engineer are hub agents — they spawn sub-agents, collect results, and make decisions. Specialists and engineers are leaf agents — focused work, report back. Hub agents can spawn research sub-agents when needed: "Investigate how module X handles errors before I plan this."
+
+All specialists report findings **back to their hub** — planning specialists to CTO, review specialists to Staff Engineer. The Director sits between CTO and Staff Engineer: the CTO creates project epics, the Director owns and grooms them, the Staff Engineer decomposes them into implementable beads.
 
 ### Role Lifecycle Summary
 
 | Role | Reports to | Persistence | When Active |
 |---|---|---|---|
 | CEO | Human | Interactive | Human launches via CLI to interact with the system |
-| CTO | CEO | Persistent | Planning, pre/post-flight review, knowledge graph |
+| CTO | CEO | Persistent | Planning, pre-flight contracts, knowledge graph curation |
 | Product Manager | CTO | Planning cycle | Strategic continuity, requirements, prioritization |
 | Scout | CTO | Ephemeral | Codebase exploration during planning |
-| Architect | CTO | Ephemeral | Planning + pre/post-flight coherence checks |
-| Security Analyst | CTO | Ephemeral | Always spawned during planning + security review legs |
-| Quality Engineer | CTO | Ephemeral | Planning + post-flight test coverage review |
-| Tech Lead | CTO | Ephemeral | Epic decomposition into sub-beads |
-| Engineer | CTO | Ephemeral | Bead implementation |
-| PR Maintenance | CTO | Ephemeral | CI failures, merge conflicts, review feedback |
-| Reviewer | CEO | Persistent | Post-run analysis, trend detection |
+| Security Analyst | CTO | Ephemeral | Threat modeling during planning |
+| Quality Engineer | CTO | Ephemeral | Coverage/reliability gaps during planning |
+| Director | CTO | Per-project | Owns a project: grooming, status updates, health tracking, completion |
+| Staff Engineer | Director | Per-batch | Bead decomposition (pre-Ready) + PR review pipeline (post-PR) |
+| Engineer | Staff Engineer | Ephemeral | Bead implementation |
+| PR Maintenance | Staff Engineer | Ephemeral | CI failures, merge conflicts, review feedback |
+| Architect (review) | Staff Engineer | Ephemeral | Cross-cutting coherence, pattern consistency |
+| Security Reviewer | Staff Engineer | Ephemeral | Code-level security audit (conditional) |
+| QA Reviewer | Staff Engineer | Ephemeral | Test coverage, edge cases (conditional) |
+| Product Reviewer | Staff Engineer | Ephemeral | Feature correctness, requirements match (conditional) |
+| Reviewer | CEO | Persistent | Post-run analysis, cost/quality trends, knowledge graph |
 
 ### The CEO Agent
 
@@ -607,9 +636,82 @@ The CEO agent replaces Gastown's "mayor" concept. Where Gastown runs a persisten
 - "Why was ENG-42 blocked? What would unblock it?"
 - "Run a planning cycle focused on test coverage gaps"
 
+### The Pipeline: Shift Left
+
+The core idea: catching issues earlier is exponentially cheaper than catching them later. An Architect review before Ready costs one agent pass. Discovering conflicting beads after two engineers have been working for 30 minutes costs $40+ in wasted work.
+
+```
+                    Cost to catch issue
+                    ─────────────────────────────────────►
+  Planning    Decomposition    Review    Implementation    PR Review    Production
+    $0.50        $2              $5         $20              $50          $500
+```
+
+#### Pre-Ready Pipeline
+
+```
+Strategic (CTO): what & why
+  CTO + [PM, Scout, Security, QA] → Findings → Project epics
+  CTO writes architectural constraints to knowledge graph
+  ↓
+Tactical (Staff Engineer): how & decomposition
+  Staff Engineer decomposes epics → Draft beads with:
+    - Approach notes (how to implement)
+    - Acceptance criteria
+    - Dependency chains (bd dep add)
+    - Affected modules (for review routing)
+  Staff Engineer can spawn focused research sub-agents:
+    "Investigate how module X handles errors before I plan this"
+  ↓
+Cross-cutting review (Architect, conditional)
+  For multi-bead batches: Architect checks draft beads for:
+    - Conflicting changes to same modules
+    - Missing dependencies between beads
+    - Pattern consistency across the batch
+  Single isolated beads can skip this gate
+  ↓
+workflow:ready (well-specified, reviewed, dependency-clear)
+```
+
+#### Post-PR Pipeline
+
+```
+PR created → workflow:in_review
+  ↓
+Staff Engineer post-flight:
+  Decides which review legs to trigger based on what changed
+    │
+    ├── Architect Review (always for multi-system changes)
+    │   Cross-cutting coherence, pattern consistency
+    │
+    ├── Security Review (conditional: auth, crypto, user data, external input)
+    │   Code-level audit, injection vectors, secret handling
+    │
+    ├── QA Review (conditional: core infra, data layer, new features)
+    │   Test coverage, edge cases, error handling
+    │
+    └── Product Review (conditional: user-facing, API changes)
+        Feature correctness, requirements match
+  │
+  ↓
+Staff Engineer collects verdicts → approve / request changes / block
+  Escalates to CTO only for architectural/systemic concerns
+CTO gets batch summary via mail (not individual PRs)
+```
+
+#### The Balance
+
+More gates = fewer defects but higher cost and slower throughput. The sweet spot:
+
+- **2 gates before Ready** — Staff Engineer decomposition + Architect cross-check (conditional). This catches the expensive mistakes (conflicting work, bad decomposition, missing dependencies).
+- **1-3 gates after PR** — Staff Engineer always reviews, specialist legs conditional on what changed. Most PRs get 1-2 reviewers, not 4.
+- **Sub-agents for depth** — When a reviewer spots something concerning, they can spawn a focused check agent rather than doing a deep dive themselves. Quick triage, then targeted investigation.
+
+Cost control: the orchestration tracks review cost per bead. If reviews routinely cost more than implementation, the Staff Engineer persona should be tuned to be less thorough on low-risk changes.
+
 ### Planning Cycle
 
-The planning cycle uses specialist perspectives:
+The planning cycle uses specialist perspectives. CTO dispatches specialists via mail, collects findings, synthesizes into epics. Specialists are leaf agents — focused work, report back.
 
 ```
 Human says "backlog needs work" (or threshold trigger)
@@ -617,17 +719,29 @@ Human says "backlog needs work" (or threshold trigger)
         ▼
 CTO runs planning
         │
-        ├── Briefing Agent — state of the project summary
         ├── Scout — explore codebase, find improvement opportunities
-        ├── Security Analyst — identify security gaps
+        ├── Security Analyst — threat model, identify security gaps
         ├── Quality Engineer — find testing gaps, reliability issues
-        ├── Product Manager — assess product direction
-        └── Architect — evaluate structural health, tech debt
+        ├── Product Manager — assess product direction, user needs
         │
-        ▼
-CTO synthesizes findings into beads
-Tech Lead decomposes epics into implementable sub-beads
+        ▼ (specialists report findings via mail)
+        │
+CTO synthesizes findings → project epics (beads)
+CTO writes strategic knowledge to knowledge graph
+CTO assigns projects to Directors
+        │
+        ▼ (Director owns the project)
+        │
+Director grooms epics, writes status updates, tracks health
+Director hands off to Staff Engineer for decomposition
+        │
+        ▼ (Staff Engineer decomposes)
+        │
+Staff Engineer decomposes epics → implementable sub-beads
+Architect cross-checks batch → workflow:ready
 ```
+
+Specialist reports are **mail to the CTO** — ephemeral coordination, not permanent artifacts. The CTO's synthesis (epics, knowledge graph entities) is the institutional memory.
 
 ## Part 3: Agent Tooling, Safety, and Sandboxing
 
@@ -698,22 +812,43 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 │ → Creates bead(s) via beads MCP tools                            │
 │ → Or triggers planning when backlog is low                       │
 └──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ CTO (planning)                                                   │
+│                                                                  │
+│ → Dispatches specialists: Scout, PM, Security, QA                │
+│ → Collects findings via mail                                     │
+│ → Synthesizes into project epics                                 │
+│ → Writes strategic knowledge + pre-flight contracts              │
+│ → Assigns projects to Directors                                  │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Director (project ownership)                                     │
+│                                                                  │
+│ → Grooms project epics — refines scope, acceptance criteria      │
+│ → Writes project status updates                                  │
+│ → Hands off to Staff Engineer for decomposition                  │
+│ → Tracks project health, closes project when all beads done      │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Staff Engineer (decomposition — pre-Ready gate)                  │
+│                                                                  │
+│ → Decomposes epics into implementable beads                      │
+│ → Sets dependencies, approach notes, acceptance criteria         │
+│ → Spawns Architect for cross-cutting review (multi-bead batches) │
+│ → Promotes beads to workflow:ready                                │
+└──────────────────────────┬───────────────────────────────────────┘
                            │ beads ready
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ CTO (pre-flight)                                                 │
+│ Engineers (parallel)                                              │
 │                                                                  │
-│ → Queries knowledge graph for context                            │
-│ → Detects conflicts between beads in the batch                   │
-│ → Writes architectural contract                                  │
-│ → Sends contract to each engineer via mail                       │
-└──────────────────────────┬───────────────────────────────────────┘
-                           │ engineers spawned with beads
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ Engineers (10+ parallel)                                         │
-│                                                                  │
-│ → Read bead + read arch contract from mail                       │
+│ → Read bead + CTO's architectural contract from mail             │
 │ → Query knowledge graph for relevant context                     │
 │ → Plan → Implement → Record decisions → Self-review              │
 │ → Build/test → Push branch → Create PR                           │
@@ -723,24 +858,34 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
                            │ PRs created
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ CTO (post-flight)                                                │
+│ Staff Engineer (post-PR review pipeline)                         │
 │                                                                  │
-│ → Reviews branches for architectural coherence                   │
-│ → Spawns conditional review legs (security, QA, product)         │
-│ → Cross-checks branches against each other                       │
-│ → Issues APPROVE / BLOCK verdicts                                │
-│ → Updates knowledge graph                                        │
+│ → Decides which review legs to trigger                           │
+│ → Spawns conditional legs in parallel:                           │
+│     Architect, Security, QA, Product                             │
+│ → Collects verdicts → approve / request changes / block          │
+│ → Escalates systemic concerns to CTO via mail                    │
 └──────────────────────────┬───────────────────────────────────────┘
                            │ approved PRs
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ PR Maintenance (as needed)                                       │
+│ CTO (post-flight — knowledge curation)                           │
+│                                                                  │
+│ → Reads batch summary from Staff Engineer                        │
+│ → Curates knowledge graph: validate, elevate, prune              │
+│ → Handles escalations                                            │
+│ → Updates roadmap entities (completion inferred from beads)       │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ PR Maintenance (as needed, throughout)                            │
 │                                                                  │
 │ → CI failure? Diagnose, fix, push                                │
 │ → Merge conflict? Merge main, resolve, push                      │
 │ → Human review? Implement changes, reply to comments             │
-│ → Design concern? STOP → mail CTO → block bead                  │
-│ → Pattern detected? Escalate to CTO via knowledge graph          │
+│ → Design concern? STOP → mail Staff Engineer → block bead        │
+│ → Systemic pattern? Staff Engineer escalates to CTO              │
 │                                                                  │
 │ Monitor detects conditions, dispatches PR maintenance agents     │
 └─────────────────────────────────────────────────────────────────┘
@@ -795,20 +940,28 @@ This means the orchestration layer's job changes too. Instead of "spawn CTO with
 ```
 prompts/
   personas/
-    cto.md              — identity, authority, principles, tool access
-    engineer.md         — identity, methodology, constraints
-    pr-maintenance.md   — identity, escalation rules
-    reviewer.md         — identity, analysis approach
-    project-owner.md    — identity, triage rules
+    cto.md               — strategic vision, knowledge graph ownership, never reads diffs
+    director.md          — project ownership, multi-lens (eng+product+security), grooming, status
+    staff-engineer.md    — decomposition, review pipeline, design intent judgment
+    engineer.md          — implementation methodology, constraints, self-review
+    pr-maintenance.md    — CI/merge/review response, escalation rules
+    reviewer.md          — trend analysis, quality patterns, cost analysis
+    architect.md         — cross-cutting coherence, pattern consistency
+    security-reviewer.md — code-level security audit approach
+    qa-reviewer.md       — test coverage, edge cases, error handling
+    product-reviewer.md  — requirements match, feature correctness
   tasks/
-    planning-cycle.md   — CTO: investigate, synthesize, file beads
-    pre-flight.md       — CTO: architectural contracts for a batch
-    post-flight.md      — CTO: coherence review, merge verdicts
-    implement-bead.md   — Engineer: understand, plan, implement, validate
-    fix-pr.md           — PR Maintenance: diagnose, fix, push
-    respond-review.md   — PR Maintenance: address human feedback
-    triage.md           — Project Owner: accept/defer/decompose
-    inbox-dispatch.md   — Generic: check mail, decide next action
+    planning-cycle.md    — CTO: dispatch specialists, synthesize, file epics
+    pre-flight.md        — CTO: architectural contracts for a batch
+    post-flight.md       — CTO: knowledge graph curation, handle escalations
+    own-project.md       — Director: groom, status update, health check, completion
+    decompose-epic.md    — Staff Engineer: break epic into beads with deps
+    review-batch.md      — Staff Engineer: decide review legs, collect verdicts
+    implement-bead.md    — Engineer: understand, plan, implement, validate
+    fix-pr.md            — PR Maintenance: diagnose, fix, push
+    respond-review.md    — PR Maintenance: address human/agent feedback
+    review-pr.md         — Review legs: focused review with verdict
+    inbox-dispatch.md    — Generic: check mail, decide next action
 ```
 
 The orchestration composes: `persona + context + task` → final prompt passed to `runClaude()`.
@@ -820,9 +973,11 @@ The orchestration composes: `persona + context + task` → final prompt passed t
 | `cto.md` | `personas/cto.md` | `planning-cycle.md`, `pre-flight.md`, `post-flight.md`, `inbox-dispatch.md` |
 | `executor.md` | `personas/engineer.md` | `implement-bead.md` |
 | `fixer.md` + `review-responder.md` | `personas/pr-maintenance.md` | `fix-pr.md`, `respond-review.md` |
-| `project-owner.md` | `personas/project-owner.md` | `triage.md`, `inbox-dispatch.md` |
+| `project-owner.md` | `personas/staff-engineer.md` | `decompose-epic.md`, `review-batch.md`, `inbox-dispatch.md` |
 | `reviewer.md` | `personas/reviewer.md` | (analysis task TBD) |
 | `explain.md` | `personas/cto.md` | (read-only diagnostic task) |
+| (new) | `personas/architect.md` | `review-pr.md` (cross-cutting coherence) |
+| (new) | `personas/security-reviewer.md` | `review-pr.md` (security audit) |
 
 ### Plugins (specialized knowledge)
 
@@ -851,10 +1006,11 @@ See Part 7 for the full list. Summary: Linear SDK + OAuth (~1000 lines), sandbox
 
 | Component | Purpose |
 |---|---|
-| Knowledge graph MCP server | Institutional memory for all agents |
-| Mail (Dolt table + MCP tools) | Inter-agent communication via autopilot MCP |
-| CTO pre/post-flight logic | Batch review dispatch in orchestration loop |
-| Review leg spawning | Conditional specialist agents |
+| Knowledge graph MCP server (gk v2) | Institutional memory for all agents |
+| Mail (beads message type + MCP wrappers) | Inter-agent communication |
+| Director role | Project ownership, grooming, status updates, completion |
+| Staff Engineer role | Pre-Ready decomposition + post-PR review pipeline |
+| Review leg spawning | Conditional specialist review agents |
 | PR maintenance agent | Unified fixer + review-responder |
 | Knowledge graph skills | How agents query and write to the graph |
 
