@@ -44,7 +44,7 @@ v2 keeps the orchestration layer simple (it's plumbing, not product), replaces L
 │  Our TypeScript loop (simplified from v1)                     │
 │  - Agent SDK query() with sandbox + MCP injection             │
 │  - Per-agent plugins and tool scoping                         │
-│  - Inter-agent mail (Dolt table, exposed via MCP tools)        │
+│  - Inter-agent mail (beads message type, exposed via MCP tools) │
 │  - Budget tracking, slot management                           │
 │  - Activity streaming to dashboard                            │
 │  - Built-in worktrees (replaces shared clones)                │
@@ -112,116 +112,190 @@ For solo use, no remote is needed — everything stays local.
 
 The knowledge graph is the most important new component. It provides persistent, structured, queryable memory that outlives any individual agent session.
 
+**Decision: gk v2** — a rewrite of [gk](~/Builds/gk) (our own project) in TypeScript with pluggable SQLite/Dolt backend, Hebbian strengthening + Ebbinghaus decay for temporal dynamics, and no Ollama dependency. Full spec at `~/Builds/gk/v2.md`.
+
+#### Why gk
+
+We evaluated gk, Engram (199-bio), Google's always-on-memory-agent, Dolt-native agentic memory, mcp-memory-service, and the broader landscape (agent-recall, Cognee, Smriti, Mnemon). Key findings:
+
+- **gk has the right data model** — entity-relationship-observation triples with dynamic schema, 3-tier MCP tool design, domain guides that teach agents how to use it well
+- **Engram has the right temporal dynamics** — Hebbian strengthening (usage reinforces relevance) and Ebbinghaus decay (unused knowledge fades). Its consolidation pipeline (episodes → memories → digests via Opus) is unnecessary when agents write structured knowledge at write time
+- **Dolt gives us versioning for free** — every `dolt commit` snapshots the knowledge graph. `dolt diff` shows what changed between planning cycles. `dolt log` shows when decisions were added. Temporal awareness without custom staleness tracking
+- **Vector search is unnecessary** — agent queries are structured (specific entities, modules, patterns, decisions), not fuzzy semantic similarity. FTS + graph traversal covers 90%+ of real queries. No embedding model dependency
+
+gk v2 = gk's model + Engram's temporal dynamics + Dolt backend. No Ollama, no vector search, no consolidation.
+
+#### Schema (Dolt tables, same instance as beads)
+
+```sql
+CREATE TABLE kg_entities (
+  id VARCHAR(64) PRIMARY KEY,
+  name VARCHAR(256) NOT NULL,
+  type VARCHAR(64) NOT NULL,           -- decision, component, pattern, constraint, or agent-defined (autopilot adds: roadmap)
+  properties JSON,
+  confidence FLOAT DEFAULT 0.8,
+  staleness_tier VARCHAR(16) DEFAULT 'detail',  -- detail/summary/overview (pyramid model)
+  access_count INT DEFAULT 0,                    -- Hebbian: usage strengthens relevance
+  last_accessed TIMESTAMP,                       -- Ebbinghaus: decay from last access
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FULLTEXT INDEX ft_name (name)
+);
+
+CREATE TABLE kg_observations (
+  id VARCHAR(64) PRIMARY KEY,
+  entity_id VARCHAR(64) NOT NULL,
+  content TEXT NOT NULL,
+  confidence FLOAT DEFAULT 0.8,
+  source VARCHAR(128),                 -- agent ID, planning session, etc.
+  access_count INT DEFAULT 0,
+  last_accessed TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (entity_id) REFERENCES kg_entities(id),
+  FULLTEXT INDEX ft_content (content)
+);
+
+CREATE TABLE kg_relationships (
+  id VARCHAR(64) PRIMARY KEY,
+  from_entity VARCHAR(64) NOT NULL,
+  to_entity VARCHAR(64) NOT NULL,
+  type VARCHAR(64) NOT NULL,           -- affects, constrains, depends_on, decided_by
+  properties JSON,
+  strength FLOAT DEFAULT 1.0,          -- Hebbian: traversal strengthens relationships
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (from_entity) REFERENCES kg_entities(id),
+  FOREIGN KEY (to_entity) REFERENCES kg_entities(id)
+);
+```
+
+#### Temporal Dynamics
+
+**Hebbian strengthening:** Every read operation (search, get_entity, get_neighbors) automatically bumps `access_count` and `last_accessed`. Relationships gain `strength` when traversed. No agent effort needed — usage patterns emerge organically.
+
+**Ebbinghaus decay:** Knowledge that nobody queries fades in retrieval ranking. Not deleted — just deprioritized. Combined with pyramid tiers (overview ages slow, details age fast).
+
+**Scoring formula:**
+```
+score = text_relevance × recency_weight × (1 + log(access_count + 1)) × tier_weight
+```
+- `text_relevance` = FTS match score (BM25)
+- `recency_weight` = exponential decay from `last_accessed` (configurable half-life)
+- `tier_weight` = overview: 1.0, summary: 0.7, detail: 0.4
+
+**No consolidation.** Agents write structured knowledge at write time. The CTO's post-flight review reads, validates, and adjusts confidence — but that's review, not a consolidation pipeline.
+
 #### What Gets Stored
 
-**Decisions** (replaces standalone ADRs)
+Two categories of knowledge, with different lifecycles:
+
+**Strategic knowledge** — roadmap, plans, motivation. Written during planning, completion inferred from linked beads.
+
+```
+Entity: "Add caching layer to API responses"
+  type: roadmap, tier: overview
+  Observations:
+    - "API latency complaints identified in Q1 security audit" (confidence: 0.9)
+    - "Target: sub-100ms p99 for cached endpoints" (confidence: 0.8)
+  Relationships:
+    - implemented_by → bd-a3f8          ← bead status = completion signal
+    - motivated_by → "Q1 Security Audit"
+    - affects → "server.ts request pipeline"
+```
+
+When `bd-a3f8` closes, the roadmap item is done — no knowledge graph update needed. Query "what's on the roadmap?" by following `implemented_by` links and checking bead status. One source of truth (beads), not two.
+
+**Technical knowledge** — decisions, components, patterns, constraints. Written during and after implementation, curated by CTO.
+
 ```
 Entity: "Use SQLite for agent run storage"
-Type: decision
-Observations:
-  - "Chosen because single-node deployment, no external DB dependency" (confidence: 0.9)
-  - "Alternative considered: PostgreSQL, rejected due to ops overhead" (confidence: 0.9)
-  - "Invalidation condition: if we need multi-node or concurrent writes" (confidence: 0.8)
-Relationships:
-  - affects → "db.ts module"
-  - constrains → "agent_runs table schema"
-  - decided_by → "Planning session 2026-01-15"
+  type: decision, tier: overview
+  Observations:
+    - "Chosen because single-node deployment, no external DB dependency" (confidence: 0.9)
+    - "Invalidation condition: if we need multi-node or concurrent writes" (confidence: 0.8)
+  Relationships:
+    - affects → "db.ts module"
+    - decided_by → "Planning session 2026-01-15"
 ```
 
-**Components** (the architecture model)
-```
-Entity: "Cost tracking subsystem"
-Type: component
-Observations:
-  - "Aggregates cost_usd from agent_runs by day/month"
-  - "Exposed via /api/costs/* endpoints"
-  - "Added in ENG-152"
-Relationships:
-  - depends_on → "db.ts module"
-  - exposed_by → "server.ts"
-  - part_of → "Dashboard Intelligence"
-```
+**Components** (`type=component`, `tier=summary`), **Patterns** (`type=pattern`, `tier=summary`), **Constraints** (`type=constraint`, `tier=overview`) — same structure with appropriate tier defaults.
 
-**Patterns** (conventions agents should follow)
-```
-Entity: "Retry pattern"
-Type: pattern
-Observations:
-  - "All external API calls use withRetry() from src/lib/retry.ts"
-  - "Exponential backoff with jitter, respects Retry-After headers"
-  - "isFatalError() skips retry for auth/permission/not-found errors"
-Relationships:
-  - used_by → "Linear API calls", "GitHub API calls"
-  - defined_in → "src/lib/retry.ts"
-```
+#### Knowledge Graph Write Lifecycle
 
-**Constraints** (things that can't change, and why)
-```
-Entity: "Sequential agent spawn gate"
-Type: constraint
-Observations:
-  - "Agents must init sequentially to avoid ~/.claude.json race condition"
-  - "This is a Claude Code limitation, not an architectural choice"
-  - "Invalidation condition: if Claude Code fixes the race condition"
-Relationships:
-  - constrains → "agent spawning"
-  - implemented_in → "src/lib/claude.ts"
-```
+The graph is a living thing, updated at multiple points — not just after work is done.
+
+| Timing | Who writes | What | Confidence |
+|--------|-----------|------|-----------|
+| **Planning** | CTO | Roadmap entities with `implemented_by` links to new beads. Architectural constraints for the batch. | High — deliberate decisions |
+| **Pre-flight** | CTO | Batch-specific contracts: "bd-x1 must add rate limiting BEFORE auth middleware" | High — constraints for agents |
+| **During work** | Engineer | "Taking approach X because Y", component relationships discovered | Low-Medium (0.5-0.7) — may pivot |
+| **Work complete** (before PR) | Engineer | What was actually built, technical decisions made | Medium (0.7-0.8) |
+| **Post-flight** (batch ends) | CTO | Curate: validate engineer observations, elevate patterns, prune noise, adjust confidence, cross-reference across batch | High — ground truth |
+
+**Strategic knowledge** is written at planning time and never needs "completion" updates — completion is inferred from bead status via `implemented_by` relationships.
+
+**Technical knowledge** accumulates during work and gets curated at post-flight. The CTO's post-flight is the natural curation point, not a separate consolidation step.
+
+Specialist reports (Scout findings, Security audit results) are **mail to the CTO**, not knowledge graph entries. The CTO synthesizes them into planning documents and knowledge graph entities. Specialist outputs are ephemeral coordination; the CTO's synthesis is the institutional memory.
 
 #### How Agents Interact With It
 
-**Before starting work** (mandatory):
+**CTO planning** (strategic writes):
 ```
-# Agent queries for relevant context
-search_hybrid("caching layer API responses")
-→ Discovers: "Decision: no caching layer exists. Constraint: API responses
-   should be stateless. Component: server.ts handles all HTTP."
-
-get_neighbors("server.ts", depth=1)
-→ Discovers: related components, recent changes, active decisions
-```
-
-**While working** (when making non-trivial choices):
-```
-# Agent records a design decision
-add_entities([{
-  name: "Use Map for in-memory fixer tracking",
-  type: "decision",
-  properties: { confidence: 0.7, bead_id: "bd-a3f8" }
-}])
-add_observations([{
-  entity: "Use Map for in-memory fixer tracking",
-  content: "Chose Map over SQLite for fixer attempt counts because
-           the data is ephemeral and doesn't need crash recovery.
-           If fixers need persistence across restarts, revisit."
-}])
+# Create roadmap entity linked to new beads
+record_roadmap({
+  name: "Add caching layer to API responses",
+  motivation: "Q1 latency findings",
+  implemented_by: "bd-a3f8",
+  affects: ["server.ts request pipeline"]
+})
 ```
 
-**CTO pre-flight contract example:**
+**CTO pre-flight** (batch contracts):
 ```
-# CTO queries knowledge graph before dispatching a batch
 search_hybrid("authentication middleware session handling")
 get_relationships(entity="auth module")
-
-# Produces contract:
-"Batch context for agents bd-x1, bd-x2, bd-x3:
- - bd-x1 (add rate limiting) and bd-x2 (add auth middleware) both
-   touch server.ts request pipeline. bd-x1 MUST add rate limiting
-   BEFORE auth middleware in the chain, not after.
- - Existing pattern: all middleware uses Hono's app.use() pattern.
-   Do not introduce Express-style middleware.
- - Decision: session handling uses stateless JWT (decided 2026-01-20).
-   Do not introduce server-side sessions."
+→ Produces architectural contract, writes constraints to graph
 ```
 
-#### Implementation Options
+**Engineer during work** (tentative observations):
+```
+record_decision({
+  name: "Use Map for in-memory fixer tracking",
+  observations: ["Chose Map over SQLite because data is ephemeral"],
+  relationships: [{ to: "monitor.ts", type: "implemented_in" }],
+  confidence: 0.7
+})
+```
 
-Evaluated in priority order for our use case:
+**CTO post-flight** (curation):
+```
+# Review batch observations, elevate/prune
+get_neighbors("auth module", depth=2)
+bulk_update_confidence([
+  { entity: "Use JWT for sessions", confidence: 0.95 },  # confirmed by implementation
+  { entity: "Consider Redis caching", confidence: 0.3 },  # didn't pan out
+])
+```
 
-1. **gk** — Right architecture (dynamic schema, MCP-native, SQLite, hybrid search). Needs temporal awareness and confidence/staleness features. We control it.
-2. **Engram (199-bio)** — Closest to gk with better search (ColBERT). SQLite-based, fully local, MCP server. Has salience scoring and memory decay.
-3. **Graphiti** — Most mature (20k stars), temporal-aware, but requires Neo4j. Infrastructure overhead for what should be project-local.
-4. **Extend Beads** — Beads has graph links (relates_to, duplicates, supersedes) and Dolt backend. Could extend Beads itself as the knowledge store. One graph, one tool, one persistence layer. Worth investigating whether Beads' data model can support hybrid search and observation-level granularity.
+#### MCP Tool Surface
+
+gk v2 runs as a standalone MCP server. Autopilot injects it into agents alongside beads and GitHub MCP servers.
+
+**Tier 1 (Foundation):** `add_entities`, `add_observations`, `add_relationships`, `search_hybrid`, `get_entity`, `get_neighbors`, `get_relationships`, `update_entity`, `delete_entity`
+
+**Tier 2 (Maintenance):** `prune_stale`, `get_health_report`, `merge_entities`, `bulk_update_confidence`
+
+No domain sugar tools (v1's `record_decision`, `record_pattern`, etc.) — entity types and conventions are handled by skills/guides, not separate tools. Skills teach agents "use `type: decision` with `tier: overview`" rather than wrapping that in a dedicated tool.
+
+**Domain guides** (skills loaded into agents): extraction, query, review, pyramid — teach agents how to use the knowledge graph effectively. These are the real product. Autopilot-specific conventions (e.g. "use `type: roadmap` with `implemented_by` links to beads") live in autopilot's own skills, not in gk's generic guides.
+
+#### Standalone vs Autopilot
+
+gk v2 is a standalone project (`~/Builds/gk`). Pluggable backend:
+- **Standalone:** SQLite + FTS5, `gk init` creates a local file, zero dependencies
+- **Autopilot:** Dolt backend, shares the instance running for beads (port 3307)
+
+This means gk's release cycle is independent. Bug fixes, scoring tweaks, new tools — all ship as gk updates without touching autopilot.
 
 ### 3. CTO Agent + Review Legs (Architectural Coherence)
 
@@ -304,31 +378,48 @@ v1 has no inter-agent communication. Agents are fully isolated — they don't kn
 
 #### Implementation
 
-Since Dolt is already running for Beads, mail lives in Dolt too — one persistence layer. Gastown uses a dedicated mail system separate from beads (its own `gt mail` commands with Dolt-backed storage). We follow the same pattern: purpose-built mail table in Dolt, not beads-as-mail. Messages aren't issues — they don't need dependency graphs, hash IDs, or the full bead lifecycle.
+Mail uses beads' built-in message type — no custom Dolt table needed. Beads separates data plane (stores messages as issues) from control plane (orchestration handles routing/delivery), which matches our `deliverMail()` pattern exactly.
 
-```sql
-CREATE TABLE agent_messages (
-  id VARCHAR(64) PRIMARY KEY,
-  from_agent VARCHAR(128) NOT NULL,
-  to_agent VARCHAR(128) NOT NULL,
-  subject VARCHAR(256) NOT NULL,
-  body TEXT,
-  priority INT DEFAULT 2,
-  status VARCHAR(16) DEFAULT 'unread',
-  thread_id VARCHAR(64),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+A message is a bead with `type: message`:
+
+| Field | Maps to |
+|-------|---------|
+| `type` | `message` |
+| `sender` | From agent (role name) |
+| `assignee` | Recipient (role name) |
+| `title` | Subject line |
+| `description` | Message body |
+| `status` | `open` (unread) / `closed` (read/handled) |
+| `ephemeral` | `true` — eligible for bulk cleanup |
+| Threading | `replies_to` dependency links |
+
+```bash
+# Send a message
+bd create "Architectural contract for batch X" --type message \
+  --assignee cto --json
+
+# Reply in thread
+bd create "Acknowledged, proceeding with constraints" --type message \
+  --assignee engineer --json
+bd dep add <reply-id> <original-id> --type replies_to
+
+# Check inbox
+bd list --type message --status open --assignee cto --json
+
+# Mark as handled
+bd close <message-id> --reason "Processed"
 ```
 
-Exposed via MCP tools on the autopilot server (same pattern as beads access):
-- `send_mail(to, subject, body, priority?)` — fire-and-forget message
-- `send_and_wait(to, subject, body, timeout?)` — send and block until a threaded reply arrives (polls `agent_messages` for response). Agent pauses cheaply (DB poll, not token burn). Falls back on timeout.
-- `check_inbox()` — list unread messages
-- `read_mail(id)` — read a specific message
-- `reply_mail(id, body)` — reply in thread
-- `archive_mail(id)` — mark as handled
+Agents don't call `bd` directly — these are wrapped as MCP tools on the autopilot server:
+- `send_mail(to, subject, body)` — creates a message bead assigned to recipient
+- `send_and_wait(to, subject, body, timeout?)` — sends and polls for `replies_to` child. Agent pauses cheaply (DB poll, not token burn). Falls back on timeout.
+- `check_inbox()` — `bd list --type message --status open --assignee <self>`
+- `reply_mail(id, body)` — creates reply message + `replies_to` dependency
+- `archive_mail(id)` — `bd close <id>`
 
-If we move to Gastown in v3, migrating to `gt mail` is straightforward — the semantics are identical (send/inbox/read/archive), only the transport changes.
+Ephemeral messages are cleaned up periodically — mail is coordination, not permanent record. Decisions worth keeping go in the knowledge graph.
+
+If we move to Gastown in v3, migrating to `gt mail` is straightforward — Gastown uses the same beads message type with the same semantics.
 
 #### Message Flows
 
@@ -358,7 +449,7 @@ every poll_interval:
   4. checkPlanningNeeded() — spawn CTO for planning cycle
 ```
 
-`deliverMail()` queries `agent_messages` for unread messages, groups by recipient role, and spawns each recipient once with their pending messages as context:
+`deliverMail()` queries beads for unread messages (`bd list --type message --status open --json`), groups by recipient role, and spawns each recipient once with their pending messages as context:
 
 - **CTO has 3 unread messages** → spawn CTO (persona + inbox-dispatch task + messages)
 - **No unread mail for anyone** → no-op (a SQL query, not an agent invocation)
@@ -369,7 +460,7 @@ Mail-spawned agents count against the slot budget like any other agent. The orch
 
 #### In-flight mail: waiting and interrupts
 
-Agents can choose to wait on a response during execution. An engineer that needs CTO guidance calls `send_and_wait()` — sends a message and polls the DB for a threaded reply. The engineer pauses cheaply (DB poll, no token burn) while `deliverMail()` spawns the CTO to respond. On timeout, the engineer falls back (block the bead, proceed with best judgment, or escalate).
+Agents can choose to wait on a response during execution. An engineer that needs CTO guidance calls `send_and_wait()` — sends a message bead and polls for a `replies_to` child. The engineer pauses cheaply (DB poll, no token burn) while `deliverMail()` spawns the CTO to respond. On timeout, the engineer falls back (block the bead, proceed with best judgment, or escalate).
 
 For the reverse — delivering mail TO a running agent — two approaches:
 
@@ -788,7 +879,7 @@ v1's budget tracking (cost aggregation, daily/monthly limits) carries forward. T
 
 ### Phase 3: CTO + review legs
 - Add CTO pre/post-flight logic to orchestration loop
-- Implement mail system (Dolt table + MCP tools on autopilot server)
+- Implement mail system (beads message type + MCP wrapper tools on autopilot server)
 - Wire conditional review leg spawning
 - Build architectural contract prompt
 
@@ -886,7 +977,7 @@ Dolt runs as a MySQL-compatible server on port 3307 (avoids conflict with MySQL'
 | Data | v1 Storage | v2 Storage |
 |---|---|---|
 | Beads (task tracking) | Linear API | Dolt (beads tables) |
-| Agent messages (mail) | N/A | Dolt (`agent_messages` table) |
+| Agent messages (mail) | N/A | Beads (message type beads — `bd create --type message`) |
 | Agent runs (history) | SQLite (`agent_runs`) | Dolt (`agent_runs`) |
 | Activity logs | SQLite (`activity_logs`) | Dolt (`activity_logs`) |
 | Planning sessions | SQLite (`planning_sessions`) | Knowledge graph (decisions/findings persist as entities) |
@@ -900,7 +991,7 @@ Dolt runs as a MySQL-compatible server on port 3307 (avoids conflict with MySQL'
 
 ### Bead State Machine
 
-Beads supports custom state dimensions via `bd set-state` and external references via `--external-ref`. Our state machine:
+Beads has 4 built-in statuses (`open`, `in_progress`, `blocked`, `closed`) — not enough for our workflow. We use a custom `workflow` dimension via `bd set-state` to track our richer state machine. Each transition creates an `event` bead (audit trail) and updates the label atomically.
 
 ```
 Inbox → (human approves via CEO) → Triage
@@ -912,26 +1003,34 @@ In Review → (CI fails / merge conflict / review feedback) → PR Maintenance
 Any → Blocked
 ```
 
+The built-in `status` stays simple: `open` for the whole lifecycle, `closed` when done. The `workflow` label is what the orchestration queries.
+
 Beads operations for each transition:
 
 | Transition | Beads Command |
 |---|---|
+| Create bead | `bd create "Title" -t task --json` (workflow defaults to triage) |
+| Promote to Ready | `bd set-state <id> workflow=ready --reason "CTO approved"` |
 | Claim for execution | `bd update <id> --claim` (atomic, fails if already claimed) |
+| Start work | `bd set-state <id> workflow=in_progress --reason "Agent claimed"` |
 | Attach PR | `bd update <id> --external-ref "github:owner/repo#42"` |
-| Move to In Review | `bd set-state <id> status=in_review --reason "PR #42 created"` |
+| Move to In Review | `bd set-state <id> workflow=in_review --reason "PR #42 created"` |
 | Move to Done | `bd close <id> --reason "PR #42 merged"` |
-| Move to Blocked | `bd set-state <id> status=blocked --reason "..."` |
-| Find ready work | `bd ready --json` (excludes claimed and blocked) |
-| Find stale claims | `bd stale --days 1 --status in_progress --json` |
+| Move to Blocked | `bd set-state <id> workflow=blocked --reason "..."` |
+| Find ready work | `bd ready --label workflow:ready --json` (dependency-checked + workflow-filtered) |
+| Find in-review work | `bd list --label workflow:in_review --json` |
+| Find stale claims | `bd stale --status in_progress --json` |
+
+`bd ready --label workflow:ready` composes beads' dependency graph (skips parents with open children, skips beads with open blockers) with our workflow state. This handles leaf-only filtering automatically.
 
 ### Stale Recovery & Shutdown
 
-**Stale bead recovery:** Beads has `bd stale --status in_progress` to find abandoned claims. The orchestration loop runs this periodically (like v1's `recoverStaleIssues()`):
+**Stale bead recovery:** Beads has `bd stale` to find abandoned claims. The orchestration loop runs this periodically (like v1's `recoverStaleIssues()`):
 
 ```
 every stale_check_interval:
-  bd stale --status in_progress --days 0 --json  (configurable threshold)
-  → for each stale bead: unclaim it (bd update <id> --status ready)
+  bd stale --label workflow:in_progress --json  (configurable threshold)
+  → for each stale bead: unclaim + bd set-state <id> workflow=ready --reason "Stale recovery"
 ```
 
 **Graceful shutdown (SIGINT/SIGTERM):**
@@ -950,7 +1049,7 @@ v1's inactivity watchdog kills agents that produce no output for N minutes. With
 
 ```
 Engineer calls send_and_wait(CTO, "guidance needed?", timeout=5m)
-  → MCP tool sends message to agent_messages table
+  → MCP tool creates message bead assigned to CTO
   → Polls for reply every 10s
   → Sends heartbeat activity to orchestration each poll
   → Reply arrives → return to agent
@@ -1076,9 +1175,7 @@ Pause/resume API carries forward. Triage approval moves to CEO agent (interactiv
 
 ## Open Questions
 
-1. **Knowledge graph choice** — Build on gk, adopt Engram, extend Beads,
-   or something else? Key factors: temporal awareness, hybrid search
-   quality, MCP integration. Should use Dolt as backend to stay single-DB.
+1. ~~**Knowledge graph choice**~~ — **Resolved: gk v2.** Rewrite of gk in TypeScript with pluggable SQLite/Dolt backend, Hebbian + Ebbinghaus temporal dynamics, FTS (no vector search / Ollama). Full spec at `~/Builds/gk/v2.md`.
 
 2. **Knowledge graph seeding** — How do we bootstrap the knowledge graph
    for a new project? Agent-driven codebase scan? Manual? Import from
@@ -1100,8 +1197,7 @@ Pause/resume API carries forward. Triage approval moves to CEO agent (interactiv
    API enables mid-session mail interrupts. How much of `runClaude()`
    needs to change? What does the Agent SDK conversation API look like?
 
-7. **Beads leaf-only filtering** — Does `bd ready` skip parents with
-   open children? If not, our MCP tool layer needs to add this filter.
+7. ~~**Beads leaf-only filtering**~~ — **Resolved.** `bd ready` excludes beads with open `blocks` dependencies. Parent beads with open children are blocked by those children, so they never appear in `bd ready`. Combined with `--label workflow:ready` filtering, this gives us exactly the right set of claimable work.
 
 ## Appendix: Gastown Evaluation
 
@@ -1110,7 +1206,7 @@ Pause/resume API carries forward. Triage approval moves to CEO agent (interactiv
 | Capability | Value for us |
 |---|---|
 | Beads (bd) | **High** — replaces Linear, git-native task management |
-| Mail system | **Medium** — we can build simple mail in SQLite |
+| Mail system | **Low** — we use beads' built-in message type |
 | Deacon/Dogs (autonomous patrol) | **Low** — our event loop already does this |
 | Witness (health monitoring) | **Low** — we have timeout/inactivity watchdog |
 | Refinery (merge queue) | **Low** — not needed now, buildable later |
