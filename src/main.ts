@@ -1,41 +1,35 @@
 #!/usr/bin/env bun
 
 /**
- * main.ts — Single entry point for autopilot.
+ * main.ts — v2 condition-based orchestrator.
  *
  * Usage: bun run start <project-path> [--port 7890] [--host 127.0.0.1]
+ *
+ * Replaces the v1 four-loop architecture (executor, monitor, planner, projects)
+ * with a single unified condition evaluator + slot manager.
  */
 
-import { resolve } from "node:path";
-import { RatelimitedLinearError } from "@linear/sdk";
+import { type SystemState, evaluateConditions } from "./conditions";
+import { closeAllAgents, runAgent } from "./lib/agent-runner";
 import {
-  fillSlots,
-  recoverAgentsOnShutdown,
-  recoverStaleIssues,
-} from "./executor";
-import { closeAllAgents } from "./lib/claude";
+  claimBead,
+  closeBead,
+  getReadyBeads,
+  getReadyCount,
+  getStaleBeads,
+  getTriageBeads,
+} from "./lib/beads";
+import type { AutopilotConfig } from "./lib/config";
 import { loadConfig, resolveProjectPath } from "./lib/config";
-import { openDb, pruneActivityLogs } from "./lib/db";
-import { interruptibleSleep, isFatalError } from "./lib/errors";
+import { closeDolt, getDolt } from "./lib/dolt";
+import { ensureOperationalTables } from "./lib/dolt-schema";
+import { interruptibleSleep } from "./lib/errors";
 import { detectRepo } from "./lib/github";
-import {
-  configureLinearAuth,
-  getTriageIssues,
-  resolveLinearIds,
-  updateIssue,
-} from "./lib/linear";
-import { initLinearAuth } from "./lib/linear-oauth";
-import { error, fatal, header, info, ok, warn } from "./lib/logger";
-import { sweepClones, sweepLegacyWorktrees } from "./lib/sandbox-clone";
+import { fatal, header, info, ok, warn } from "./lib/logger";
 import { sanitizeMessage } from "./lib/sanitize";
-import { WebhookTrigger } from "./lib/webhooks";
-import { checkOpenPRs } from "./monitor";
-import { runPlanning, shouldRunPlanning } from "./planner";
-import { checkProjects } from "./projects";
-import { runReviewer, shouldRunReviewer } from "./reviewer";
+import { SlotManager } from "./lib/slots";
 import { createApp } from "./server";
-import { type AgentState, AppState } from "./state";
-import { runPreflight } from "./validate";
+import { AppState } from "./state";
 
 // --- Parse args ---
 
@@ -74,48 +68,59 @@ if (!projectArg) {
 const projectPath = resolveProjectPath(projectArg);
 const config = loadConfig(projectPath);
 
-if (!config.linear.team) fatal("linear.team is not set in .autopilot.yml");
+// --- Preflight: verify Dolt is running and bd CLI is available ---
 
-// --- Initialize Linear auth (OAuth or API key) ---
-
-// Always open the DB for OAuth token storage, regardless of persistence.enabled
-const authDbPath = resolve(projectPath, config.persistence.db_path);
-const authDb = openDb(authDbPath);
-await initLinearAuth(authDb);
-
-// Configure async client with OAuth auto-refresh support.
-// Must happen before runPreflight() which calls checkLinear() -> getLinearClientAsync().
-configureLinearAuth(
-  authDb,
-  config.linear.oauth
-    ? {
-        clientId: config.linear.oauth.client_id,
-        clientSecret: config.linear.oauth.client_secret,
-      }
-    : undefined,
-);
-
-// --- Preflight validation ---
-const preflight = await runPreflight(projectPath, config);
-for (const result of preflight.results) {
-  if (result.pass) {
-    ok(`${result.name}: ${result.detail}`);
-  } else {
-    error(`${result.name}: ${result.detail}`);
-  }
-}
-for (const result of preflight.warnings) {
-  if (result.pass) {
-    ok(`${result.name}: ${result.detail}`);
-  } else {
-    warn(`${result.name}: ${result.detail}`);
-  }
-}
-if (!preflight.passed) {
+info("Checking Dolt database...");
+try {
+  getDolt(config.beads.dolt_port);
+  ok(`Dolt connected on port ${config.beads.dolt_port}`);
+} catch (e) {
+  const msg = e instanceof Error ? e.message : String(e);
   fatal(
-    "Preflight checks failed. Fix the issues above and try again.\nRun 'bun run validate <project-path>' for detailed diagnostics.",
+    `Cannot connect to Dolt on port ${config.beads.dolt_port}: ${msg}\n` +
+      "Ensure Dolt is running: dolt sql-server --port 3307",
   );
 }
+
+info("Checking bd CLI...");
+try {
+  const result = Bun.spawnSync(["bd", "--version"]);
+  if (result.exitCode !== 0) {
+    fatal(
+      "bd CLI not available or returned an error.\n" +
+        "Install it or ensure it is in your PATH.",
+    );
+  }
+  ok(`bd CLI: ${result.stdout.toString().trim()}`);
+} catch {
+  fatal(
+    "bd CLI not found in PATH.\n" + "Install it or ensure it is in your PATH.",
+  );
+}
+
+// --- Create operational tables ---
+
+info("Ensuring operational tables...");
+await ensureOperationalTables();
+ok("Operational tables ready");
+
+// --- Initialize SlotManager ---
+
+const slots = new SlotManager({
+  total: config.executor.parallel,
+  builderSlots: config.executor.builder_slots,
+  plannerSlots: config.executor.planner_slots,
+});
+
+// --- Detect GitHub repo ---
+
+const { owner: ghOwner, repo: ghRepo } = detectRepo(
+  projectPath,
+  config.github.repo || undefined,
+);
+ok(`GitHub repo: ${ghOwner}/${ghRepo}`);
+
+// --- Dashboard setup ---
 
 const dashboardToken = process.env.AUTOPILOT_DASHBOARD_TOKEN || undefined;
 const isLocalhost =
@@ -129,135 +134,29 @@ if (!isLocalhost && !dashboardToken) {
   );
 }
 
-header("autopilot v0.2.0");
+header("autopilot v2.0.0");
 
 info(`Project: ${projectPath}`);
 info(
-  `Team: ${config.linear.team}` +
-    (config.linear.initiative
-      ? `, Initiative: ${config.linear.initiative}`
-      : ""),
+  `Max parallel: ${config.executor.parallel} (${config.executor.builder_slots} builder, ${config.executor.planner_slots} planner)`,
 );
-info(`Max parallel: ${config.executor.parallel}`);
 info(`Poll interval: ${config.executor.poll_interval_minutes}m`);
-if (config.projects.enabled && config.linear.initiative) {
-  info(
-    `Projects loop: every ${config.projects.poll_interval_minutes}m, max ${config.projects.max_active_projects} owners`,
-  );
-}
-if (config.reviewer.enabled) {
-  info(
-    `Reviewer loop: every ${config.reviewer.min_interval_minutes}m, after ${config.reviewer.min_runs_before_review} runs`,
-  );
-}
-info(
-  `Models: executor=${config.executor.model}, planning=${config.planning.model}, projects=${config.projects.model}`,
-);
-
-// --- Detect GitHub repo ---
-
-const { owner: ghOwner, repo: ghRepo } = detectRepo(
-  projectPath,
-  config.github.repo || undefined,
-);
-ok(`GitHub repo: ${ghOwner}/${ghRepo}`);
-
-// --- Connect to Linear ---
-
-info("Connecting to Linear...");
-const linearIds = await resolveLinearIds(config.linear);
-ok(
-  `Connected - team ${config.linear.team}` +
-    (linearIds.initiativeName
-      ? `, initiative ${linearIds.initiativeName}`
-      : ""),
-);
+info(`Backlog threshold: ${config.planning.min_ready_threshold}`);
 
 // --- Init state and server ---
 
 const state = new AppState(config.executor.parallel);
 
-if (config.persistence.enabled) {
-  // Reuse the already-opened authDb (same file) for persistence
-  state.setDb(authDb);
-  const pruned = pruneActivityLogs(authDb, config.persistence.retention_days);
-  if (pruned > 0) info(`Pruned ${pruned} old activity log entries`);
-  ok(`Persistence: ${authDbPath}`);
-}
-
-const webhookTrigger = config.webhooks?.enabled
-  ? new WebhookTrigger()
-  : undefined;
-const app = createApp(
-  state,
-  {
-    authToken: dashboardToken,
-    secureCookie: !isLocalhost,
-    config,
-    db: authDb,
-    triggerPlanning: () => {
-      runPlanning({
-        config,
-        projectPath,
-        linearIds,
-        state,
-        shutdownSignal: shutdownController.signal,
-      });
-    },
-    retryIssue: async (linearIssueId: string) => {
-      await updateIssue(linearIssueId, { stateId: linearIds.states.ready });
-      state.logStateTransition({
-        id: crypto.randomUUID(),
-        issueId: linearIssueId,
-        issueIdentifier: "unknown",
-        toState: config.linear.states.ready,
-        timestamp: Date.now(),
-        reason: "Dashboard retry",
-      });
-    },
-    triageIssues: async () => {
-      const issues = await getTriageIssues(linearIds);
-      return issues.map((i) => ({
-        id: i.id,
-        identifier: i.identifier,
-        title: i.title,
-        priority: i.priority ?? 4,
-      }));
-    },
-    approveTriageIssue: async (issueId: string) => {
-      await updateIssue(issueId, { stateId: linearIds.states.ready });
-      state.logStateTransition({
-        id: crypto.randomUUID(),
-        issueId: issueId,
-        issueIdentifier: "unknown",
-        fromState: config.linear.states.triage,
-        toState: config.linear.states.ready,
-        timestamp: Date.now(),
-        reason: "Dashboard triage approval",
-      });
-    },
-    rejectTriageIssue: async (issueId: string) => {
-      await updateIssue(issueId, { stateId: linearIds.states.blocked });
-      state.logStateTransition({
-        id: crypto.randomUUID(),
-        issueId: issueId,
-        issueIdentifier: "unknown",
-        fromState: config.linear.states.triage,
-        toState: config.linear.states.blocked,
-        timestamp: Date.now(),
-        reason: "Dashboard triage rejection",
-      });
-    },
+const app = createApp(state, {
+  authToken: dashboardToken,
+  secureCookie: !isLocalhost,
+  config,
+  triggerPlanning: () => {
+    info(
+      "Manual planning trigger from dashboard (v2 stub — will run on next poll)",
+    );
   },
-  webhookTrigger && config.webhooks
-    ? {
-        trigger: webhookTrigger,
-        linearSecret: config.webhooks.linear_secret,
-        githubSecret: config.webhooks.github_secret,
-        readyStateName: config.linear.states.ready,
-      }
-    : undefined,
-);
+});
 
 if (!isLocalhost) {
   warn(`Dashboard bound to ${host}:${port} — accessible from the network.`);
@@ -287,7 +186,6 @@ console.log();
 
 const shutdownController = new AbortController();
 let shuttingDown = false;
-let agentsAtShutdown: AgentState[] = [];
 
 function shutdown() {
   if (shuttingDown) {
@@ -295,14 +193,8 @@ function shutdown() {
     process.exit(1);
   }
   shuttingDown = true;
-  // Capture running agents synchronously before killing subprocesses,
-  // so the drain phase can move their Linear issues back to Ready.
-  agentsAtShutdown = state.getRunningAgents();
   console.log();
   info("Shutting down — killing agent subprocesses...");
-  // close() is synchronous: sends SIGTERM immediately, escalates to SIGKILL
-  // after 5s. Call this BEFORE abort() so processes are killed even if the
-  // async cleanup chain doesn't complete.
   closeAllAgents();
   shutdownController.abort();
 }
@@ -316,7 +208,6 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("uncaughtException", (err) => {
-  // Must be synchronous only — the process is in undefined state after uncaught exception
   const msg = err instanceof Error ? err.message : String(err);
   process.stderr.write(`[ERROR] Uncaught exception: ${sanitizeMessage(msg)}\n`);
   closeAllAgents();
@@ -324,26 +215,44 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
+// --- Gather SystemState ---
+
+async function gatherSystemState(cfg: AutopilotConfig): Promise<SystemState> {
+  const [readyBeads, readyCount, _triageBeads, staleBeads] = await Promise.all([
+    getReadyBeads(),
+    getReadyCount(),
+    getTriageBeads(),
+    getStaleBeads(cfg.executor.stale_timeout_minutes),
+  ]);
+
+  return {
+    readyBeads: readyBeads.map((b) => ({ id: b.id, title: b.title })),
+    readyCount,
+    kgEmpty: false, // TODO: check via gk MCP — stub for now
+    triageProjects: [], // TODO: wire to project beads
+    completedProjects: [], // TODO: wire to project beads
+    failedPRs: [], // TODO: wire to GitHub API
+    reviewPRs: [], // TODO: wire to GitHub API
+    mergedPRs: [], // TODO: wire to GitHub API
+    reviewFeedback: [], // TODO: wire to GitHub API
+    batchComplete: false, // TODO: implement batch tracking
+    staleBeads: staleBeads.map((b) => ({
+      id: b.id,
+      claimedAt: new Date(), // approximate — bd stale doesn't expose claim time yet
+      agentId: "unknown",
+    })),
+  };
+}
+
 // --- Main loop ---
 
 const POLL_INTERVAL_MS = config.executor.poll_interval_minutes * 60 * 1000;
-const PROJECTS_INTERVAL_MS = config.projects.poll_interval_minutes * 60 * 1000;
-const BASE_BACKOFF_MS = 10_000; // 10s
-const MAX_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+const BASE_BACKOFF_MS = 10_000;
+const MAX_BACKOFF_MS = 5 * 60 * 1000;
 const MAX_CONSECUTIVE_FAILURES = 5;
-const running = new Set<Promise<boolean>>();
-let planningPromise: Promise<void> | null = null;
-let reviewerPromise: Promise<void> | null = null;
-let lastProjectsCheckAt = 0;
 
+const runningAgents = new Set<Promise<unknown>>();
 let consecutiveFailures = 0;
-
-// Sweep stale clones left behind by previous crashed runs.
-// No agents are running yet, so every clone found is stale.
-await sweepClones(projectPath, new Set());
-
-// One-time migration: clean up legacy .claude/worktrees/ from before the clone migration.
-await sweepLegacyWorktrees(projectPath);
 
 info("Starting main loop (Ctrl+C to stop)...");
 console.log();
@@ -357,262 +266,161 @@ while (!shuttingDown) {
 
     if (shuttingDown) break;
 
-    // Recover stale In Progress issues before filling slots
-    await recoverStaleIssues({ config, linearIds, state });
+    // 1. Gather system state from beads
+    const systemState = await gatherSystemState(config);
 
-    // Run monitor and executor concurrently. fillSlots may read a slightly
-    // lower running count if checkOpenPRs has not yet registered its fixers
-    // (it is still fetching attachments), but transient over-allocation by
-    // 1-2 agents is accepted as harmless. Promise.allSettled ensures a failure
-    // in one subsystem does not prevent the other from running.
-    const [monitorResult, executorResult] = await Promise.allSettled([
-      checkOpenPRs({
-        owner: ghOwner,
-        repo: ghRepo,
-        config,
-        projectPath,
-        linearIds,
-        state,
-        shutdownSignal: shutdownController.signal,
-      }),
-      fillSlots({
-        config,
-        projectPath,
-        linearIds,
-        state,
-        shutdownSignal: shutdownController.signal,
-      }),
-    ]);
+    // Update dashboard queue info
+    state.updateQueue(systemState.readyCount, slots.totalActive());
 
-    if (monitorResult.status === "fulfilled") {
-      for (const p of monitorResult.value) {
-        const tracked = p.finally(() => running.delete(tracked));
-        running.add(tracked);
+    // 2. Evaluate conditions
+    const conditionResults = evaluateConditions(systemState, {
+      minReadyThreshold: config.planning.min_ready_threshold,
+      builderSlotsAvailable: slots.availableBuilderSlots(),
+      plannerSlotsAvailable: slots.availablePlannerSlots(),
+    });
+
+    // 3. Execute triggered conditions
+    for (const condResult of conditionResults) {
+      if (!condResult.triggered || condResult.invocations.length === 0) {
+        // Handle pr-merged directly (no agent needed)
+        if (condResult.condition === "pr-merged" && condResult.triggered) {
+          for (const pr of systemState.mergedPRs) {
+            await closeBead(pr.beadId, `PR #${pr.prNumber} merged`);
+            info(`Closed bead ${pr.beadId} — PR #${pr.prNumber} merged`);
+          }
+        }
+        continue;
       }
-    } else {
-      const msg =
-        monitorResult.reason instanceof Error
-          ? monitorResult.reason.message
-          : String(monitorResult.reason);
-      warn(`Monitor error: ${msg}`);
-    }
 
-    if (executorResult.status === "fulfilled") {
-      for (const p of executorResult.value) {
-        // Each promise self-removes from the set when it settles
-        const tracked = p.finally(() => running.delete(tracked));
-        running.add(tracked);
-      }
-    } else {
-      const msg =
-        executorResult.reason instanceof Error
-          ? executorResult.reason.message
-          : String(executorResult.reason);
-      warn(`Executor error: ${msg}`);
-    }
+      for (const invocation of condResult.invocations) {
+        // Check slot availability
+        const slotOk =
+          invocation.slotType === "builder"
+            ? slots.acquireBuilder(invocation.agentId, invocation.beadId ?? "")
+            : slots.acquirePlanner(invocation.agentId, invocation.skill);
 
-    // Check planning (counts against parallel limit)
-    if (
-      !state.getPlanningStatus().running &&
-      state.getRunningCount() < state.getMaxParallel()
-    ) {
-      const shouldPlan = await shouldRunPlanning({
-        config,
-        linearIds,
-        state,
-      });
-      if (shouldPlan) {
-        planningPromise = runPlanning({
-          config,
-          projectPath,
-          linearIds,
-          state,
-          shutdownSignal: shutdownController.signal,
-        })
-          .catch((e) => {
-            const msg = e instanceof Error ? e.message : String(e);
-            warn(`Planning error: ${msg}`);
-          })
-          .finally(() => {
-            planningPromise = null;
-          });
-      }
-    }
+        if (!slotOk) continue;
 
-    // Check reviewer loop
-    if (
-      config.reviewer.enabled &&
-      state.getDb() &&
-      !state.getReviewerStatus().running &&
-      state.getRunningCount() < state.getMaxParallel()
-    ) {
-      const shouldReview = await shouldRunReviewer({
-        config,
-        state,
-        db: authDb,
-      });
-      if (shouldReview) {
-        reviewerPromise = runReviewer({
-          config,
-          projectPath,
-          linearIds,
-          state,
-          db: authDb,
-          shutdownSignal: shutdownController.signal,
-        })
-          .catch((e) => {
-            const msg = e instanceof Error ? e.message : String(e);
-            warn(`Reviewer error: ${msg}`);
-          })
-          .finally(() => {
-            reviewerPromise = null;
-          });
-      }
-    }
+        // Claim bead for builder invocations
+        if (invocation.slotType === "builder" && invocation.beadId) {
+          const claimed = await claimBead(
+            invocation.beadId,
+            invocation.agentId,
+          );
+          if (!claimed) {
+            slots.release(invocation.agentId);
+            continue;
+          }
+        }
 
-    // Check projects loop
-    if (
-      config.projects.enabled &&
-      linearIds.initiativeId &&
-      Date.now() - lastProjectsCheckAt >= PROJECTS_INTERVAL_MS
-    ) {
-      lastProjectsCheckAt = Date.now();
-      const projectPromises = await checkProjects({
-        config,
-        projectPath,
-        linearIds,
-        state,
-        shutdownSignal: shutdownController.signal,
-      });
-      for (const p of projectPromises) {
-        const tracked = p.finally(() => running.delete(tracked));
-        running.add(tracked);
-      }
-    }
-
-    // Auto-promote orphaned Triage issues in label-first mode
-    if (!linearIds.initiativeId) {
-      const filters = {
-        labels: config.linear.labels,
-        projects: config.linear.projects,
-      };
-      const triageOrphans = await getTriageIssues(linearIds, 50, filters);
-      for (const issue of triageOrphans) {
-        info(
-          `Label-first auto-promotion: moving ${issue.identifier} from Triage to Ready`,
+        // Register agent in dashboard state
+        state.addAgent(
+          invocation.agentId,
+          invocation.beadId ?? invocation.skill,
+          `${invocation.persona}/${invocation.skill}`,
         );
-        await updateIssue(issue.id, {
-          stateId: linearIds.states.ready,
-          comment:
-            "Auto-promoted from Triage to Ready (label-first mode — no project owner to triage).",
-        });
-        state.logStateTransition({
-          id: crypto.randomUUID(),
-          issueId: issue.id,
-          issueIdentifier: issue.identifier,
-          fromState: config.linear.states.triage,
-          toState: config.linear.states.ready,
-          timestamp: Date.now(),
-          reason: "Auto-promoted from Triage (label-first mode)",
-        });
+
+        // Spawn agent (fire-and-forget with cleanup)
+        const agentPromise = runAgent(
+          invocation,
+          config,
+          projectPath,
+          (entry) => {
+            state.addActivity(invocation.agentId, entry);
+          },
+          shutdownController.signal,
+        )
+          .then(async (result) => {
+            const status = result.error
+              ? "failed"
+              : result.timedOut || result.inactivityTimedOut
+                ? "timed_out"
+                : "completed";
+            info(
+              `Agent ${invocation.persona}/${invocation.skill} ${status}` +
+                (result.costUsd ? ` ($${result.costUsd.toFixed(4)})` : ""),
+            );
+            await state.completeAgent(invocation.agentId, status, {
+              costUsd: result.costUsd,
+              durationMs: result.durationMs,
+              numTurns: result.numTurns,
+              sessionId: result.sessionId,
+              error: result.error,
+              runType: invocation.slotType,
+            });
+          })
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            warn(
+              `Agent ${invocation.persona}/${invocation.skill} error: ${msg}`,
+            );
+          })
+          .finally(() => {
+            slots.release(invocation.agentId);
+            runningAgents.delete(agentPromise);
+          });
+
+        runningAgents.add(agentPromise);
       }
     }
 
     // Reset failure counter after a successful iteration
     consecutiveFailures = 0;
 
-    // Wait for any agent to finish, poll interval, or webhook trigger
-    if (running.size > 0) {
+    // Wait for poll interval or any agent to finish
+    if (runningAgents.size > 0) {
       const pollTimer = interruptibleSleep(
         POLL_INTERVAL_MS,
         shutdownController.signal,
       ).then(() => "poll" as const);
-      const racers: Promise<unknown>[] = [pollTimer, ...running];
-      if (webhookTrigger) racers.push(webhookTrigger.wait());
-      await Promise.race(racers);
+      await Promise.race([pollTimer, ...runningAgents]);
     } else {
       info(
         `No agents running. Polling again in ${POLL_INTERVAL_MS / 1000}s...`,
       );
-      if (webhookTrigger) {
-        await Promise.race([
-          interruptibleSleep(POLL_INTERVAL_MS, shutdownController.signal),
-          webhookTrigger.wait(),
-        ]);
-      } else {
-        await interruptibleSleep(POLL_INTERVAL_MS, shutdownController.signal);
-      }
+      await interruptibleSleep(POLL_INTERVAL_MS, shutdownController.signal);
     }
   } catch (e) {
     const stack = e instanceof Error ? (e.stack ?? e.message) : String(e);
     const msg = e instanceof Error ? e.message : String(e);
 
-    if (isFatalError(e)) {
-      fatal(`Fatal error — check your API key and config: ${msg}\n${stack}`);
-    }
-
     consecutiveFailures++;
     info(`Stack trace: ${stack}`);
 
-    if (e instanceof RatelimitedLinearError) {
-      const retryAfterMs =
-        e.retryAfter != null
-          ? Math.min(e.retryAfter * 1000, MAX_BACKOFF_MS)
-          : BASE_BACKOFF_MS;
-      warn(
-        `Rate limited by Linear. Retrying in ${Math.round(retryAfterMs / 1000)}s...`,
+    const backoffMs = Math.min(
+      BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1),
+      MAX_BACKOFF_MS,
+    );
+    warn(
+      `Loop error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${msg}`,
+    );
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      fatal(
+        `${MAX_CONSECUTIVE_FAILURES} consecutive failures — exiting. Last error: ${msg}`,
       );
-      await Bun.sleep(retryAfterMs);
-    } else {
-      const backoffMs = Math.min(
-        BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1),
-        MAX_BACKOFF_MS,
-      );
-      warn(
-        `Loop error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${msg}`,
-      );
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        fatal(
-          `${MAX_CONSECUTIVE_FAILURES} consecutive failures — exiting. Last error: ${msg}`,
-        );
-      }
-      info(`Retrying in ${Math.round(backoffMs / 1000)}s...`);
-      await Bun.sleep(backoffMs);
     }
+    info(`Retrying in ${Math.round(backoffMs / 1000)}s...`);
+    await Bun.sleep(backoffMs);
   }
 }
 
 // --- Drain phase ---
 
-const drainablePromises: Promise<unknown>[] = [...running];
-if (planningPromise) drainablePromises.push(planningPromise);
-if (reviewerPromise) drainablePromises.push(reviewerPromise);
+const drainablePromises = [...runningAgents];
 
 if (drainablePromises.length > 0) {
   info(
     `Waiting for ${drainablePromises.length} agent(s) to shut down (up to 60s)...`,
   );
-  // Wait at least 6s so the SDK's SIGKILL escalation timer (5s after close())
-  // has time to fire before we exit. This ensures SIGTERM-resistant children
-  // are forcefully killed rather than becoming orphans.
   await Promise.race([
     Promise.all([Promise.allSettled(drainablePromises), Bun.sleep(6_000)]),
     Bun.sleep(60_000),
   ]);
 }
 
-// --- Recover In Progress issues on shutdown ---
+// --- Cleanup ---
 
-const issueCount = agentsAtShutdown.filter((a) => a.linearIssueId).length;
-if (issueCount > 0) {
-  info(`Recovering ${issueCount} In Progress issue(s) back to Ready...`);
-  await recoverAgentsOnShutdown(
-    agentsAtShutdown,
-    linearIds.states.ready,
-    state,
-  );
-}
-
+await closeDolt();
 server.stop();
 info("Shutdown complete.");
 process.exit(0);
