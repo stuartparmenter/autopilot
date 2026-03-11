@@ -93,6 +93,8 @@ function makeConfig(
       max_retries: 3,
       poll_interval_minutes: 5,
       stale_timeout_minutes: 15,
+      builder_slots: 5,
+      planner_slots: 3,
     },
     planning: {
       schedule: "when_idle",
@@ -146,6 +148,14 @@ function makeConfig(
       monthly_limit_usd: 0,
       per_agent_limit_usd: 0,
       warn_at_percent: 80,
+    },
+    beads: {
+      dolt_port: 3307,
+      dolt_data_dir: ".beads/dolt",
+    },
+    knowledge_graph: {
+      provider: "gk",
+      db_path: ".beads/knowledge.db",
     },
   };
 }

@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Autopilot v2 Architecture — Knowledge Graph</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
+  svg { width: 100vw; height: 100vh; }
+  .legend { position: fixed; top: 16px; right: 16px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; font-size: 13px; z-index: 10; }
+  .legend h3 { margin-bottom: 8px; font-size: 14px; color: #f0f6fc; }
+  .legend-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; }
+  .controls { position: fixed; top: 16px; left: 16px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; font-size: 13px; z-index: 10; max-height: 90vh; overflow-y: auto; }
+  .controls h3 { margin-bottom: 8px; font-size: 14px; color: #f0f6fc; }
+  .controls label { display: block; margin: 4px 0; cursor: pointer; }
+  .controls input[type=checkbox] { margin-right: 6px; }
+  .tooltip { position: fixed; background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; font-size: 12px; pointer-events: none; z-index: 20; max-width: 320px; display: none; }
+  .tooltip .tt-name { font-weight: 600; color: #f0f6fc; font-size: 14px; }
+  .tooltip .tt-type { color: #8b949e; margin-top: 2px; }
+  .tooltip .tt-conf { color: #8b949e; margin-top: 2px; }
+  .tooltip .tt-desc { color: #c9d1d9; margin-top: 4px; font-size: 11px; }
+  text.node-label { font-size: 11px; fill: #c9d1d9; pointer-events: none; text-anchor: middle; dominant-baseline: central; }
+  text.edge-label { font-size: 9px; fill: #484f58; pointer-events: none; text-anchor: middle; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <h3>Filter Entity Types</h3>
+  <div id="type-filters"></div>
+  <hr style="border-color:#30363d;margin:8px 0">
+  <h3>Filter Relationships</h3>
+  <div id="rel-filters"></div>
+</div>
+<div class="legend">
+  <h3>Entity Types</h3>
+  <div id="legend-items"></div>
+</div>
+<div class="tooltip" id="tooltip">
+  <div class="tt-name" id="tt-name"></div>
+  <div class="tt-type" id="tt-type"></div>
+  <div class="tt-conf" id="tt-conf"></div>
+  <div class="tt-desc" id="tt-desc"></div>
+</div>
+<svg id="graph"></svg>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+// ── Entity data (v2: 9 personas, no mail, expanded conditions) ──────────────
+
+const entities = [
+  // Stages (12)
+  {"name":"Planning","type":"stage","confidence":1,"desc":"CTO + specialists investigate codebase, produce epics"},
+  {"name":"Project Creation","type":"stage","confidence":1,"desc":"Director scopes and accepts triage beads into projects"},
+  {"name":"Decomposition","type":"stage","confidence":1,"desc":"Staff Engineer breaks epics into implementable beads"},
+  {"name":"Cross-Check","type":"stage","confidence":1,"desc":"Principal Engineer validates task batches for conflicts"},
+  {"name":"Ready","type":"stage","confidence":1,"desc":"Beads ready for implementation, claimable by engineers"},
+  {"name":"In Progress","type":"stage","confidence":1,"desc":"Engineer is actively implementing a bead"},
+  {"name":"In Review","type":"stage","confidence":1,"desc":"PR exists, Staff Engineer routes review legs"},
+  {"name":"Done","type":"stage","confidence":1,"desc":"PR merged, bead closed"},
+  {"name":"CTO Post-Flight","type":"stage","confidence":1,"desc":"CTO curates KG, validates observations, updates roadmap"},
+  {"name":"Blocked","type":"stage","confidence":1,"desc":"Bead blocked — escalation, CI failure, or design concern"},
+  {"name":"Inbox","type":"stage","confidence":1,"desc":"External issues awaiting CEO approval"},
+  {"name":"Triage","type":"stage","confidence":1,"desc":"Accepted issues awaiting Director grooming"},
+
+  // Roles — 9 personas
+  {"name":"CEO","type":"role","confidence":1,"desc":"Human's interactive interface. Approves external issues, launches planning."},
+  {"name":"CTO","type":"role","confidence":1,"desc":"Strategic layer. Plans, writes contracts, curates KG. Never reviews PRs."},
+  {"name":"Principal Engineer","type":"role","confidence":1,"desc":"Cross-project scope. Investigates codebase (v1 Scout), cross-checks batches (v1 Architect), reviews PRs for architecture, seeds KG."},
+  {"name":"Security","type":"role","confidence":1,"desc":"Domain specialist. Investigate during planning (CTO subagent), review-pr during review (Staff Eng subagent)."},
+  {"name":"Product","type":"role","confidence":1,"desc":"Domain specialist. Strategic direction during planning, requirements/UX review during PR review."},
+  {"name":"QA","type":"role","confidence":1,"desc":"Domain specialist. Coverage/reliability gaps during planning, test quality review during PR review."},
+  {"name":"Director","type":"role","confidence":1,"desc":"Per-project owner. Grooms beads, writes status updates, tracks health, closes project."},
+  {"name":"Staff Engineer","type":"role","confidence":1,"desc":"Tactical layer. Decomposes epics (pre-Ready), reviews PRs (post-PR). Spawns specialist review legs."},
+  {"name":"Engineer","type":"role","confidence":1,"desc":"Implements beads, fixes CI, responds to reviews. Absorbs v1 Fixer + PR Maintenance."},
+
+  // Artifacts
+  {"name":"Initiative Brief","type":"artifact","confidence":1,"desc":"CTO's synthesis of specialist findings into strategic direction"},
+  {"name":"Specialist Report","type":"artifact","confidence":0.7,"desc":"Ephemeral subagent output — returned to CTO's context, not persisted"},
+  {"name":"Architectural Contract","type":"artifact","confidence":0.8,"desc":"CTO constraints stored in KG — patterns, rules for implementation"},
+  {"name":"Cross-Check Verdict","type":"artifact","confidence":1,"desc":"Principal Engineer's assessment of task batch conflicts/gaps"},
+  {"name":"Project Spec","type":"artifact","confidence":1,"desc":"Director's refined scope, acceptance criteria, definition of done"},
+  {"name":"Status Update","type":"artifact","confidence":1,"desc":"Director's project health observations, written to KG"},
+  {"name":"Task Batch","type":"artifact","confidence":1,"desc":"Staff Engineer's set of decomposed, dependency-ordered beads"},
+  {"name":"Pull Request","type":"artifact","confidence":1,"desc":"Engineer's implementation — branch + PR on GitHub"},
+  {"name":"Verdict","type":"artifact","confidence":1,"desc":"Review leg output: approve, request changes, or block"},
+  {"name":"Batch Summary","type":"artifact","confidence":0.8,"desc":"Staff Engineer's review summary for a batch, written to KG"},
+
+  // Decision Points
+  {"name":"Investigation Targeting","type":"decision_point","confidence":1,"desc":"CTO decides where to focus specialist investigation"},
+  {"name":"Decomposition Strategy","type":"decision_point","confidence":1,"desc":"Staff Engineer decides granularity, dependencies, sequencing"},
+  {"name":"Review Routing","type":"decision_point","confidence":1,"desc":"Staff Engineer decides which specialist review legs to trigger"},
+  {"name":"Project Scoping","type":"decision_point","confidence":1,"desc":"Director refines scope, sets acceptance criteria"},
+  {"name":"Project Completion","type":"decision_point","confidence":1,"desc":"Director assesses whether project is complete"},
+  {"name":"Triage Decision","type":"decision_point","confidence":1,"desc":"Director decides: accept, defer, or reject each epic"},
+  {"name":"Fix vs Escalate","type":"decision_point","confidence":1,"desc":"Engineer decides: fix CI locally or create block bead"},
+
+  // Systems
+  {"name":"Beads","type":"system","confidence":1,"desc":"Source of truth for execution. bd CLI via beads plugin."},
+  {"name":"Dolt","type":"system","confidence":1,"desc":"Versioned SQL database backing beads storage"},
+  {"name":"GitHub","type":"system","confidence":1,"desc":"PRs, CI checks, code reviews, external issues"},
+  {"name":"Knowledge Graph","type":"system","confidence":1,"desc":"gk MCP server. Patterns, decisions, contracts, observations."},
+  {"name":"Orchestrator","type":"system","confidence":1,"desc":"Condition monitor. Polls systems, spawns persona + skill deterministically."},
+  {"name":"Dashboard","type":"system","confidence":1,"desc":"Hono + htmx. Live monitoring of agents, costs, status."},
+  {"name":"Sandbox","type":"system","confidence":1,"desc":"Agent SDK worktrees for isolated execution"},
+
+  // Conditions (11)
+  {"name":"KG Database Empty","type":"condition","confidence":1,"desc":"Triggers Principal Engineer + seed-kg on cold start"},
+  {"name":"Ready Queue Has Items","type":"condition","confidence":1,"desc":"Triggers Engineer + implement-bead"},
+  {"name":"Backlog Below Threshold","type":"condition","confidence":1,"desc":"Triggers CTO + planning-cycle"},
+  {"name":"PR CI Failed","type":"condition","confidence":1,"desc":"Triggers Engineer + fix-pr"},
+  {"name":"PR Review Feedback","type":"condition","confidence":1,"desc":"Triggers Engineer + respond-review"},
+  {"name":"PR Needs Review","type":"condition","confidence":1,"desc":"Triggers Staff Engineer + review-batch"},
+  {"name":"PR Merged","type":"condition","confidence":1,"desc":"Moves bead to Done"},
+  {"name":"Project Has Triage Beads","type":"condition","confidence":0.8,"desc":"Triggers Director + own-project"},
+  {"name":"Project All Tasks Done","type":"condition","confidence":0.8,"desc":"Triggers Director + own-project (closure)"},
+  {"name":"Batch Complete","type":"condition","confidence":0.8,"desc":"Triggers CTO + post-flight"},
+  {"name":"External Issue Filed","type":"condition","confidence":0.8,"desc":"Routes to Inbox for CEO approval"},
+
+  // Patterns
+  {"name":"Agent Definition Format","type":"pattern","confidence":0.9,"desc":"Unified .md + YAML frontmatter for persona definitions"},
+  {"name":"Budget Tracking","type":"pattern","confidence":1,"desc":"Cost aggregation, daily/monthly limits, per-decision tracking via KG"},
+  {"name":"Prompt Composition","type":"pattern","confidence":1,"desc":"persona + context + skill → query(). Orchestrator composes at spawn time."},
+  {"name":"Pushback Rule","type":"pattern","confidence":1,"desc":"Agents push back on unreasonable requests rather than blindly executing"},
+  {"name":"Slot Management","type":"pattern","confidence":1,"desc":"Builder vs planner slot budgets with forward-looking scheduling"},
+  {"name":"Spawn Gate","type":"pattern","confidence":1,"desc":"Sequential agent init to avoid config race conditions"},
+  {"name":"Stale Recovery","type":"pattern","confidence":1,"desc":"Detects and recovers from stale agent sessions"},
+
+  // Skills
+  {"name":"KG Skill","type":"skill","confidence":0.8,"desc":"Teaches agents to read/write knowledge graph via gk"},
+  {"name":"Contract Skill","type":"skill","confidence":0.8,"desc":"Teaches engineers to read and follow CTO architectural contracts"},
+];
+
+// ── Relationship data ───────────────────────────────────────────────────────
+
+const relationships = [
+  // Stage transitions
+  {s:"Planning",t:"Project Creation",type:"TRANSITIONS_TO"},
+  {s:"Project Creation",t:"Decomposition",type:"TRANSITIONS_TO"},
+  {s:"Decomposition",t:"Cross-Check",type:"TRANSITIONS_TO"},
+  {s:"Cross-Check",t:"Ready",type:"TRANSITIONS_TO"},
+  {s:"Cross-Check",t:"Decomposition",type:"TRANSITIONS_TO"},
+  {s:"Ready",t:"In Progress",type:"TRANSITIONS_TO"},
+  {s:"In Progress",t:"In Review",type:"TRANSITIONS_TO"},
+  {s:"In Review",t:"Done",type:"TRANSITIONS_TO"},
+  {s:"In Review",t:"In Progress",type:"TRANSITIONS_TO"},
+  {s:"In Progress",t:"Blocked",type:"TRANSITIONS_TO"},
+  {s:"Blocked",t:"In Review",type:"TRANSITIONS_TO"},
+  {s:"Done",t:"CTO Post-Flight",type:"TRANSITIONS_TO"},
+  {s:"Inbox",t:"Triage",type:"TRANSITIONS_TO"},
+  {s:"Triage",t:"Project Creation",type:"TRANSITIONS_TO"},
+  {s:"Triage",t:"Ready",type:"TRANSITIONS_TO"},
+
+  // Role → stage (OPERATES_AT)
+  {s:"CTO",t:"Planning",type:"OPERATES_AT"},
+  {s:"CTO",t:"CTO Post-Flight",type:"OPERATES_AT"},
+  {s:"Director",t:"Project Creation",type:"OPERATES_AT"},
+  {s:"Director",t:"Triage",type:"OPERATES_AT"},
+  {s:"Staff Engineer",t:"Decomposition",type:"OPERATES_AT"},
+  {s:"Staff Engineer",t:"In Review",type:"OPERATES_AT"},
+  {s:"Principal Engineer",t:"Cross-Check",type:"OPERATES_AT"},
+  {s:"Principal Engineer",t:"Planning",type:"OPERATES_AT"},
+  {s:"Principal Engineer",t:"In Review",type:"OPERATES_AT"},
+  {s:"Engineer",t:"In Progress",type:"OPERATES_AT"},
+  {s:"Engineer",t:"Blocked",type:"OPERATES_AT"},
+  {s:"Engineer",t:"In Review",type:"OPERATES_AT"},
+  {s:"Security",t:"Planning",type:"OPERATES_AT"},
+  {s:"Security",t:"In Review",type:"OPERATES_AT"},
+  {s:"Product",t:"Planning",type:"OPERATES_AT"},
+  {s:"Product",t:"In Review",type:"OPERATES_AT"},
+  {s:"QA",t:"Planning",type:"OPERATES_AT"},
+  {s:"QA",t:"In Review",type:"OPERATES_AT"},
+  {s:"CEO",t:"Inbox",type:"OPERATES_AT"},
+
+  // Artifacts — PRODUCES
+  {s:"Planning",t:"Initiative Brief",type:"PRODUCES"},
+  {s:"Planning",t:"Specialist Report",type:"PRODUCES"},
+  {s:"Planning",t:"Architectural Contract",type:"PRODUCES"},
+  {s:"Project Creation",t:"Project Spec",type:"PRODUCES"},
+  {s:"Project Creation",t:"Status Update",type:"PRODUCES"},
+  {s:"Decomposition",t:"Task Batch",type:"PRODUCES"},
+  {s:"Cross-Check",t:"Cross-Check Verdict",type:"PRODUCES"},
+  {s:"In Progress",t:"Pull Request",type:"PRODUCES"},
+  {s:"In Review",t:"Verdict",type:"PRODUCES"},
+  {s:"In Review",t:"Batch Summary",type:"PRODUCES"},
+
+  // Artifacts — CONSUMES
+  {s:"Project Creation",t:"Initiative Brief",type:"CONSUMES"},
+  {s:"Decomposition",t:"Project Spec",type:"CONSUMES"},
+  {s:"Cross-Check",t:"Task Batch",type:"CONSUMES"},
+  {s:"In Review",t:"Pull Request",type:"CONSUMES"},
+  {s:"In Progress",t:"Architectural Contract",type:"CONSUMES"},
+  {s:"CTO Post-Flight",t:"Batch Summary",type:"CONSUMES"},
+  {s:"CTO Post-Flight",t:"Status Update",type:"CONSUMES"},
+
+  // Decision points
+  {s:"Review Routing",t:"In Review",type:"OCCURS_AT"},
+  {s:"Decomposition Strategy",t:"Decomposition",type:"OCCURS_AT"},
+  {s:"Project Scoping",t:"Project Creation",type:"OCCURS_AT"},
+  {s:"Investigation Targeting",t:"Planning",type:"OCCURS_AT"},
+  {s:"Project Completion",t:"Project Creation",type:"OCCURS_AT"},
+  {s:"Triage Decision",t:"Triage",type:"OCCURS_AT"},
+  {s:"Fix vs Escalate",t:"Blocked",type:"OCCURS_AT"},
+
+  // Orchestrator → condition monitoring
+  {s:"Orchestrator",t:"KG Database Empty",type:"MONITORS"},
+  {s:"Orchestrator",t:"Ready Queue Has Items",type:"MONITORS"},
+  {s:"Orchestrator",t:"Backlog Below Threshold",type:"MONITORS"},
+  {s:"Orchestrator",t:"PR CI Failed",type:"MONITORS"},
+  {s:"Orchestrator",t:"PR Review Feedback",type:"MONITORS"},
+  {s:"Orchestrator",t:"PR Needs Review",type:"MONITORS"},
+  {s:"Orchestrator",t:"PR Merged",type:"MONITORS"},
+  {s:"Orchestrator",t:"Project Has Triage Beads",type:"MONITORS"},
+  {s:"Orchestrator",t:"Project All Tasks Done",type:"MONITORS"},
+  {s:"Orchestrator",t:"Batch Complete",type:"MONITORS"},
+  {s:"Orchestrator",t:"External Issue Filed",type:"MONITORS"},
+
+  // Condition → stage triggers
+  {s:"Ready Queue Has Items",t:"In Progress",type:"TRIGGERS"},
+  {s:"Backlog Below Threshold",t:"Planning",type:"TRIGGERS"},
+  {s:"PR CI Failed",t:"Blocked",type:"TRIGGERS"},
+  {s:"PR Review Feedback",t:"In Review",type:"TRIGGERS"},
+  {s:"PR Needs Review",t:"In Review",type:"TRIGGERS"},
+  {s:"PR Merged",t:"Done",type:"TRIGGERS"},
+  {s:"Project Has Triage Beads",t:"Triage",type:"TRIGGERS"},
+  {s:"Project All Tasks Done",t:"CTO Post-Flight",type:"TRIGGERS"},
+  {s:"Batch Complete",t:"CTO Post-Flight",type:"TRIGGERS"},
+  {s:"External Issue Filed",t:"Inbox",type:"TRIGGERS"},
+
+  // System dependencies
+  {s:"Orchestrator",t:"Beads",type:"DEPENDS_ON"},
+  {s:"Orchestrator",t:"GitHub",type:"DEPENDS_ON"},
+  {s:"Orchestrator",t:"Sandbox",type:"DEPENDS_ON"},
+  {s:"Orchestrator",t:"Agent Definition Format",type:"DEPENDS_ON"},
+  {s:"Dashboard",t:"Orchestrator",type:"DEPENDS_ON"},
+  {s:"Dashboard",t:"Knowledge Graph",type:"READS_FROM"},
+  {s:"Beads",t:"Dolt",type:"DEPENDS_ON"},
+
+  // Role → system (READS_FROM / WRITES_TO)
+  {s:"CTO",t:"Knowledge Graph",type:"READS_FROM"},
+  {s:"CTO",t:"Knowledge Graph",type:"WRITES_TO"},
+  {s:"Director",t:"Knowledge Graph",type:"WRITES_TO"},
+  {s:"Director",t:"Beads",type:"READS_FROM"},
+  {s:"Director",t:"Beads",type:"WRITES_TO"},
+  {s:"Staff Engineer",t:"Beads",type:"WRITES_TO"},
+  {s:"Staff Engineer",t:"GitHub",type:"READS_FROM"},
+  {s:"Engineer",t:"GitHub",type:"WRITES_TO"},
+  {s:"Engineer",t:"Beads",type:"READS_FROM"},
+  {s:"Engineer",t:"Knowledge Graph",type:"READS_FROM"},
+  {s:"Engineer",t:"Knowledge Graph",type:"WRITES_TO"},
+  {s:"Principal Engineer",t:"GitHub",type:"READS_FROM"},
+  {s:"Principal Engineer",t:"Knowledge Graph",type:"READS_FROM"},
+  {s:"Principal Engineer",t:"Knowledge Graph",type:"WRITES_TO"},
+  {s:"Principal Engineer",t:"Beads",type:"READS_FROM"},
+  {s:"Security",t:"GitHub",type:"READS_FROM"},
+  {s:"Security",t:"Knowledge Graph",type:"READS_FROM"},
+  {s:"Product",t:"Knowledge Graph",type:"READS_FROM"},
+  {s:"Product",t:"Beads",type:"READS_FROM"},
+  {s:"QA",t:"GitHub",type:"READS_FROM"},
+  {s:"QA",t:"Knowledge Graph",type:"READS_FROM"},
+  {s:"CEO",t:"Beads",type:"READS_FROM"},
+  {s:"CEO",t:"Beads",type:"WRITES_TO"},
+  {s:"CEO",t:"Knowledge Graph",type:"READS_FROM"},
+  {s:"CEO",t:"Knowledge Graph",type:"WRITES_TO"},
+
+  // Hierarchy (MANAGES) — includes dual-context specialist management
+  {s:"CEO",t:"CTO",type:"MANAGES"},
+  {s:"CTO",t:"Director",type:"MANAGES"},
+  {s:"CTO",t:"Principal Engineer",type:"MANAGES"},
+  {s:"CTO",t:"Security",type:"MANAGES"},
+  {s:"CTO",t:"Product",type:"MANAGES"},
+  {s:"CTO",t:"QA",type:"MANAGES"},
+  {s:"Director",t:"Staff Engineer",type:"MANAGES"},
+  {s:"Staff Engineer",t:"Engineer",type:"MANAGES"},
+  {s:"Staff Engineer",t:"Principal Engineer",type:"SPAWNS"},
+  {s:"Staff Engineer",t:"Security",type:"SPAWNS"},
+  {s:"Staff Engineer",t:"Product",type:"SPAWNS"},
+  {s:"Staff Engineer",t:"QA",type:"SPAWNS"},
+
+  // Patterns → systems
+  {s:"Spawn Gate",t:"Orchestrator",type:"USED_BY"},
+  {s:"Stale Recovery",t:"Orchestrator",type:"USED_BY"},
+  {s:"Budget Tracking",t:"Orchestrator",type:"USED_BY"},
+  {s:"Slot Management",t:"Orchestrator",type:"USED_BY"},
+  {s:"Prompt Composition",t:"Orchestrator",type:"USED_BY"},
+
+  // Patterns/skills → roles
+  {s:"Prompt Composition",t:"CTO",type:"APPLIES_TO"},
+  {s:"Prompt Composition",t:"Engineer",type:"APPLIES_TO"},
+  {s:"Pushback Rule",t:"Engineer",type:"APPLIES_TO"},
+  {s:"Pushback Rule",t:"CTO",type:"APPLIES_TO"},
+  {s:"Pushback Rule",t:"Director",type:"APPLIES_TO"},
+  {s:"KG Skill",t:"CTO",type:"LOADED_BY"},
+  {s:"KG Skill",t:"Engineer",type:"LOADED_BY"},
+  {s:"KG Skill",t:"Director",type:"LOADED_BY"},
+  {s:"KG Skill",t:"Principal Engineer",type:"LOADED_BY"},
+  {s:"Contract Skill",t:"Engineer",type:"LOADED_BY"},
+  {s:"Agent Definition Format",t:"Prompt Composition",type:"REPLACES"},
+];
+
+// ── Color scheme ────────────────────────────────────────────────────────────
+
+const typeColors = {
+  stage: "#58a6ff",
+  role: "#f78166",
+  artifact: "#d2a8ff",
+  decision_point: "#ffa657",
+  system: "#7ee787",
+  condition: "#ff7b72",
+  pattern: "#79c0ff",
+  skill: "#a5d6ff",
+};
+
+const typeLabels = {
+  stage: "Stage",
+  role: "Role (Persona)",
+  artifact: "Artifact",
+  decision_point: "Decision Point",
+  system: "System",
+  condition: "Condition",
+  pattern: "Pattern",
+  skill: "Skill",
+};
+
+const relTypeColors = {
+  TRANSITIONS_TO: "#58a6ff",
+  OPERATES_AT: "#f78166",
+  PRODUCES: "#d2a8ff",
+  CONSUMES: "#b392f0",
+  OCCURS_AT: "#ffa657",
+  DEPENDS_ON: "#7ee787",
+  READS_FROM: "#56d364",
+  WRITES_TO: "#e3b341",
+  POLLS: "#79c0ff",
+  MONITORS: "#ff7b72",
+  TRIGGERS: "#f47067",
+  MANAGES: "#f78166",
+  SPAWNS: "#da3633",
+  USED_BY: "#768390",
+  APPLIES_TO: "#768390",
+  LOADED_BY: "#a5d6ff",
+  REPLACES: "#da3633",
+};
+
+// ── Build data structures ───────────────────────────────────────────────────
+
+const nameMap = {};
+entities.forEach(e => nameMap[e.name] = e);
+
+const links = relationships.map(r => ({
+  source: r.s,
+  target: r.t,
+  type: r.type,
+}));
+
+const relTypes = [...new Set(relationships.map(r => r.type))].sort();
+const entityTypes = [...new Set(entities.map(e => e.type))].sort();
+
+const activeEntityTypes = new Set(entityTypes);
+const activeRelTypes = new Set(relTypes);
+
+// ── Filter controls ─────────────────────────────────────────────────────────
+
+const typeFiltersEl = document.getElementById('type-filters');
+entityTypes.forEach(t => {
+  const label = document.createElement('label');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = true;
+  cb.addEventListener('change', () => {
+    if (cb.checked) activeEntityTypes.add(t);
+    else activeEntityTypes.delete(t);
+    updateGraph();
+  });
+  const dot = document.createElement('span');
+  dot.style.display = 'inline-block';
+  dot.style.width = '10px';
+  dot.style.height = '10px';
+  dot.style.borderRadius = '50%';
+  dot.style.backgroundColor = typeColors[t];
+  dot.style.marginRight = '4px';
+  label.appendChild(cb);
+  label.appendChild(dot);
+  label.appendChild(document.createTextNode(' ' + (typeLabels[t] || t)));
+  typeFiltersEl.appendChild(label);
+});
+
+const relFiltersEl = document.getElementById('rel-filters');
+relTypes.forEach(t => {
+  const label = document.createElement('label');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = true;
+  cb.addEventListener('change', () => {
+    if (cb.checked) activeRelTypes.add(t);
+    else activeRelTypes.delete(t);
+    updateGraph();
+  });
+  label.appendChild(cb);
+  label.appendChild(document.createTextNode(' ' + t.replace(/_/g, ' ')));
+  relFiltersEl.appendChild(label);
+});
+
+// Legend
+const legendEl = document.getElementById('legend-items');
+entityTypes.forEach(t => {
+  const item = document.createElement('div');
+  item.className = 'legend-item';
+  const dot = document.createElement('div');
+  dot.className = 'legend-dot';
+  dot.style.backgroundColor = typeColors[t];
+  item.appendChild(dot);
+  const count = entities.filter(e => e.type === t).length;
+  item.appendChild(document.createTextNode((typeLabels[t] || t) + ' (' + count + ')'));
+  legendEl.appendChild(item);
+});
+
+// ── SVG setup ───────────────────────────────────────────────────────────────
+
+const svg = d3.select('#graph');
+const width = window.innerWidth;
+const height = window.innerHeight;
+
+const g = svg.append('g');
+
+const zoom = d3.zoom()
+  .scaleExtent([0.1, 4])
+  .on('zoom', (event) => g.attr('transform', event.transform));
+svg.call(zoom);
+
+// Arrow markers
+const defs = svg.append('defs');
+Object.entries(relTypeColors).forEach(([type, color]) => {
+  defs.append('marker')
+    .attr('id', 'arrow-' + type)
+    .attr('viewBox', '0 -5 10 10')
+    .attr('refX', 20)
+    .attr('refY', 0)
+    .attr('markerWidth', 6)
+    .attr('markerHeight', 6)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-5L10,0L0,5')
+    .attr('fill', color)
+    .attr('opacity', 0.7);
+});
+
+// Tooltip elements
+const tooltipEl = document.getElementById('tooltip');
+const ttName = document.getElementById('tt-name');
+const ttType = document.getElementById('tt-type');
+const ttConf = document.getElementById('tt-conf');
+const ttDesc = document.getElementById('tt-desc');
+
+// ── Force simulation ────────────────────────────────────────────────────────
+
+let simulation;
+let linkSel, nodeSel, labelSel, edgeLabelSel;
+
+function nodeRadius(e) {
+  const r = { stage: 18, role: 16, system: 14, artifact: 12, condition: 11, decision_point: 11, pattern: 10, skill: 10 };
+  return r[e.type] || 12;
+}
+
+function updateGraph() {
+  const visibleEntities = entities.filter(e => activeEntityTypes.has(e.type));
+  const visibleNames = new Set(visibleEntities.map(e => e.name));
+  const visibleLinks = links.filter(l =>
+    activeRelTypes.has(l.type) && visibleNames.has(l.source.name || l.source) && visibleNames.has(l.target.name || l.target)
+  );
+
+  if (simulation) simulation.stop();
+
+  const nodes = visibleEntities.map(e => ({...e}));
+  const nodeMap = {};
+  nodes.forEach(n => nodeMap[n.name] = n);
+
+  const edgeData = visibleLinks.map(l => ({
+    source: nodeMap[l.source.name || l.source],
+    target: nodeMap[l.target.name || l.target],
+    type: l.type,
+  })).filter(l => l.source && l.target);
+
+  g.selectAll('*').remove();
+
+  linkSel = g.append('g').selectAll('line')
+    .data(edgeData)
+    .join('line')
+    .attr('stroke', d => relTypeColors[d.type] || '#30363d')
+    .attr('stroke-width', d => {
+      if (d.type === 'TRANSITIONS_TO') return 2.5;
+      if (d.type === 'MANAGES' || d.type === 'SPAWNS') return 2;
+      return 1.2;
+    })
+    .attr('stroke-opacity', d => d.type === 'TRANSITIONS_TO' ? 0.8 : 0.4)
+    .attr('stroke-dasharray', d => d.type === 'SPAWNS' ? '4,3' : null)
+    .attr('marker-end', d => 'url(#arrow-' + d.type + ')');
+
+  edgeLabelSel = g.append('g').selectAll('text')
+    .data(edgeData)
+    .join('text')
+    .attr('class', 'edge-label')
+    .text(d => d.type.replace(/_/g, ' '))
+    .attr('fill', d => relTypeColors[d.type] || '#484f58')
+    .attr('opacity', 0.6);
+
+  nodeSel = g.append('g').selectAll('g')
+    .data(nodes, d => d.name)
+    .join('g')
+    .call(d3.drag()
+      .on('start', dragstarted)
+      .on('drag', dragged)
+      .on('end', dragended))
+    .on('mouseover', (event, d) => {
+      tooltipEl.style.display = 'block';
+      ttName.textContent = d.name;
+      ttType.textContent = typeLabels[d.type] || d.type;
+      ttConf.textContent = 'Confidence: ' + d.confidence;
+      ttDesc.textContent = d.desc || '';
+    })
+    .on('mousemove', (event) => {
+      tooltipEl.style.left = (event.clientX + 12) + 'px';
+      tooltipEl.style.top = (event.clientY - 8) + 'px';
+    })
+    .on('mouseout', () => { tooltipEl.style.display = 'none'; });
+
+  nodeSel.append('circle')
+    .attr('r', d => nodeRadius(d))
+    .attr('fill', d => typeColors[d.type] || '#30363d')
+    .attr('opacity', d => Math.max(0.4, d.confidence))
+    .attr('stroke', '#0d1117')
+    .attr('stroke-width', 1.5);
+
+  nodeSel.append('text')
+    .attr('class', 'node-label')
+    .attr('dy', d => nodeRadius(d) + 14)
+    .text(d => d.name.length > 22 ? d.name.slice(0, 20) + '...' : d.name);
+
+  simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(edgeData).id(d => d.name).distance(d => {
+      if (d.type === 'TRANSITIONS_TO') return 100;
+      if (d.type === 'MANAGES' || d.type === 'SPAWNS') return 120;
+      return 140;
+    }))
+    .force('charge', d3.forceManyBody().strength(-400))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 20))
+    .force('x', d3.forceX(width / 2).strength(0.03))
+    .force('y', d3.forceY(height / 2).strength(0.03))
+    .on('tick', ticked);
+}
+
+function ticked() {
+  linkSel
+    .attr('x1', d => d.source.x)
+    .attr('y1', d => d.source.y)
+    .attr('x2', d => d.target.x)
+    .attr('y2', d => d.target.y);
+
+  edgeLabelSel
+    .attr('x', d => (d.source.x + d.target.x) / 2)
+    .attr('y', d => (d.source.y + d.target.y) / 2);
+
+  nodeSel.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+}
+
+function dragstarted(event, d) {
+  if (!event.active) simulation.alphaTarget(0.3).restart();
+  d.fx = d.x;
+  d.fy = d.y;
+}
+
+function dragged(event, d) {
+  d.fx = event.x;
+  d.fy = event.y;
+}
+
+function dragended(event, d) {
+  if (!event.active) simulation.alphaTarget(0);
+  d.fx = null;
+  d.fy = null;
+}
+
+updateGraph();
+svg.call(zoom.transform, d3.zoomIdentity.translate(0, 0).scale(0.85));
+</script>
+</body>
+</html>

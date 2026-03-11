@@ -18,6 +18,9 @@ node_modules/
 .claude/worktrees/
 .claude/clones/
 
+# Knowledge graph
+.gk/
+
 # Claude Code local settings
 .claude/settings.local.json
 
@@ -51,3 +54,6 @@ Thumbs.db
 
 # Generated docs
 docs/plans/
+
+# Database files
+*.db

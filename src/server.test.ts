@@ -553,6 +553,14 @@ describe("GET /api/budget", () => {
         per_agent_limit_usd: 0,
         warn_at_percent: 80,
       },
+      beads: {
+        dolt_port: 3307,
+        dolt_data_dir: ".beads/dolt",
+      },
+      knowledge_graph: {
+        provider: "gk",
+        db_path: ".beads/knowledge.db",
+      },
     };
     const app = createApp(state, { config });
     const res = await app.request("/api/budget");
@@ -571,6 +579,14 @@ describe("GET /api/budget", () => {
         monthly_limit_usd: 0,
         per_agent_limit_usd: 0,
         warn_at_percent: 80,
+      },
+      beads: {
+        dolt_port: 3307,
+        dolt_data_dir: ".beads/dolt",
+      },
+      knowledge_graph: {
+        provider: "gk",
+        db_path: ".beads/knowledge.db",
       },
     };
     const app = createApp(state, { config });
@@ -598,6 +614,14 @@ describe("GET /api/budget", () => {
         monthly_limit_usd: 0,
         per_agent_limit_usd: 0,
         warn_at_percent: 80,
+      },
+      beads: {
+        dolt_port: 3307,
+        dolt_data_dir: ".beads/dolt",
+      },
+      knowledge_graph: {
+        provider: "gk",
+        db_path: ".beads/knowledge.db",
       },
     };
     const app = createApp(state, { config });
@@ -627,6 +651,14 @@ describe("GET /partials/budget", () => {
         per_agent_limit_usd: 0,
         warn_at_percent: 80,
       },
+      beads: {
+        dolt_port: 3307,
+        dolt_data_dir: ".beads/dolt",
+      },
+      knowledge_graph: {
+        provider: "gk",
+        db_path: ".beads/knowledge.db",
+      },
     };
     const app = createApp(state, { config });
     const res = await app.request("/partials/budget");
@@ -643,6 +675,14 @@ describe("GET /partials/budget", () => {
         monthly_limit_usd: 0,
         per_agent_limit_usd: 0,
         warn_at_percent: 80,
+      },
+      beads: {
+        dolt_port: 3307,
+        dolt_data_dir: ".beads/dolt",
+      },
+      knowledge_graph: {
+        provider: "gk",
+        db_path: ".beads/knowledge.db",
       },
     };
     const app = createApp(state, { config });
@@ -661,6 +701,14 @@ describe("GET /partials/budget", () => {
         monthly_limit_usd: 50,
         per_agent_limit_usd: 0,
         warn_at_percent: 80,
+      },
+      beads: {
+        dolt_port: 3307,
+        dolt_data_dir: ".beads/dolt",
+      },
+      knowledge_graph: {
+        provider: "gk",
+        db_path: ".beads/knowledge.db",
       },
     };
     const app = createApp(state, { config });
@@ -682,6 +730,14 @@ describe("GET /partials/budget", () => {
         per_agent_limit_usd: 0,
         warn_at_percent: 80,
       },
+      beads: {
+        dolt_port: 3307,
+        dolt_data_dir: ".beads/dolt",
+      },
+      knowledge_graph: {
+        provider: "gk",
+        db_path: ".beads/knowledge.db",
+      },
     };
     const app = createApp(state, { config });
     const res = await app.request("/partials/budget");
@@ -699,6 +755,14 @@ describe("GET /partials/budget", () => {
         monthly_limit_usd: 0,
         per_agent_limit_usd: 0,
         warn_at_percent: 80,
+      },
+      beads: {
+        dolt_port: 3307,
+        dolt_data_dir: ".beads/dolt",
+      },
+      knowledge_graph: {
+        provider: "gk",
+        db_path: ".beads/knowledge.db",
       },
     };
     const app = createApp(state, { config });
