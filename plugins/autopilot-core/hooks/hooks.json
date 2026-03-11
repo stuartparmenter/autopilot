@@ -1,0 +1,17 @@
+{
+  "description": "Core safety hooks and worktree lifecycle management for all autopilot agents",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Check if the file path in $TOOL_INPUT is within the current working directory or /tmp. If the path attempts to write outside these boundaries (e.g., to home directory, system paths, or other project directories), return 'deny' with reason. Otherwise return 'allow'.",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
