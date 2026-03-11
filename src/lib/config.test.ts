@@ -124,7 +124,7 @@ describe("loadConfig", () => {
     writeFileSync(join(tmpDir, ".autopilot.yml"), "linear:\n  team: myteam\n");
     const config = loadConfig(tmpDir);
     expect(config.linear.team).toBe("myteam");
-    expect(config.executor.parallel).toBe(3);
+    expect(config.executor.parallel).toBe(8);
     expect(config.executor.timeout_minutes).toBe(60);
   });
 
@@ -338,10 +338,10 @@ executor:
     );
   });
 
-  test("executor.parallel defaults to 3", () => {
+  test("executor.parallel defaults to 8", () => {
     writeFileSync(join(tmpDir, ".autopilot.yml"), "");
     const config = loadConfig(tmpDir);
-    expect(config.executor.parallel).toBe(3);
+    expect(config.executor.parallel).toBe(8);
   });
 
   test("executor.parallel throws below 1", () => {
@@ -1065,5 +1065,101 @@ reviewer:
   max_issues_per_review: 50
 `);
     expect(() => loadConfig(dir)).not.toThrow();
+  });
+
+  test("beads defaults are applied when YAML omits them", () => {
+    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.beads).toEqual({
+      dolt_port: 3307,
+      dolt_data_dir: ".beads/dolt",
+    });
+  });
+
+  test("beads config can be overridden", () => {
+    const dir = writeConfig(`
+beads:
+  dolt_port: 3308
+  dolt_data_dir: "/custom/dolt"
+`);
+    const config = loadConfig(dir);
+    expect(config.beads.dolt_port).toBe(3308);
+    expect(config.beads.dolt_data_dir).toBe("/custom/dolt");
+  });
+
+  test("beads partial override preserves other defaults", () => {
+    const dir = writeConfig(`
+beads:
+  dolt_port: 3309
+`);
+    const config = loadConfig(dir);
+    expect(config.beads.dolt_port).toBe(3309);
+    expect(config.beads.dolt_data_dir).toBe(".beads/dolt");
+  });
+
+  test("knowledge_graph defaults are applied when YAML omits them", () => {
+    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.knowledge_graph).toEqual({
+      provider: "gk",
+      db_path: ".beads/knowledge.db",
+    });
+  });
+
+  test("knowledge_graph config can be overridden", () => {
+    const dir = writeConfig(`
+knowledge_graph:
+  provider: "custom"
+  db_path: "/custom/knowledge.db"
+`);
+    const config = loadConfig(dir);
+    expect(config.knowledge_graph.provider).toBe("custom");
+    expect(config.knowledge_graph.db_path).toBe("/custom/knowledge.db");
+  });
+
+  test("knowledge_graph partial override preserves other defaults", () => {
+    const dir = writeConfig(`
+knowledge_graph:
+  provider: "neo4j"
+`);
+    const config = loadConfig(dir);
+    expect(config.knowledge_graph.provider).toBe("neo4j");
+    expect(config.knowledge_graph.db_path).toBe(".beads/knowledge.db");
+  });
+
+  test("executor.builder_slots defaults to 5", () => {
+    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.executor.builder_slots).toBe(5);
+  });
+
+  test("executor.planner_slots defaults to 3", () => {
+    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
+    const config = loadConfig(tmpDir);
+    expect(config.executor.planner_slots).toBe(3);
+  });
+
+  test("executor builder_slots and planner_slots can be overridden", () => {
+    const dir = writeConfig(`
+executor:
+  builder_slots: 8
+  planner_slots: 4
+`);
+    const config = loadConfig(dir);
+    expect(config.executor.builder_slots).toBe(8);
+    expect(config.executor.planner_slots).toBe(4);
+  });
+
+  test("executor v2 slot fields deep-merge alongside existing executor fields", () => {
+    const dir = writeConfig(`
+executor:
+  builder_slots: 6
+  timeout_minutes: 90
+`);
+    const config = loadConfig(dir);
+    expect(config.executor.builder_slots).toBe(6);
+    expect(config.executor.planner_slots).toBe(3);
+    expect(config.executor.timeout_minutes).toBe(90);
+    expect(config.executor.parallel).toBe(8);
   });
 });

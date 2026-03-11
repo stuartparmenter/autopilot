@@ -43,6 +43,8 @@ export interface LinearIds {
 
 export interface ExecutorConfig {
   parallel: number;
+  builder_slots: number;
+  planner_slots: number;
   timeout_minutes: number;
   fixer_timeout_minutes: number;
   max_fixer_attempts: number;
@@ -54,6 +56,16 @@ export interface ExecutorConfig {
   branch_pattern: string;
   commit_pattern: string;
   model: string;
+}
+
+export interface BeadsConfig {
+  dolt_port: number;
+  dolt_data_dir: string;
+}
+
+export interface KnowledgeGraphConfig {
+  provider: string;
+  db_path: string;
 }
 
 export interface PlanningConfig {
@@ -143,6 +155,8 @@ export interface AutopilotConfig {
   persistence: PersistenceConfig;
   sandbox: SandboxConfig;
   budget: BudgetConfig;
+  beads: BeadsConfig;
+  knowledge_graph: KnowledgeGraphConfig;
 }
 
 export const DEFAULTS: AutopilotConfig = {
@@ -162,7 +176,9 @@ export const DEFAULTS: AutopilotConfig = {
     },
   },
   executor: {
-    parallel: 3,
+    parallel: 8,
+    builder_slots: 5,
+    planner_slots: 3,
     timeout_minutes: 60,
     fixer_timeout_minutes: 60,
     max_fixer_attempts: 3,
@@ -236,6 +252,14 @@ export const DEFAULTS: AutopilotConfig = {
     monthly_limit_usd: 0,
     per_agent_limit_usd: 0,
     warn_at_percent: 80,
+  },
+  beads: {
+    dolt_port: 3307,
+    dolt_data_dir: ".beads/dolt",
+  },
+  knowledge_graph: {
+    provider: "gk",
+    db_path: ".beads/knowledge.db",
   },
 };
 
