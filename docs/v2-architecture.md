@@ -18,9 +18,9 @@ v2 keeps the orchestration layer simple (it's plumbing, not product), replaces L
 ┌─────────────────────────────────────────────────────────────┐
 │                    Knowledge Layer                           │
 │                                                              │
-│  Agentic Memory (MCP server)                                 │
+│  Agentic Memory (gk MCP server)                              │
 │  - Knowledge graph: entities, relationships, observations    │
-│  - Hybrid search: BM25 + semantic + graph traversal          │
+│  - Hybrid search: BM25 + semantic (Ollama) + graph traversal │
 │  - Decision artifacts, component models, pattern records     │
 │  - Temporal: when decisions were made, what invalidates them │
 │  - All agents read from and write to this layer              │
@@ -44,7 +44,7 @@ v2 keeps the orchestration layer simple (it's plumbing, not product), replaces L
 │  Our TypeScript loop (simplified from v1)                     │
 │  - Agent SDK query() with sandbox + MCP injection             │
 │  - Per-agent plugins and tool scoping                         │
-│  - Inter-agent mail (beads message type, exposed via MCP tools) │
+│  - Beads plugin + skills (agents use bd CLI, not custom MCP)     │
 │  - Budget tracking, slot management                           │
 │  - Activity streaming to dashboard                            │
 │  - Built-in worktrees (replaces shared clones)                │
@@ -54,9 +54,10 @@ v2 keeps the orchestration layer simple (it's plumbing, not product), replaces L
 ┌──────────────────────────┴───────────────────────────────────┐
 │                     Agent Layer                               │
 │                                                               │
-│  Claude Code agents with specialized roles                    │
-│  - Each agent gets: task (bead) + architectural context       │
-│    (from knowledge graph) + concurrent awareness (via mail)   │
+│  Claude Code agents with specialized personas                 │
+│  - Each agent gets: persona + skill + context (from KG/beads) │
+│  - Within-session: Task() subagents, Teams + SendMessage()    │
+│  - Cross-session: orchestrator conditions trigger new spawns  │
 │  - Agents write decisions back to knowledge graph             │
 │  - Ephemeral sessions, persistent knowledge                   │
 └───────────────────────────────────────────────────────────────┘
@@ -78,11 +79,11 @@ Beads (`bd`) is a Dolt-backed issue tracker. It replaces Linear as the source of
 
 **Storage and access model:**
 
-Beads stores data in `.beads/dolt/` in the **project root** (shared across all agents). A local Dolt SQL server process serves all reads/writes. Agents access beads through MCP tools on the autopilot server — they never talk to Dolt directly. This keeps the sandbox clean (no Dolt network access, no `bd` binary needed in worktrees) and gives the orchestration layer an audit/validation point.
+Beads stores data in `.beads/dolt/` in the **project root** (shared across all agents). A local Dolt SQL server process serves all reads/writes. Agents use beads directly via the `bd` CLI — no MCP wrapper layer. The beads Claude Code plugin provides skills and slash commands (`/beads:ready`, `/beads:create`, etc.) that teach agents how to use `bd` effectively.
 
-MCP tools (~6 total): `list_ready_beads`, `claim_bead`, `update_bead`, `close_bead`, `get_bead`, `search_beads`. Under the hood, the orchestration shells out to `bd` against the shared database.
+This is simpler than the MCP approach: agents already have shell access, beads has a mature CLI, and the beads plugin provides the skill files that make agents productive with `bd`. No custom MCP tools to build or maintain. The orchestration layer reads beads state directly via `bd` commands (or Dolt SQL queries) for condition monitoring.
 
-**Dependency traversal:** `bd ready` natively handles blocking dependencies (issues with open `blocks` deps are excluded) and parent-child hierarchy (children blocked if parent is blocked). In v1 we built this manually in `getReadyIssues()` — filtering for leaf issues with no incomplete blockers. The `list_ready_beads` MCP tool wraps `bd ready` and adds leaf-only filtering if beads doesn't skip parents with open children natively (needs verification).
+**Dependency traversal:** `bd ready` natively handles blocking dependencies (issues with open `blocks` deps are excluded) and parent-child hierarchy (children blocked if parent is blocked). In v1 we built this manually in `getReadyIssues()` — filtering for leaf issues with no incomplete blockers. `bd ready` handles this out of the box.
 
 **Team use:** For teams, Dolt replication syncs the beads database across machines. `bd init --team` sets up shared sync; `bd dolt push/pull` keeps everyone current. DoltHub (GitHub-for-Dolt) provides hosted remotes and a web UI for browsing beads. Teammates create beads from their machines, autopilot claims and works on them, status changes replicate back.
 
@@ -96,17 +97,17 @@ For solo use, no remote is needed — everything stays local.
 
 | v1 | v2 |
 |---|---|
-| `src/lib/linear.ts` (~700 lines) | Beads MCP tools on autopilot server |
-| Linear MCP server (HTTP) | Replaced by beads tools on autopilot MCP |
-| `getReadyIssues()`, `updateIssue()` | `list_ready_beads`, `update_bead`, `close_bead` |
-| Issue state via Linear API | Bead state via MCP tools (backed by `bd` CLI) |
+| `src/lib/linear.ts` (~700 lines) | Agents use `bd` CLI directly via beads plugin |
+| Linear MCP server (HTTP) | Removed — beads plugin + skills replace it |
+| `getReadyIssues()`, `updateIssue()` | `bd ready`, `bd update`, `bd close` |
+| Issue state via Linear API | Bead state via `bd` CLI (backed by Dolt) |
 | `withRetry()` for Linear calls | Not needed — `bd` operates on local Dolt |
 | Label-based ownership (`autopilot:managed`) | Bead metadata or tags |
 
 **What stays the same:**
 - Our orchestration loop polls for ready work and spawns agents
 - Agents still get a task ID, implement it, push a PR, update status
-- The prompts define the workflow — they just use beads MCP tools instead of Linear MCP
+- The prompts define the workflow — agents use `bd` commands via the beads plugin
 
 ### 2. Knowledge Graph (Institutional Memory)
 
@@ -121,9 +122,9 @@ We evaluated gk, Engram (199-bio), Google's always-on-memory-agent, Dolt-native 
 - **gk has the right data model** — entity-relationship-observation triples with dynamic schema, 3-tier MCP tool design, domain guides that teach agents how to use it well
 - **Engram has the right temporal dynamics** — Hebbian strengthening (usage reinforces relevance) and Ebbinghaus decay (unused knowledge fades). Its consolidation pipeline (episodes → memories → digests via Opus) is unnecessary when agents write structured knowledge at write time
 - **Dolt gives us versioning for free** — every `dolt commit` snapshots the knowledge graph. `dolt diff` shows what changed between planning cycles. `dolt log` shows when decisions were added. Temporal awareness without custom staleness tracking
-- **Vector search is unnecessary** — agent queries are structured (specific entities, modules, patterns, decisions), not fuzzy semantic similarity. FTS + graph traversal covers 90%+ of real queries. No embedding model dependency
+- **Hybrid search with semantic fallback** — agent queries are usually structured (specific entities, modules, patterns, decisions), where FTS + graph traversal covers 90%+ of cases. But agents write observations in their own vocabulary and read in different contexts — semantic search bridges that gap. gk uses Ollama embeddings for semantic similarity, combined with BM25 and temporal scoring in a hybrid approach. Semantic search is optional (degrades gracefully to FTS-only if no embedding model is available).
 
-gk v2 = gk's model + Engram's temporal dynamics + Dolt backend. No Ollama, no vector search, no consolidation.
+gk v2 = gk's model + Engram's temporal dynamics + Dolt backend + optional semantic search via Ollama.
 
 #### Schema (Dolt tables, same instance as beads)
 
@@ -178,8 +179,8 @@ CREATE TABLE kg_relationships (
 ```
 score = text_relevance × recency_weight × (1 + log(access_count + 1)) × tier_weight
 ```
-- `text_relevance` = FTS match score (BM25)
-- `recency_weight` = exponential decay from `last_accessed` (configurable half-life)
+- `text_relevance` = hybrid of BM25 keyword match + semantic similarity (when embeddings available)
+- `recency_weight` = power-law decay from `last_accessed` (FSRS-inspired spacing effect on writes, forgetting curve on reads)
 - `tier_weight` = overview: 1.0, summary: 0.7, detail: 0.4
 
 **No consolidation.** Agents write structured knowledge at write time. The CTO's post-flight review reads, validates, and adjusts confidence — but that's review, not a consolidation pipeline.
@@ -235,7 +236,7 @@ The graph is a living thing, updated at multiple points — not just after work 
 
 **Technical knowledge** accumulates during work and gets curated at post-flight. The CTO's post-flight is the natural curation point, not a separate consolidation step.
 
-Specialist reports (Scout findings, Security audit results) are **mail to the CTO**, not knowledge graph entries. The CTO synthesizes them into planning documents and knowledge graph entities. Specialist outputs are ephemeral coordination; the CTO's synthesis is the institutional memory.
+Specialist reports (Principal Engineer codebase analysis, Security threat model, etc.) are **subagent output returned to CTO's context**, not persistent artifacts. The CTO synthesizes them into planning documents and knowledge graph entities. Specialist outputs are ephemeral; the CTO's synthesis is the institutional memory.
 
 #### How Agents Interact With It
 
@@ -310,11 +311,11 @@ A persistent agent role (runs as part of the orchestration loop, not a one-off) 
 **Pre-flight review** (before agents start a batch of work):
 1. For each bead in the batch: query knowledge graph for related decisions/patterns/constraints
 2. Detect conflicts: two beads changing the same module incompatibly, beads violating existing constraints
-3. Write an **architectural contract** — context each agent receives via mail before starting
+3. Write an **architectural contract** to the knowledge graph — context each agent receives before starting
 
 **Post-flight** (after a batch completes):
 1. Curate the knowledge graph — validate engineer observations, elevate patterns, prune noise, adjust confidence
-2. Read batch summary from Staff Engineer (via mail) — what was approved, blocked, escalated
+2. Read batch state from beads + KG — what was approved, blocked, escalated
 3. Handle escalations — systemic issues the Staff Engineer flagged
 4. Update roadmap knowledge — link completed work to strategic entities
 
@@ -332,13 +333,13 @@ The Staff Engineer decides which specialist review legs to trigger for each PR, 
 
 | PR touches... | Triggers |
 |---|---|
-| Multiple subsystems | Architect review (always) |
+| Multiple subsystems | Principal Engineer review (always) |
 | Auth, crypto, permissions, user data | Security review |
 | User-facing behavior, new features, API changes | Product review |
 | Core infrastructure, data layer, performance | QA review |
 | Single file, isolated bugfix | Staff Engineer only (lightweight) |
 
-Review legs are ephemeral agents spawned by the Staff Engineer, running in parallel. Verdicts flow back to the Staff Engineer, who makes the approve/block decision. Systemic concerns get escalated to CTO via mail.
+Review legs are subagents spawned by the Staff Engineer (via Task), running in parallel. Verdicts return directly to the Staff Engineer's context, who makes the approve/block decision. Systemic concerns are flagged by blocking the bead — the CTO picks these up at post-flight.
 
 #### Decision Authority and Pushback
 
@@ -352,11 +353,11 @@ Agents at each level should have opinions grounded in the knowledge graph and th
 
 | Level | Can push back on | Pushes back to | Limit |
 |---|---|---|---|
-| Human (Mayor/CEO) | Nobody | — | — |
+| Human (CEO) | Nobody | — | — |
 | CTO | Human's beads | Human | Once with evidence |
-| Product Manager | Human's priorities | Human | Once with evidence |
-| Tech Lead | CTO's decomposition | CTO | Once with evidence |
-| Engineer | Tech Lead's approach | Tech Lead (via bead notes) | Once with evidence |
+| Director | CTO's project scope | CTO | Once with evidence |
+| Staff Engineer | Director's decomposition | Director | Once with evidence |
+| Engineer | Staff Eng's approach | Staff Engineer (via bead notes) | Once with evidence |
 
 **The directive escape hatch:** For genuine pivots, the human can mark a bead as a `directive`. This signals: don't evaluate whether to do it, evaluate how. Normal beads get merit-based review. Directives get execution planning.
 
@@ -371,104 +372,45 @@ An agent CTO with a well-maintained knowledge graph doesn't have human memory bo
 
 That's seconds, not hours. **The scaling limit is the quality of the knowledge graph, not the CTO's attention.** If engineers record decisions in the knowledge graph, the CTO's queries return useful results. If they skip it, the graph decays.
 
-### 4. Inter-Agent Mail
+### 4. Inter-Agent Communication
 
-Agents need to communicate: the CTO sends architectural contracts to engineers, engineers escalate design concerns to the CTO, the review-responder reports human reviewer feedback.
+Agents communicate through two built-in mechanisms, plus an optional future layer:
 
-v1 has no inter-agent communication. Agents are fully isolated — they don't know about each other. This works for simple parallel execution but breaks down with the CTO role.
+#### Within-Session: Claude Code Built-ins
 
-#### Implementation
+Claude Code's Agent SDK provides two communication primitives:
 
-Mail uses beads' built-in message type — no custom Dolt table needed. Beads separates data plane (stores messages as issues) from control plane (orchestration handles routing/delivery), which matches our `deliverMail()` pattern exactly.
+- **Task()** — parent spawns child subagent. Child runs with its own instructions, returns result to parent's context. Used for hierarchical delegation: CTO → specialists, Staff Engineer → review legs, Engineer → end-of-session agents.
+- **TeamCreate() + SendMessage()** — peer-to-peer messaging within a session. Used when multiple agents need to coordinate (v1's CTO already uses this for specialist teams).
 
-A message is a bead with `type: message`:
+Both are file-based under the hood. The parent pays the context window cost of child output. These are ephemeral — all communication dies with the session.
 
-| Field | Maps to |
-|-------|---------|
-| `type` | `message` |
-| `sender` | From agent (role name) |
-| `assignee` | Recipient (role name) |
-| `title` | Subject line |
-| `description` | Message body |
-| `status` | `open` (unread) / `closed` (read/handled) |
-| `ephemeral` | `true` — eligible for bulk cleanup |
-| Threading | `replies_to` dependency links |
+Any persona can spawn any other persona as a subagent. An Engineer can spawn CTO for a quick consultation. A Director can spawn Principal Engineer for investigation. The decision is contextual:
+- **Small and immediate?** → subagent (Task)
+- **Big enough to warrant its own session?** → let the orchestrator handle it (see below)
 
-```bash
-# Send a message
-bd create "Architectural contract for batch X" --type message \
-  --assignee cto --json
+#### Cross-Session: Orchestrator Condition Monitoring
 
-# Reply in thread
-bd create "Acknowledged, proceeding with constraints" --type message \
-  --assignee engineer --json
-bd dep add <reply-id> <original-id> --type replies_to
+The orchestrator's condition table (see "Orchestrator as Condition Monitor") handles all cross-session coordination. When a CTO's planning cycle creates project epics, the orchestrator detects "Project Has Triage Beads" and spawns a Director. When an Engineer's PR is created, the orchestrator detects "PR Needs Review" and spawns Staff Engineer.
 
-# Check inbox
-bd list --type message --status open --assignee cto --json
+No messaging layer is needed for this — agents produce artifacts (beads, KG entries, PRs) and the orchestrator reacts to state changes. The artifacts ARE the communication.
 
-# Mark as handled
-bd close <message-id> --reason "Processed"
-```
+#### Future: Beads Mail (deferred)
 
-Agents don't call `bd` directly — these are wrapped as MCP tools on the autopilot server:
-- `send_mail(to, subject, body)` — creates a message bead assigned to recipient
-- `send_and_wait(to, subject, body, timeout?)` — sends and polls for `replies_to` child. Agent pauses cheaply (DB poll, not token burn). Falls back on timeout.
-- `check_inbox()` — `bd list --type message --status open --assignee <self>`
-- `reply_mail(id, body)` — creates reply message + `replies_to` dependency
-- `archive_mail(id)` — `bd close <id>`
+Beads has a native messaging system (`bd mail send`, `bd mail inbox`, threading via `replies_to` dependencies) designed for async agent-to-agent communication. The architecture supports a **custom mail delegate** — when an agent calls `bd mail send CTO/ -s "subject"`, beads creates the message bead and invokes the delegate script. Our delegate would notify the orchestrator via HTTP POST, making delivery push-based (no polling).
 
-Ephemeral messages are cleaned up periodically — mail is coordination, not permanent record. Decisions worth keeping go in the knowledge graph.
+This is designed but deferred for v2 launch because:
+- Most "communication" is really artifact production (issues, PRs, KG entries) that the orchestrator already monitors
+- The ACTION taken in response to a message (not the message itself) is the valuable artifact
+- Claude Code's built-in Task() and SendMessage() handle within-session needs
+- Mail adds complexity (delivery loop, threading, inbox management) with marginal v2 benefit
 
-If we move to Gastown in v3, migrating to `gt mail` is straightforward — Gastown uses the same beads message type with the same semantics.
+Mail becomes valuable when:
+- Distributed scaling across machines/processes requires async coordination
+- Audit trails of inter-agent conversations are needed for governance
+- Back-and-forth exchanges that span sessions are common
 
-#### Message Flows
-
-```
-CTO pre-flight:
-  CTO → Engineers: "Architectural contract for batch X"
-
-Engineer escalation:
-  Engineer → CTO: "This bead conflicts with decision X in knowledge graph"
-
-PR Maintenance escalation:
-  PR Maintenance → CTO: "Human reviewer raised a design concern on PR #42"
-
-CTO post-flight:
-  CTO → Orchestration: "APPROVE bd-x1, BLOCK bd-x3"
-```
-
-#### Orchestration: Mail Delivery Loop
-
-Mail delivery is a dedicated step in the TypeScript orchestration loop — separate from fillSlots, checkOpenPRs, and planning. The orchestration checks for unread messages and spawns recipients to handle them. Agents don't poll their own mail (that would burn tokens on empty inbox checks).
-
-```
-every poll_interval:
-  1. fillSlots()          — spawn engineers for ready beads
-  2. checkOpenPRs()       — spawn PR maintenance for CI failures
-  3. deliverMail()         — check for unread messages, spawn recipients
-  4. checkPlanningNeeded() — spawn CTO for planning cycle
-```
-
-`deliverMail()` queries beads for unread messages (`bd list --type message --status open --json`), groups by recipient role, and spawns each recipient once with their pending messages as context:
-
-- **CTO has 3 unread messages** → spawn CTO (persona + inbox-dispatch task + messages)
-- **No unread mail for anyone** → no-op (a SQL query, not an agent invocation)
-
-Each step is independent. An engineer working on a bead doesn't check mail — if it sends a message to the CTO, that message sits in the table until the next `deliverMail()` iteration spawns the CTO to handle it. No waiting, no doubling up with other prompt types.
-
-Mail-spawned agents count against the slot budget like any other agent. The orchestration decides when and whether to spawn based on available slots and priority (urgent mail can preempt non-urgent work).
-
-#### In-flight mail: waiting and interrupts
-
-Agents can choose to wait on a response during execution. An engineer that needs CTO guidance calls `send_and_wait()` — sends a message bead and polls for a `replies_to` child. The engineer pauses cheaply (DB poll, no token burn) while `deliverMail()` spawns the CTO to respond. On timeout, the engineer falls back (block the bead, proceed with best judgment, or escalate).
-
-For the reverse — delivering mail TO a running agent — two approaches:
-
-1. **Poll-based** (v2): Running agents that expect replies periodically check their inbox via `check_inbox()`. Works today, no new infrastructure.
-2. **Interrupt-based** (future): The orchestration uses the agent controller handle (`onControllerReady`) to inject a nudge into a running agent's context when mail arrives. More responsive, depends on Agent SDK support for mid-session message injection.
-
-Start with poll-based. Interrupts may be achievable via the Agent SDK's conversation API (vs. the current single-shot `query()` in `runClaude()`). The conversation API allows pushing messages into a running session — exactly what's needed for mid-execution mail delivery. This would require migrating from `query()` to the conversation API, which is a meaningful change to `src/lib/claude.ts` but unlocks real-time agent-to-agent communication.
+The beads plugin is installed in all agents, so `bd mail` is available if needed. The delegate pattern and orchestrator integration can be added incrementally.
 
 ### 5. Smarter Fixer
 
@@ -497,13 +439,12 @@ v1's fixer is mechanical: read CI logs, apply minimal fix, push. It has no memor
 - Record fix patterns: "CI failure on auth module — usually a missing import after refactor"
 
 **Merge fixer and review-responder:**
-v1 has two separate agents (fixer for CI, review-responder for human reviews) that work on the same PR branch with similar workflows. Merge them into a single **PR maintenance agent** that handles:
-- CI failures (diagnose from logs, fix, push)
-- Merge conflicts (merge main, resolve, push)
-- Human review feedback (implement code changes, reply to comments)
-- Design concern escalation (stop, mail CTO, block)
+v1 has two separate agents (fixer for CI, review-responder for human reviews) that work on the same PR branch with similar workflows. v2 gives the Engineer persona these skills directly — the engineer who built the code is the right person to fix CI and respond to reviews:
+- `fix-pr` skill: diagnose from logs, fix, push
+- `respond-review` skill: implement code changes, reply to comments
+- Design concern escalation: stop, block the bead, let orchestrator handle
 
-The unified agent checks the PR state and handles whatever needs handling, rather than the monitor dispatching different agent types.
+No separate PR Maintenance persona. The orchestrator detects CI failure or review feedback on a PR and spawns Engineer + the appropriate skill.
 
 **Pattern escalation:**
 - Track failure patterns per module/file in knowledge graph
@@ -523,93 +464,108 @@ The unified agent checks the PR state and handles whatever needs handling, rathe
 ```
 CEO (interactive agent — human's interface into the system)
 │   Run: bun run ceo <project-path>
-│   Tools: beads, knowledge graph, mail, planning, dashboard
+│   Skills: approve-external-issues
+│   Tools: beads, knowledge graph, dashboard
 │   The human talks to the org through this agent.
 │
 ├── CTO ─────────────────────────────────────────────────────────
+│   │   Skills: planning-cycle, pre-flight, post-flight
 │   │   Technical strategy, architectural coherence, owns the
 │   │   knowledge graph. Thinks in systems, never reads diffs.
+│   │   Spawns specialists as subagents (Task) during planning.
 │   │
-│   ├── Specialists (spawned by CTO for planning) ────────────
+│   ├── Domain Specialists (subagents, spawned by CTO for planning)
+│   │   │   Each is a persona with investigate skill.
+│   │   │   Same personas reappear in review phase (see Staff Eng).
 │   │   │
-│   │   ├── Product Manager (planning cycle)
-│   │   │   Strategic continuity, requirements, prioritization.
-│   │   │   Maintains Product Brief across planning sessions.
+│   │   ├── Principal Engineer (cross-project)
+│   │   │   Skills: investigate, cross-check-batch, review-pr
+│   │   │   Codebase exploration (absorbs v1 Scout), cross-project
+│   │   │   coherence, architectural review. Also seeds KG on first run.
 │   │   │
-│   │   ├── Scout (ephemeral, planning)
-│   │   │   Codebase exploration, tooling inventory.
+│   │   ├── Security (domain specialist)
+│   │   │   Skills: investigate, review-pr
+│   │   │   Threat modeling during planning. Code-level security audit
+│   │   │   during PR review. One persona, two contexts.
 │   │   │
-│   │   ├── Security Analyst (ephemeral, always spawned)
-│   │   │   Vulnerabilities, auth, crypto. Bypasses lifecycle
-│   │   │   filtering — critical findings always filed.
+│   │   ├── Product (domain specialist)
+│   │   │   Skills: investigate, review-pr
+│   │   │   Strategic direction during planning. Requirements/UX
+│   │   │   review during PR review. One persona, two contexts.
 │   │   │
-│   │   └── Quality Engineer (ephemeral, planning)
-│   │       Test coverage gaps, reliability, edge cases.
+│   │   └── QA (domain specialist)
+│   │       Skills: investigate, review-pr
+│   │       Coverage/reliability gaps during planning. Test coverage
+│   │       review during PR review. One persona, two contexts.
 │   │
-│   ├── Director (ephemeral, per-project) ────────────────────
+│   ├── Director (per-project) ───────────────────────────────
+│   │   │   Skills: own-project
 │   │   │   Owns a project (epic). Wears multiple hats depending
-│   │   │   on what the project needs — engineer + product + UX +
-│   │   │   security lens. Grooms beads, writes status updates,
-│   │   │   tracks health, closes project when complete.
+│   │   │   on what the project needs. Grooms beads, writes status
+│   │   │   updates, tracks health, closes project when complete.
 │   │   │   v1's "project owner" role, elevated.
 │   │   │
-│   │   └── Staff Engineer (ephemeral, per-batch) ────────────
+│   │   └── Staff Engineer (per-batch) ───────────────────────
+│   │       │   Skills: decompose-epic, review-batch
 │   │       │   Decomposes Director's epics into implementable
 │   │       │   beads. Reviews PRs for design intent. Owns
 │   │       │   pre-Ready quality gate and post-PR review pipeline.
+│   │       │   Spawns specialists as subagents for review legs.
 │   │       │
-│   │       ├── Engineers (ephemeral, per-bead)
-│   │       │   Implement individual beads. The bulk of the workforce.
+│   │       ├── Engineers (per-bead)
+│   │       │   Skills: implement-bead, fix-pr, respond-review
+│   │       │   Implement individual beads. Also handle CI failures,
+│   │       │   merge conflicts, and review feedback on their PRs.
+│   │       │   (Absorbs v1's separate PR Maintenance / Fixer roles)
 │   │       │
-│   │       ├── PR Maintenance (ephemeral, per-PR)
-│   │       │   Combined fixer + review-responder. Handles CI failures,
-│   │       │   merge conflicts, and human review feedback on open PRs.
-│   │       │
-│   │       └── Review Legs (ephemeral, per-PR, conditional)
+│   │       └── Review Legs (per-PR, conditional subagents)
+│   │           │   Spawned by Staff Engineer during review-batch.
+│   │           │   Same personas as planning specialists, different skill.
 │   │           │
-│   │           ├── Architect (cross-cutting coherence)
-│   │           ├── Security Reviewer (code-level audit)
-│   │           ├── QA Reviewer (test coverage, edge cases)
-│   │           └── Product Reviewer (feature correctness)
+│   │           ├── Principal Engineer (cross-check-batch, review-pr)
+│   │           ├── Security (review-pr — code-level audit)
+│   │           ├── QA (review-pr — test coverage, edge cases)
+│   │           └── Product (review-pr — feature correctness)
 │
-└── Reviewer (persistent) ──────────────────────────────────────
-    Reviews completed agent runs for patterns, cost, quality
-    trends. Feeds findings into knowledge graph.
+└── Reviewer (development skill, not a runtime agent) ─────────
+    Analyzes autopilot run databases for patterns, cost, quality
+    trends, and prompt optimization opportunities. Invoked as a
+    Claude Code skill during autopilot development, not as a
+    pipeline agent. Feeds findings into knowledge graph.
 ```
 
 **Key structural changes from v1:**
 
-- **CTO never reviews PRs.** The CTO operates at the strategic/architectural level — planning, pre-flight contracts, knowledge graph curation. If the CTO is reading diffs, something went wrong. The CTO hears about problems via mail escalation: "Security reviewer found a systemic auth pattern issue across 3 PRs."
+- **Persona + skill separation.** v1 prompts are monolithic (CTO prompt = identity + task). v2 separates persona (`.md` identity file) from skill (composable task prompt). The orchestrator composes: persona + context + skill → `query()`. New skills can be added without modifying personas.
 
-- **Director owns projects.** v1's Project Owner role, elevated. A Director owns a project (epic) end-to-end — grooming beads, writing status updates, tracking project health, closing the project when all work is done. The Director wears whatever hat the project needs: engineer lens for technical projects, product + UX lens for user-facing work, security lens for hardening efforts. This fills the gap v1 had where projects drifted without clear ownership or completion. Status updates go to the knowledge graph as observations on the project's roadmap entity — temporal, queryable, and linked to the beads via `implemented_by` relationships. The CEO can query "what's the status of active projects?" and get the latest observations.
+- **9 personas, no overlaps.** v1 had ~14 roles with confusing overlaps (Security Analyst vs Security Reviewer, Fixer vs Review Responder, Architect vs Scout). v2 merges these into 9 clean identities. Domain specialists (Security, Product, QA) are each one persona with two skills (investigate for planning, review-pr for review). Engineer absorbs PR Maintenance (fix-pr, respond-review). Principal Engineer absorbs Architect + Scout.
 
-- **Staff Engineer is the tactical layer.** Decomposes Director's epics into implementable beads (pre-Ready), then reviews PRs for design intent after implementation (post-PR). Collects specialist review verdicts and applies approve/block. This is the senior IC who ensures tactical quality.
+- **CTO never reviews PRs.** The CTO operates at the strategic/architectural level — planning, pre-flight contracts, knowledge graph curation. If the CTO is reading diffs, something went wrong.
 
-- **Specialists split across two phases.** Planning specialists (Scout, PM, Security, QA) report to CTO during planning. Review specialists (Architect, Security, QA, Product) report to Staff Engineer during PR review. Some roles appear in both phases with different scope — Security during planning does threat modeling, Security during review does code-level audit.
+- **Director owns projects.** v1's Project Owner role, elevated. A Director owns a project (epic) end-to-end — grooming beads, writing status updates, tracking project health, closing the project when all work is done. The Director wears whatever hat the project needs: engineer lens for technical projects, product + UX lens for user-facing work, security lens for hardening efforts. Status updates go to the knowledge graph as observations on the project's roadmap entity.
 
-- **Agents delegate.** CTO, Director, and Staff Engineer are hub agents — they spawn sub-agents, collect results, and make decisions. Specialists and engineers are leaf agents — focused work, report back. Hub agents can spawn research sub-agents when needed: "Investigate how module X handles errors before I plan this."
+- **Staff Engineer is the tactical layer.** Decomposes Director's epics into implementable beads (pre-Ready), then reviews PRs for design intent after implementation (post-PR). Collects specialist review verdicts and applies approve/block.
 
-All specialists report findings **back to their hub** — planning specialists to CTO, review specialists to Staff Engineer. The Director sits between CTO and Staff Engineer: the CTO creates project epics, the Director owns and grooms them, the Staff Engineer decomposes them into implementable beads.
+- **Principal Engineer is the cross-project layer.** Investigates the codebase during planning (v1 Scout), cross-checks batches for inter-project conflicts, reviews PRs for architectural coherence (v1 Architect). Also handles first-run KG seeding (seed-kg skill).
+
+- **Dual-context specialists.** Security, Product, QA, and Principal Engineer each serve two masters: CTO spawns them as subagents during planning (investigate skill), Staff Engineer spawns them as subagents during review (review-pr skill). Same persona, different skill, different parent. The orchestrator doesn't manage this — it just spawns CTO or Staff Engineer, who internally decide which specialists to summon.
+
+- **Communication: built-in mechanisms, not custom mail.** Within-session: Claude Code's built-in Task() for parent→child subagents, TeamCreate()+SendMessage() for peer coordination. Cross-session: the orchestrator detects conditions and spawns new sessions. No custom mail delivery system needed for v2 launch. Beads' `bd mail` infrastructure is available for future use when distributed scaling or audit trails demand it.
 
 ### Role Lifecycle Summary
 
-| Role | Reports to | Persistence | When Active |
+| Persona | Skills | Reports to | When Active |
 |---|---|---|---|
-| CEO | Human | Interactive | Human launches via CLI to interact with the system |
-| CTO | CEO | Persistent | Planning, pre-flight contracts, knowledge graph curation |
-| Product Manager | CTO | Planning cycle | Strategic continuity, requirements, prioritization |
-| Scout | CTO | Ephemeral | Codebase exploration during planning |
-| Security Analyst | CTO | Ephemeral | Threat modeling during planning |
-| Quality Engineer | CTO | Ephemeral | Coverage/reliability gaps during planning |
-| Director | CTO | Per-project | Owns a project: grooming, status updates, health tracking, completion |
-| Staff Engineer | Director | Per-batch | Bead decomposition (pre-Ready) + PR review pipeline (post-PR) |
-| Engineer | Staff Engineer | Ephemeral | Bead implementation |
-| PR Maintenance | Staff Engineer | Ephemeral | CI failures, merge conflicts, review feedback |
-| Architect (review) | Staff Engineer | Ephemeral | Cross-cutting coherence, pattern consistency |
-| Security Reviewer | Staff Engineer | Ephemeral | Code-level security audit (conditional) |
-| QA Reviewer | Staff Engineer | Ephemeral | Test coverage, edge cases (conditional) |
-| Product Reviewer | Staff Engineer | Ephemeral | Feature correctness, requirements match (conditional) |
-| Reviewer | CEO | Persistent | Post-run analysis, cost/quality trends, knowledge graph |
+| CEO | approve-external-issues | Human | Human launches via CLI |
+| CTO | planning-cycle, pre-flight, post-flight | CEO | Planning, pre-flight, post-flight |
+| Principal Engineer | investigate, cross-check-batch, review-pr, seed-kg | CTO or Staff Eng | Planning (CTO subagent), review (Staff Eng subagent), KG seeding |
+| Security | investigate, review-pr | CTO or Staff Eng | Planning (CTO subagent), review (Staff Eng subagent, conditional) |
+| Product | investigate, review-pr | CTO or Staff Eng | Planning (CTO subagent), review (Staff Eng subagent, conditional) |
+| QA | investigate, review-pr | CTO or Staff Eng | Planning (CTO subagent), review (Staff Eng subagent, conditional) |
+| Director | own-project | CTO | Per-project: grooming, status, health, completion |
+| Staff Engineer | decompose-epic, review-batch | Director | Per-batch: decomposition + PR review pipeline |
+| Engineer | implement-bead, fix-pr, respond-review | Staff Eng | Per-bead: implementation + PR lifecycle |
+| Reviewer | (dev skill) | — | Autopilot development, not a runtime agent |
 
 ### The CEO Agent
 
@@ -620,9 +576,8 @@ bun run ceo <project-path>
 ```
 
 This starts a Claude Code session with:
-- **Beads MCP tools** — create/prioritize/assign beads, review the backlog
+- **Beads** (`bd` CLI via beads plugin) — create/prioritize/assign beads, review the backlog
 - **Knowledge graph** — query architectural decisions, review component relationships
-- **Mail** — send directives to CTO, read escalations from agents
 - **Dashboard access** — check running agents, costs, queue status
 - **Planning skills** — trigger planning cycles, review findings
 
@@ -638,7 +593,7 @@ The CEO agent replaces Gastown's "mayor" concept. Where Gastown runs a persisten
 
 ### The Pipeline: Shift Left
 
-The core idea: catching issues earlier is exponentially cheaper than catching them later. An Architect review before Ready costs one agent pass. Discovering conflicting beads after two engineers have been working for 30 minutes costs $40+ in wasted work.
+The core idea: catching issues earlier is exponentially cheaper than catching them later. A Principal Engineer review before Ready costs one agent pass. Discovering conflicting beads after two engineers have been working for 30 minutes costs $40+ in wasted work.
 
 ```
                     Cost to catch issue
@@ -651,7 +606,7 @@ The core idea: catching issues earlier is exponentially cheaper than catching th
 
 ```
 Strategic (CTO): what & why
-  CTO + [PM, Scout, Security, QA] → Findings → Project epics
+  CTO + [Principal Eng, Security, Product, QA] → Findings → Project epics
   CTO writes architectural constraints to knowledge graph
   ↓
 Tactical (Staff Engineer): how & decomposition
@@ -663,8 +618,8 @@ Tactical (Staff Engineer): how & decomposition
   Staff Engineer can spawn focused research sub-agents:
     "Investigate how module X handles errors before I plan this"
   ↓
-Cross-cutting review (Architect, conditional)
-  For multi-bead batches: Architect checks draft beads for:
+Cross-cutting review (Principal Engineer, conditional)
+  For multi-bead batches: Principal Engineer checks draft beads for:
     - Conflicting changes to same modules
     - Missing dependencies between beads
     - Pattern consistency across the batch
@@ -681,7 +636,7 @@ PR created → workflow:in_review
 Staff Engineer post-flight:
   Decides which review legs to trigger based on what changed
     │
-    ├── Architect Review (always for multi-system changes)
+    ├── Principal Engineer Review (always for multi-system changes)
     │   Cross-cutting coherence, pattern consistency
     │
     ├── Security Review (conditional: auth, crypto, user data, external input)
@@ -696,14 +651,14 @@ Staff Engineer post-flight:
   ↓
 Staff Engineer collects verdicts → approve / request changes / block
   Escalates to CTO only for architectural/systemic concerns
-CTO gets batch summary via mail (not individual PRs)
+CTO reads batch state from beads + KG (not individual PRs)
 ```
 
 #### The Balance
 
 More gates = fewer defects but higher cost and slower throughput. The sweet spot:
 
-- **2 gates before Ready** — Staff Engineer decomposition + Architect cross-check (conditional). This catches the expensive mistakes (conflicting work, bad decomposition, missing dependencies).
+- **2 gates before Ready** — Staff Engineer decomposition + Principal Engineer cross-check (conditional). This catches the expensive mistakes (conflicting work, bad decomposition, missing dependencies).
 - **1-3 gates after PR** — Staff Engineer always reviews, specialist legs conditional on what changed. Most PRs get 1-2 reviewers, not 4.
 - **Sub-agents for depth** — When a reviewer spots something concerning, they can spawn a focused check agent rather than doing a deep dive themselves. Quick triage, then targeted investigation.
 
@@ -711,37 +666,35 @@ Cost control: the orchestration tracks review cost per bead. If reviews routinel
 
 ### Planning Cycle
 
-The planning cycle uses specialist perspectives. CTO dispatches specialists via mail, collects findings, synthesizes into epics. Specialists are leaf agents — focused work, report back.
+The planning cycle uses specialist perspectives. CTO spawns specialists as subagents (Task), collects findings in-context, synthesizes into epics. Specialists are leaf subagents — focused investigation, return results directly to CTO's context.
 
 ```
 Human says "backlog needs work" (or threshold trigger)
         │
         ▼
-CTO runs planning
+CTO runs planning-cycle skill
+        │  (spawns subagents via Task)
+        ├── Principal Engineer + investigate — explore codebase, find opportunities
+        ├── Security + investigate — threat model, identify security gaps
+        ├── QA + investigate — find testing gaps, reliability issues
+        ├── Product + investigate — assess product direction, user needs
         │
-        ├── Scout — explore codebase, find improvement opportunities
-        ├── Security Analyst — threat model, identify security gaps
-        ├── Quality Engineer — find testing gaps, reliability issues
-        ├── Product Manager — assess product direction, user needs
-        │
-        ▼ (specialists report findings via mail)
+        ▼ (specialist findings return to CTO's context as subagent output)
         │
 CTO synthesizes findings → project epics (beads)
 CTO writes strategic knowledge to knowledge graph
-CTO assigns projects to Directors
         │
-        ▼ (Director owns the project)
+        ▼ (orchestrator detects triage beads → spawns Director)
         │
 Director grooms epics, writes status updates, tracks health
-Director hands off to Staff Engineer for decomposition
         │
-        ▼ (Staff Engineer decomposes)
+        ▼ (orchestrator detects epics need decomposition → spawns Staff Eng)
         │
 Staff Engineer decomposes epics → implementable sub-beads
-Architect cross-checks batch → workflow:ready
+Principal Engineer cross-checks batch → workflow:ready
 ```
 
-Specialist reports are **mail to the CTO** — ephemeral coordination, not permanent artifacts. The CTO's synthesis (epics, knowledge graph entities) is the institutional memory.
+Specialist findings are **ephemeral subagent output** — they return directly to the CTO's context and die with the session. The CTO's synthesis (epics, knowledge graph entities) is the institutional memory.
 
 ## Part 3: Agent Tooling, Safety, and Sandboxing
 
@@ -755,51 +708,48 @@ Per-agent MCP servers injected via Agent SDK `query()`:
 
 | Server | Type | v2 Status |
 |---|---|---|
-| **Linear** | HTTP | Removed — replaced by beads tools on autopilot MCP |
+| **Linear** | HTTP | Removed — replaced by beads `bd` CLI via plugin |
 | **GitHub** | HTTP | Stays — agents still create PRs, read reviews |
-| **Autopilot** | SDK-inline | Evolves — add beads tools, mail tools |
-| **Knowledge Graph** | MCP (new) | New — gk or similar, per-project DB |
+| **Autopilot** | SDK-inline | Simplifies — beads access via `bd` CLI, not MCP tools |
+| **Knowledge Graph** | MCP (new) | New — gk v2, per-project DB |
 
 #### 2. Plugins — The Brain
 
-Different agent types receive different plugins:
+v2 organizes plugins by team. The orchestrator controls which plugins each agent loads via the `plugins` option in `query()`. See Part 5 for the full plugin structure.
 
-| Agent | Plugin | What It Provides |
+| Agent | Plugins | What They Provide |
 |---|---|---|
-| All agents | `plugins/autopilot` | Runtime support (TMPDIR fix likely obsolete) |
-| Engineers, PR Maintenance | `plugins/git-safety` | Git command safety, forbidden commands, workflow guides |
-| CTO, Project Owner | `plugins/planning-skills` | 6 specialist agents + 4 domain skills + 2 decomposition agents |
+| All agents | `autopilot-core` | 9 personas, shared skills (KG conventions, investigate, review-pr), hooks, gk MCP |
+| CTO, Director, CEO | + `autopilot-leadership` | Planning, project ownership, approval skills |
+| Engineer, Staff Eng, Principal Eng | + `autopilot-engineering` | Implementation, review, decomposition, git-safety, domain skills |
+| Security | + `autopilot-security` | OWASP, threat modeling |
+| Product | + `autopilot-product` | Product strategy, UX |
+| All agents | + `beads` (external) | Beads CLI skills, `bd` slash commands |
 
-The planning-skills plugin defines subagent types (scout, security-analyst, architect, etc.) with per-agent model selection (haiku for scouts, sonnet for specialists, opus for planners). Domain skills (OWASP Top 10, dependency health, database patterns, product strategy) are background knowledge that agents reference when relevant.
-
-**v2 additions:**
-- Knowledge graph interaction skill (how to query, when to write, what to record)
-- Mail skill (how to send/read messages, escalation patterns)
-- CTO contract skill (how to interpret and follow architectural contracts)
+Skills with `user-invocable: false` in frontmatter auto-trigger on context but don't clutter the command palette (`kg-conventions`, `cto-contracts`).
 
 #### 3. Sandbox — The Cage
 
-When `config.sandbox.enabled`, agents run in bubblewrap isolation:
+Agents run in Claude Code's built-in sandbox with the **project directory** as the boundary:
 
-- **Filesystem**: Write only to worktree directory, `/tmp`, per-agent tmpdir, `~/.claude`
-- **Network**: Optional domain allowlist (GitHub, knowledge graph MCP, configurable extras)
-- **Guard hook**: PreToolUse hook denies Write/Edit outside cwd — catches escape attempts
+- **Worktrees**: Agents use `EnterWorktree` tool to create isolated working directories. `WorktreeCreate`/`WorktreeRemove` hooks in autopilot-core handle setup/cleanup.
+- **Filesystem**: Write only to worktree directory, `/tmp`, `~/.claude`
+- **Network**: Optional domain allowlist (GitHub, gk MCP, configurable extras)
+- **Guard hook**: PreToolUse hook in autopilot-core denies Write/Edit outside cwd
 - **Credential isolation**: Tokens stay in MCP server headers, never in agent env
-- **Per-agent tmpdir**: Each agent gets unique `mkdtemp()` directory
 
-**v2 change: worktrees replace shared clones.** The Agent SDK has built-in worktree support (`isolation: "worktree"`), so we drop `src/lib/sandbox-clone.ts` and let Claude Code manage worktree lifecycle. Worktrees live in `<project-root>/.claude/worktrees/`. This trades a clean sandbox boundary (shared clones had their own `.git/`) for less custom infrastructure. The sandbox must allow writes to `<project-root>/.git/` (worktree tracking metadata) and the worktree directory itself. Beads and mail access go through MCP tools, so no additional project-root filesystem access is needed.
+**v2 change: worktrees replace shared clones.** Agents create their own worktrees via `EnterWorktree` (returns `{ worktreePath, worktreeBranch, message }`). No custom worktree management code in the orchestrator — `src/lib/sandbox-clone.ts` is deleted entirely. Beads access is via `bd` CLI (beads plugin), so no additional project-root filesystem access is needed.
 
 #### Agent Tool Scoping
 
 More tools ≠ better. Each tool in an agent's context is potential distraction. The CTO's effectiveness comes from NOT having code tools.
 
-| Tool | Engineer | Architect | Security | QA | CTO |
+| Tool | Engineer | Principal Eng | Security | QA | CTO |
 |---|---|---|---|---|---|
 | Serena/LSP | Yes | Yes | Maybe | Maybe | No |
 | Knowledge Graph MCP | Read+Write | Read | Read | Read | Read+Write |
 | GitHub MCP | Yes | Read-only | No | No | No |
-| Beads MCP tools | Yes | Read-only | No | No | Read-only |
-| Mail MCP tools | Yes | No | No | No | Yes |
+| Beads (`bd` CLI) | Yes | Yes | Yes | Yes | Yes |
 | File search | Yes | Yes | Yes | Yes | No (reads reports) |
 
 ## Part 4: The Complete Workflow
@@ -809,7 +759,7 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 │ CEO Agent (bun run ceo <project>)                                │
 │ Human: "We need to improve error handling across the API"        │
 │                                                                  │
-│ → Creates bead(s) via beads MCP tools                            │
+│ → Creates bead(s) via bd CLI                                     │
 │ → Or triggers planning when backlog is low                       │
 └──────────────────────────┬───────────────────────────────────────┘
                            │
@@ -817,11 +767,12 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 ┌─────────────────────────────────────────────────────────────────┐
 │ CTO (planning)                                                   │
 │                                                                  │
-│ → Dispatches specialists: Scout, PM, Security, QA                │
-│ → Collects findings via mail                                     │
+│ → Spawns specialists as subagents: Principal Eng, Security,      │
+│   Product, QA (each with investigate skill)                      │
+│ → Collects findings in-context (subagent output)                 │
 │ → Synthesizes into project epics                                 │
-│ → Writes strategic knowledge + pre-flight contracts              │
-│ → Assigns projects to Directors                                  │
+│ → Writes strategic knowledge to KG                               │
+│ → Creates project epics as beads                                 │
 └──────────────────────────┬───────────────────────────────────────┘
                            │
                            ▼
@@ -840,7 +791,7 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 │                                                                  │
 │ → Decomposes epics into implementable beads                      │
 │ → Sets dependencies, approach notes, acceptance criteria         │
-│ → Spawns Architect for cross-cutting review (multi-bead batches) │
+│ → Spawns Principal Engineer for cross-cutting review (multi-bead batches) │
 │ → Promotes beads to workflow:ready                                │
 └──────────────────────────┬───────────────────────────────────────┘
                            │ beads ready
@@ -848,7 +799,7 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 ┌─────────────────────────────────────────────────────────────────┐
 │ Engineers (parallel)                                              │
 │                                                                  │
-│ → Read bead + CTO's architectural contract from mail             │
+│ → Read bead + CTO's architectural contract from KG               │
 │ → Query knowledge graph for relevant context                     │
 │ → Plan → Implement → Record decisions → Self-review              │
 │ → Build/test → Push branch → Create PR                           │
@@ -862,16 +813,16 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 │                                                                  │
 │ → Decides which review legs to trigger                           │
 │ → Spawns conditional legs in parallel:                           │
-│     Architect, Security, QA, Product                             │
+│     Principal Eng, Security, QA, Product                         │
 │ → Collects verdicts → approve / request changes / block          │
-│ → Escalates systemic concerns to CTO via mail                    │
+│ → Escalates systemic concerns (blocked bead → CTO post-flight)  │
 └──────────────────────────┬───────────────────────────────────────┘
                            │ approved PRs
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ CTO (post-flight — knowledge curation)                           │
 │                                                                  │
-│ → Reads batch summary from Staff Engineer                        │
+│ → Reads batch state from beads + KG                              │
 │ → Curates knowledge graph: validate, elevate, prune              │
 │ → Handles escalations                                            │
 │ → Updates roadmap entities (completion inferred from beads)       │
@@ -879,15 +830,15 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ PR Maintenance (as needed, throughout)                            │
+│ Engineer PR maintenance (as needed, throughout)                   │
 │                                                                  │
-│ → CI failure? Diagnose, fix, push                                │
-│ → Merge conflict? Merge main, resolve, push                      │
-│ → Human review? Implement changes, reply to comments             │
-│ → Design concern? STOP → mail Staff Engineer → block bead        │
-│ → Systemic pattern? Staff Engineer escalates to CTO              │
+│ → CI failure? Engineer + fix-pr skill: diagnose, fix, push       │
+│ → Merge conflict? Engineer + fix-pr: merge main, resolve, push   │
+│ → Human review? Engineer + respond-review: implement, reply      │
+│ → Design concern? STOP → block bead                              │
 │                                                                  │
-│ Monitor detects conditions, dispatches PR maintenance agents     │
+│ Orchestrator detects conditions, spawns Engineer + appropriate   │
+│ skill                                                            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -895,7 +846,7 @@ More tools ≠ better. Each tool in an agent's context is potential distraction.
 
 ### Prompt Architecture (persona + task separation)
 
-v1 prompts are monolithic scripts: each prompt IS the task. `cto.md` says "you are the CTO, now execute these 4 phases in order." This works for one-shot execution but breaks with mail — agents need to wake up, read context, and decide what to do.
+v1 prompts are monolithic scripts: each prompt IS the task. `cto.md` says "you are the CTO, now execute these 4 phases in order." v2 separates identity from job — the same persona can be spawned with different skills depending on what triggered it.
 
 v2 separates prompts into three layers:
 
@@ -910,82 +861,195 @@ v2 separates prompts into three layers:
                        │
 ┌──────────────────────┴───────────────────────┐
 │ Context (what's happening)                    │
-│ - Mail inbox (unread messages)                │
 │ - Relevant knowledge graph state              │
 │ - Current beads/project state                 │
+│ - CTO contracts (from KG)                     │
 │ - Injected dynamically each invocation        │
 └──────────────────────┬───────────────────────┘
                        │
 ┌──────────────────────┴───────────────────────┐
-│ Task (what to do now)                         │
+│ Skill (what to do now)                        │
 │ - Specific action to take                     │
-│ - OR: "check your inbox and decide"           │
-│ - Multiple task prompts per persona           │
+│ - Composable .md prompt loaded by orchestrator│
+│ - Multiple skills per persona                 │
 └──────────────────────────────────────────────┘
 ```
 
-**Reactive agents** (CTO, Reviewer, Project Owner) get persona + context and decide from their inbox:
-- CTO wakes up → inbox has escalation from engineer → respond with guidance
-- CTO wakes up → orchestration says backlog low → run planning cycle
-- CTO wakes up → batch complete → run post-flight review
+In v2, all agents are **directed** — the orchestrator always knows which skill to pair with which persona, because the condition that triggered the spawn determines the skill:
 
-**Directed agents** (Engineer, PR Maintenance, Tech Lead) get persona + context + explicit task:
-- Engineer gets persona + bead assignment + CTO contract from mail
-- PR Maintenance gets persona + PR number + failure type
+- Backlog below threshold → CTO + planning-cycle
+- Batch complete → CTO + post-flight
+- Project has triage → Director + own-project
+- Ready beads available → Engineer + implement-bead
+- CI failure → Engineer + fix-pr
+- PR needs review → Staff Engineer + review-batch
 
-This means the orchestration layer's job changes too. Instead of "spawn CTO with the planning script", it becomes "spawn CTO, inject context, let it decide" — or "spawn CTO with explicit task: run post-flight for batch X."
+No agent needs to "check their inbox and decide." The orchestrator's condition table IS the decision engine. This is simpler and more predictable than reactive agents that read mail and choose their own adventure.
 
-#### Prompt file structure
+#### Agent Definition Format
 
-```
-prompts/
-  personas/
-    cto.md               — strategic vision, knowledge graph ownership, never reads diffs
-    director.md          — project ownership, multi-lens (eng+product+security), grooming, status
-    staff-engineer.md    — decomposition, review pipeline, design intent judgment
-    engineer.md          — implementation methodology, constraints, self-review
-    pr-maintenance.md    — CI/merge/review response, escalation rules
-    reviewer.md          — trend analysis, quality patterns, cost analysis
-    architect.md         — cross-cutting coherence, pattern consistency
-    security-reviewer.md — code-level security audit approach
-    qa-reviewer.md       — test coverage, edge cases, error handling
-    product-reviewer.md  — requirements match, feature correctness
-  tasks/
-    planning-cycle.md    — CTO: dispatch specialists, synthesize, file epics
-    pre-flight.md        — CTO: architectural contracts for a batch
-    post-flight.md       — CTO: knowledge graph curation, handle escalations
-    own-project.md       — Director: groom, status update, health check, completion
-    decompose-epic.md    — Staff Engineer: break epic into beads with deps
-    review-batch.md      — Staff Engineer: decide review legs, collect verdicts
-    implement-bead.md    — Engineer: understand, plan, implement, validate
-    fix-pr.md            — PR Maintenance: diagnose, fix, push
-    respond-review.md    — PR Maintenance: address human/agent feedback
-    review-pr.md         — Review legs: focused review with verdict
-    inbox-dispatch.md    — Generic: check mail, decide next action
+v2 uses Claude Code's plugin system for all agent definitions. Personas are `.md` files with YAML frontmatter in plugin `agents/` directories. Skills are `SKILL.md` files in plugin `skills/` subdirectories. The Agent SDK's `query()` function references agents by name and loads plugins from local paths.
+
+```yaml
+# plugins/autopilot-core/agents/engineer.md
+---
+name: engineer
+description: Use this agent for implementation, CI fixes, and review responses.
+model: sonnet
+color: blue
+tools: [Read, Write, Edit, Bash, Glob, Grep, Task]
+---
+
+You are a software engineer...
 ```
 
-The orchestration composes: `persona + context + task` → final prompt passed to `runClaude()`.
+**Invocation model — two paths, one source of truth:**
 
-#### v1 → v2 prompt mapping
+1. **Orchestrator → `query()`** (top-level): The orchestrator names the agent and provides the task via `prompt`. The Agent SDK loads the agent definition from the loaded plugins. Skills are available as `/slash-commands` because the plugin's `skills/` directory is auto-discovered.
 
-| v1 Prompt | v2 Persona | v2 Task(s) |
+```typescript
+for await (const msg of query({
+  prompt: "Invoke /implement-bead. Your bead: bd-a3f8 ...",
+  options: {
+    agent: "engineer",                    // found in autopilot-core plugin
+    plugins: [
+      { type: "local", path: "./plugins/autopilot-core" },
+      { type: "local", path: "./plugins/autopilot-engineering" },
+    ],
+    mcpServers: { github: githubMcpConfig },
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+  }
+}))
+```
+
+2. **Parent agent → `Task()`** (sub-agent): When a running agent spawns a sub-agent, all personas from loaded plugins are available by name. The CTO can `Task()` the security agent because both are in `autopilot-core/agents/`.
+
+**Plugin organization — by team, not by pipeline stage:**
+
+All 9 personas live in `autopilot-core` (visible to everyone, spawnable by anyone). Skills are distributed across team-specific plugins. The orchestrator controls which plugins each agent loads, scoping which skills are available.
+
+```
+plugins/
+  autopilot-core/                    # ALL agents get this
+    .claude-plugin/
+      plugin.json                    # { "name": "autopilot-core" }
+    agents/                          # All 9 personas
+      ceo.md                     — interactive human interface
+      cto.md                     — strategic vision, KG ownership, never reads diffs
+      director.md                — project ownership, grooming, completion
+      staff-engineer.md          — decomposition, review pipeline
+      principal-engineer.md      — cross-project coherence, investigation, KG seeding
+      engineer.md                — implementation, CI fixes, review responses
+      security.md                — threat modeling (planning) + code audit (review)
+      product.md                 — strategic direction (planning) + UX review (review)
+      qa.md                      — coverage gaps (planning) + test review (review)
+    skills/
+      kg-conventions/SKILL.md    — how to query/write to KG (user-invocable: false)
+      cto-contracts/SKILL.md     — how to interpret architectural contracts (user-invocable: false)
+      kg-extract/SKILL.md        — end-of-session KG extraction
+      investigate/SKILL.md       — codebase investigation for planning (all specialists)
+      review-pr/SKILL.md         — focused PR review with verdict (all specialists)
+    hooks/
+      hooks.json                 — PreToolUse safety, WorktreeCreate/Remove setup
+    .mcp.json                    — gk MCP server config
+
+  autopilot-leadership/              # CTO, Director, CEO get this
+    .claude-plugin/
+      plugin.json                    # { "name": "autopilot-leadership" }
+    skills/
+      planning-cycle/SKILL.md    — CTO: dispatch specialists, synthesize, file epics
+      pre-flight/SKILL.md        — CTO: architectural contracts for a batch
+      post-flight/SKILL.md       — CTO: KG curation, handle escalations
+      own-project/SKILL.md       — Director: groom, status, health, completion
+      approve-external-issues/SKILL.md — CEO: review inbox, approve/reject/edit
+
+  autopilot-engineering/             # Engineer, Staff Eng, Principal Eng get this
+    .claude-plugin/
+      plugin.json                    # { "name": "autopilot-engineering" }
+    skills/
+      implement-bead/SKILL.md    — Engineer: understand, plan, implement, validate
+      fix-pr/SKILL.md            — Engineer: diagnose CI failure, fix, push
+      respond-review/SKILL.md    — Engineer: address human/agent feedback on PR
+      decompose-epic/SKILL.md    — Staff Engineer: break epic into beads with deps
+      review-batch/SKILL.md      — Staff Engineer: decide review legs, collect verdicts
+      cross-check-batch/SKILL.md — Principal Engineer: inter-project conflict detection
+      seed-kg/SKILL.md           — Principal Engineer: first-run KG population
+      git-safety/SKILL.md        — git command safety, forbidden commands (from v1 plugin)
+      git-safety/references/workflows.md
+      database-patterns/SKILL.md — database domain knowledge (from v1 planning-skills)
+      dependency-health/SKILL.md — dependency analysis (from v1 planning-skills)
+
+  autopilot-security/                # Security specialist gets this
+    .claude-plugin/
+      plugin.json                    # { "name": "autopilot-security" }
+    skills/
+      owasp-top-10/SKILL.md     — OWASP security patterns (from v1 planning-skills)
+
+  autopilot-product/                 # Product specialist gets this
+    .claude-plugin/
+      plugin.json                    # { "name": "autopilot-product" }
+    skills/
+      product-strategy/SKILL.md  — product strategy patterns (from v1 planning-skills)
+```
+
+**Plugin loading per agent:**
+
+| Agent | Plugins Loaded |
+|---|---|
+| CTO | autopilot-core, autopilot-leadership |
+| Director | autopilot-core, autopilot-leadership |
+| CEO | autopilot-core, autopilot-leadership |
+| Engineer | autopilot-core, autopilot-engineering |
+| Staff Engineer | autopilot-core, autopilot-engineering |
+| Principal Engineer | autopilot-core, autopilot-engineering |
+| Security | autopilot-core, autopilot-security |
+| Product | autopilot-core, autopilot-product |
+| QA | autopilot-core |
+
+Skills with `user-invocable: false` in their frontmatter auto-trigger based on context but don't appear as slash commands. This keeps `kg-conventions` and `cto-contracts` available to all agents without cluttering the command palette.
+
+The orchestrator calls `query()` with the agent name and a prompt that tells the agent which skill to invoke plus any task-specific context (bead details, KG state, etc.).
+
+#### v1 → v2 mapping
+
+| v1 Source | v2 Destination | Migration |
 |---|---|---|
-| `cto.md` | `personas/cto.md` | `planning-cycle.md`, `pre-flight.md`, `post-flight.md`, `inbox-dispatch.md` |
-| `executor.md` | `personas/engineer.md` | `implement-bead.md` |
-| `fixer.md` + `review-responder.md` | `personas/pr-maintenance.md` | `fix-pr.md`, `respond-review.md` |
-| `project-owner.md` | `personas/staff-engineer.md` | `decompose-epic.md`, `review-batch.md`, `inbox-dispatch.md` |
-| `reviewer.md` | `personas/reviewer.md` | (analysis task TBD) |
-| `explain.md` | `personas/cto.md` | (read-only diagnostic task) |
-| (new) | `personas/architect.md` | `review-pr.md` (cross-cutting coherence) |
-| (new) | `personas/security-reviewer.md` | `review-pr.md` (security audit) |
+| `prompts/cto.md` | `plugins/autopilot-core/agents/cto.md` | `git mv`, rewrite as persona-only |
+| `prompts/executor.md` | `plugins/autopilot-core/agents/engineer.md` | `git mv`, rewrite |
+| `prompts/fixer.md` | `plugins/autopilot-engineering/skills/fix-pr/SKILL.md` | `git mv`, content becomes skill |
+| `prompts/review-responder.md` | `plugins/autopilot-engineering/skills/respond-review/SKILL.md` | `git mv`, content becomes skill |
+| `prompts/project-owner.md` | `plugins/autopilot-core/agents/director.md` | `git mv`, rewrite |
+| `prompts/reviewer.md` | (development skill, not runtime) | Stays or moves to dev tooling |
+| `prompts/explain.md` | Absorbed into CEO agent | Content merged |
+| `plugins/planning-skills/agents/scout.md` | `plugins/autopilot-core/agents/principal-engineer.md` | `git mv`, absorbs architect |
+| `plugins/planning-skills/agents/architect.md` | Absorbed into principal-engineer.md | Content merged |
+| `plugins/planning-skills/agents/security-analyst.md` | `plugins/autopilot-core/agents/security.md` | `git mv`, rewrite |
+| `plugins/planning-skills/agents/product-manager.md` | `plugins/autopilot-core/agents/product.md` | `git mv`, rewrite |
+| `plugins/planning-skills/agents/quality-engineer.md` | `plugins/autopilot-core/agents/qa.md` | `git mv`, rewrite |
+| `plugins/planning-skills/agents/issue-planner.md` | Absorbed into `decompose-epic` skill | Content merged |
+| `plugins/planning-skills/agents/technical-planner.md` | Absorbed into `decompose-epic` skill | Content merged |
+| `plugins/planning-skills/agents/project-owner.md` | Absorbed into `own-project` skill | Content merged |
+| `plugins/planning-skills/agents/briefing-agent.md` | Absorbed into `planning-cycle` skill | Content merged |
+| `plugins/planning-skills/skills/owasp-top-10/` | `plugins/autopilot-security/skills/owasp-top-10/` | `git mv` |
+| `plugins/planning-skills/skills/product-strategy/` | `plugins/autopilot-product/skills/product-strategy/` | `git mv` |
+| `plugins/planning-skills/skills/database-patterns/` | `plugins/autopilot-engineering/skills/database-patterns/` | `git mv` |
+| `plugins/planning-skills/skills/dependency-health/` | `plugins/autopilot-engineering/skills/dependency-health/` | `git mv` |
+| `plugins/git-safety/` | `plugins/autopilot-engineering/skills/git-safety/` | `git mv` |
+| `plugins/autopilot/` (TMPDIR fix) | `plugins/autopilot-core/` | `git mv`, evolve |
 
-### Plugins (specialized knowledge)
+### Plugins (organized by team)
 
-| v1 Plugin | v2 Status | Notes |
-|---|---|---|
-| `plugins/git-safety` | Stays | Git safety rules survive. Agents still need to know what not to do. |
-| `plugins/planning-skills` | Evolves | Add knowledge graph skills. Add CTO contract skills. Specialist agents stay. |
-| `plugins/autopilot` | Evolves | TMPDIR fix likely obsolete. Add mail tools. Add knowledge graph tools. |
+v1's 3 plugins (`autopilot`, `git-safety`, `planning-skills`) are reorganized into 5 team-based plugins. Each team plugin carries the skills and domain knowledge relevant to that team. All personas live in `autopilot-core`.
+
+| v2 Plugin | Loaded By | Contains | Evolves From |
+|---|---|---|---|
+| `autopilot-core` | All agents | 9 personas, shared skills (KG conventions, investigate, review-pr), hooks, gk MCP | `plugins/autopilot` |
+| `autopilot-leadership` | CTO, Director, CEO | Planning, project ownership, approval skills | `plugins/planning-skills` (partial) |
+| `autopilot-engineering` | Engineer, Staff Eng, Principal Eng | Implementation, review, decomposition, git-safety, database/dependency skills | `plugins/planning-skills` (partial) + `plugins/git-safety` |
+| `autopilot-security` | Security specialist | OWASP, threat modeling skills | `plugins/planning-skills/skills/owasp-top-10` |
+| `autopilot-product` | Product specialist | Product strategy, UX skills | `plugins/planning-skills/skills/product-strategy` |
+| `beads` (external) | All agents | Beads CLI skills, `bd` slash commands. Installed from beads marketplace. | New |
 
 ### Methodology
 
@@ -995,7 +1059,7 @@ These principles from v1 are preserved:
 - **Block on ambiguity** — if requirements are unclear, stop and say so
 - **Follow existing patterns** — read neighboring code first
 - **Every behavioral change needs a test**
-- **Stop on design concerns** — escalation to CTO via mail
+- **Stop on design concerns** — block the bead, CTO picks up at post-flight
 - **Coexistence** — agents only touch their assigned work
 
 ### What Gets Scrapped
@@ -1006,23 +1070,123 @@ See Part 7 for the full list. Summary: Linear SDK + OAuth (~1000 lines), sandbox
 
 | Component | Purpose |
 |---|---|
-| Knowledge graph MCP server (gk v2) | Institutional memory for all agents |
-| Mail (beads message type + MCP wrappers) | Inter-agent communication |
-| Director role | Project ownership, grooming, status updates, completion |
-| Staff Engineer role | Pre-Ready decomposition + post-PR review pipeline |
-| Review leg spawning | Conditional specialist review agents |
-| PR maintenance agent | Unified fixer + review-responder |
+| Knowledge graph MCP server (gk v2) | Institutional memory for all agents (hybrid BM25 + semantic search) |
+| Beads plugin + skills | Agents use `bd` CLI directly via Claude Code beads plugin |
+| 5 team-based plugins | autopilot-core (personas + shared skills), -leadership, -engineering, -security, -product |
+| Persona + skill separation | Persona `.md` files in autopilot-core/agents/ + composable SKILL.md prompts replace monolithic `prompts/` |
+| Director persona | Project ownership, grooming, status updates, explicit project closing |
+| Staff Engineer persona | Pre-Ready decomposition + post-PR review pipeline |
+| Principal Engineer persona | Cross-project coherence, codebase investigation, KG seeding |
+| Domain specialist personas | Security, Product, QA — each with investigate + review-pr skills |
+| Engineer absorbs PR maintenance | fix-pr + respond-review skills on Engineer persona |
+| Review leg spawning | Conditional specialist review subagents (spawned by Staff Engineer) |
 | Knowledge graph skills | How agents query and write to the graph |
+| End-of-session subagents | Rebase, `/simplify`, `/kg-extract` run in-context |
+| Condition-based orchestrator | Monitors 11 conditions, spawns persona + skill deterministically |
+| Functional slot allocation | Builder vs planner budgets with forward-looking scheduling |
 
 ### Budget Tracking
 
 v1's budget tracking (cost aggregation, daily/monthly limits) carries forward. The knowledge graph adds cost-per-decision tracking — "this decision cost $X to implement across N beads" — for retrospective analysis.
 
+### Orchestrator as Condition Monitor
+
+The orchestrator is fundamentally a state watcher. It monitors conditions across systems and reacts with deterministic actions. It never consumes artifacts directly — agents at stages consume artifacts and set bead state; the orchestrator sees the state change.
+
+**Conditions the orchestrator monitors:**
+
+| Condition | Source | Triggers |
+|-----------|--------|----------|
+| KG Database Empty | gk (`get_stats`) | Spawn Principal Engineer + seed-kg → populate graph (blocks planning) |
+| Ready Queue Has Items | Beads (`bd ready`) | Spawn Engineer + implement-bead → In Progress |
+| Backlog Below Threshold | Beads (count query) | Spawn CTO + planning-cycle |
+| PR CI Failed | GitHub (Checks API) | Spawn Engineer + fix-pr |
+| PR Review Feedback | GitHub (review comments) | Spawn Engineer + respond-review |
+| PR Needs Review | GitHub (new PR) | Spawn Staff Engineer + review-batch |
+| PR Merged | GitHub (PR state) | Move bead → Done |
+| Project Has Triage Beads | Beads (project query) | Spawn Director + own-project |
+| Project All Tasks Done | Beads (project query) | Spawn Director + own-project (for closure) |
+| Batch Complete | Beads (batch query) | Spawn CTO + post-flight |
+| External Issue Filed | GitHub Issues / Linear sync | Route to Inbox |
+
+This is the condition-based model — each poll iteration checks these conditions and spawns agents when thresholds are met. The orchestrator is deterministic: same conditions → same actions.
+
+### Functional Slot Allocation
+
+Agent slots are divided into functional buckets rather than per-role limits:
+
+- **Builders** — Engineers. These produce code changes (including CI fixes and review responses).
+- **Planners** — CTO + Director + Staff Engineer + Principal Engineer + Specialists. These produce plans, reviews, and coordination.
+
+The allocation should be forward-looking: predict when the ready queue will drain (based on current builder throughput and queue depth) and start planning before it hits zero, rather than waiting for the threshold.
+
+```yaml
+executor:
+  parallel: 8                          # Total concurrent agents
+  builder_slots: 5                     # Max concurrent builders
+  planner_slots: 3                     # Max concurrent planners
+```
+
+When the queue is full, all slots go to builders. When queue is draining, planners start spinning up proactively.
+
+### End-of-Session Subagent Pattern
+
+Engineers run cleanup subagents at the end of their session, while still in-context with full knowledge of what changed:
+
+1. **Rebase** — merge latest main, resolve conflicts in-context (the engineer knows what they changed and why)
+2. **`/simplify`** — code simplification pass on changed files
+3. **`/kg-extract`** — extract knowledge graph observations from the work done (decisions made, patterns discovered, constraints learned)
+
+This is cheaper and higher quality than separate pipeline stages because:
+- The engineer has full context of what changed and why
+- No separate agent spawn needed — subagent runs within the session via `Task()`
+- KG observations written while context is fresh, not reconstructed later
+
+### Knowledge Graph Freshness Strategy
+
+Two layers keep the knowledge graph current:
+
+1. **Engineers update during implementation** — record decisions, component relationships, patterns discovered. Low-medium confidence (0.5-0.7) since work may pivot.
+2. **`/kg-extract` subagent at session end** — structured extraction while context is fresh. Captures what was actually built vs. what was planned.
+
+The Staff Engineer validates KG observations during review — a natural curation point. The CTO curates at post-flight — elevates patterns, prunes noise, adjusts confidence.
+
+### Merge Conflict Mitigation
+
+Two layers prevent the merge conflict spiral that plagued v1:
+
+1. **Smarter `bd ready`** — don't ready competing tasks that touch the same files. The Director/Staff Engineer considers blast radius during decomposition. If two beads modify `server.ts`, sequence them (dependency chain) rather than running in parallel.
+2. **Engineers rebase before pushing** — as an end-of-session subagent step (see above). The engineer resolves conflicts in-context because they understand what they changed. This catches conflicts early when the person best equipped to resolve them is still active.
+
+### Project Lifecycle and Closing
+
+Directors explicitly close projects when all work is done. In Linear/v1, projects could drift indefinitely. v2 makes the lifecycle explicit:
+
+1. Director creates project from CTO's epic, sets scope and acceptance criteria
+2. Director tracks project health via status updates (KG observations on the project entity)
+3. When all beads under the project are closed, Director writes final status update and closes the project
+4. CTO Post-Flight reviews closed projects and curates KG
+
+The `Project All Tasks Done` condition triggers the orchestrator to spawn the Director for closure.
+
+### Worktree Sandbox Strategy
+
+v2 uses Claude Code's built-in `EnterWorktree` / `ExitWorktree` tools rather than v1's custom shared clones. Agents create their own worktrees via the `EnterWorktree` tool (returning `{ worktreePath, worktreeBranch, message }`). The sandbox boundary is the **project directory**, not the worktree — agents can read the project but write only within their worktree.
+
+The `autopilot-core` plugin hooks into `WorktreeCreate` and `WorktreeRemove` events for setup/cleanup (environment injection, beads access validation, etc.). No worktree management code in the orchestrator.
+
+**Mitigations for agent misbehavior:**
+- `git-safety` skill in autopilot-engineering plugin (forbidden commands, workflow guides)
+- PreToolUse guard hook in autopilot-core denies Write/Edit outside cwd
+- WorktreeCreate hook injects environment context (branch name, project root)
+- Beads access via `bd` CLI (reads from shared Dolt server)
+- Worktree cleanup via `ExitWorktree` tool or `WorktreeRemove` hook
+
 ## Part 6: Migration Path
 
 ### Phase 1: Beads as task layer + worktrees
 - `bd init` in target projects
-- Add beads MCP tools to autopilot server (agents access beads via MCP, not `bd` CLI directly)
+- Install beads Claude Code plugin (agents use `bd` CLI directly)
 - Switch from shared clones to Agent SDK built-in worktrees (drop `sandbox-clone.ts`)
 - Keep v1 orchestration loop but read from Beads instead of Linear
 - Linear becomes optional (can still sync if desired)
@@ -1034,15 +1198,14 @@ v1's budget tracking (cost aggregation, daily/monthly limits) carries forward. T
 - Build the CTO agent prompt
 
 ### Phase 3: CTO + review legs
-- Add CTO pre/post-flight logic to orchestration loop
-- Implement mail system (beads message type + MCP wrapper tools on autopilot server)
-- Wire conditional review leg spawning
-- Build architectural contract prompt
+- Add CTO pre/post-flight conditions to orchestration loop
+- Wire conditional review leg spawning (Staff Engineer spawns specialist subagents)
+- Build architectural contract skill
 
-### Phase 4: Smarter PR maintenance
-- Merge fixer + review-responder into unified agent
+### Phase 4: Engineer PR skills
+- Add fix-pr + respond-review skills to Engineer persona
 - Add knowledge graph pattern queries
-- Add escalation logic (pattern detection → CTO mail)
+- Add escalation logic (pattern detection → block bead, CTO picks up at post-flight)
 - Remove separate monitor dispatch for review-responder vs. fixer
 
 ### Phase 5: Iterate
@@ -1063,7 +1226,7 @@ For teams keeping Linear for planning boards and stakeholder visibility:
 Linear (labeled autopilot:managed)  ←→  Beads (source of truth for execution)
 
 Ingest:  Linear issue created/updated → create/update bead (→ Triage)
-Execute: Agents work against beads (via MCP tools)
+Execute: Agents work against beads (via bd CLI)
 Report:  Bead state changes → update Linear issue status
 ```
 
@@ -1133,7 +1296,6 @@ Dolt runs as a MySQL-compatible server on port 3307 (avoids conflict with MySQL'
 | Data | v1 Storage | v2 Storage |
 |---|---|---|
 | Beads (task tracking) | Linear API | Dolt (beads tables) |
-| Agent messages (mail) | N/A | Beads (message type beads — `bd create --type message`) |
 | Agent runs (history) | SQLite (`agent_runs`) | Dolt (`agent_runs`) |
 | Activity logs | SQLite (`activity_logs`) | Dolt (`activity_logs`) |
 | Planning sessions | SQLite (`planning_sessions`) | Knowledge graph (decisions/findings persist as entities) |
@@ -1155,7 +1317,7 @@ Triage → (Project Owner accepts) → Ready
 Ready → (orchestration claims via bd update --claim) → In Progress
 In Progress → (agent pushes PR, attaches ref) → In Review
 In Review → (PR merged) → Done
-In Review → (CI fails / merge conflict / review feedback) → PR Maintenance
+In Review → (CI fails / merge conflict / review feedback) → Engineer (fix-pr / respond-review skill)
 Any → Blocked
 ```
 
@@ -1197,20 +1359,9 @@ every stale_check_interval:
 
 **Crash recovery:** On startup, check for beads claimed by this instance that have no running agent → unclaim them. Beads' atomic claim (`--claim` fails if already claimed) prevents double-pickup even without graceful shutdown.
 
-### Inactivity Timeout vs Mail Wait
+### Inactivity Timeout
 
-v1's inactivity watchdog kills agents that produce no output for N minutes. With `send_and_wait()`, an agent waiting for a mail reply looks inactive — no tool calls, no text output.
-
-**Solution:** The `send_and_wait()` MCP tool implementation sends periodic heartbeat activities to the orchestration while polling for replies. The watchdog sees activity (heartbeats) and doesn't kill the agent. If the mail reply never comes, `send_and_wait()` times out and the agent handles the fallback — the watchdog only fires if the agent stops doing anything at all after the timeout.
-
-```
-Engineer calls send_and_wait(CTO, "guidance needed?", timeout=5m)
-  → MCP tool creates message bead assigned to CTO
-  → Polls for reply every 10s
-  → Sends heartbeat activity to orchestration each poll
-  → Reply arrives → return to agent
-  → Timeout → return timeout error to agent → agent decides fallback
-```
+v1's inactivity watchdog kills agents that produce no output for N minutes. This carries forward unchanged — with no mail-wait pattern in v2 launch, agents are always actively working or done. If an agent needs information from another agent mid-session, it spawns a subagent (Task) which keeps the session active.
 
 ### CLI Entry Points
 
@@ -1245,7 +1396,9 @@ beads:
   dolt_data_dir: ".beads/dolt"         # Dolt data directory
 
 executor:
-  parallel: 5                          # Max concurrent agents
+  parallel: 8                          # Max concurrent agents (total)
+  builder_slots: 5                     # Max concurrent builders (engineers + PR maintenance)
+  planner_slots: 3                     # Max concurrent planners (CTO, director, staff eng, etc.)
   timeout_minutes: 60                  # Per-agent hard timeout
   inactivity_timeout_minutes: 10       # No-output timeout
   stale_timeout_minutes: 15            # Unclaim threshold
@@ -1263,10 +1416,6 @@ monitor:
   poll_interval_minutes: 5
   max_fixer_attempts: 3
   fixer_timeout_minutes: 60
-
-mail:
-  delivery_interval_minutes: 1         # How often deliverMail() runs
-  wait_timeout_minutes: 5              # Default send_and_wait timeout
 
 knowledge_graph:
   provider: "gk"                       # or "engram", etc.
@@ -1320,10 +1469,9 @@ dashboard:
 The dashboard needs a refresh for v2 but the architecture stays the same (Hono + htmx). Changes:
 
 - **Status**: Show beads state instead of Linear issue state
-- **Agent view**: Show mail activity (sent/received/waiting) alongside tool use
+- **Agent view**: Show persona + skill for each running agent, alongside tool use
 - **Budget**: Carry forward cost tracking, add per-bead cost view
 - **Planning**: Show knowledge graph health, recent decisions
-- **Mail queue**: New section — unread messages, delivery status, wait times
 - **Health**: Add Dolt server status, knowledge graph connectivity
 - **CEO integration**: Dashboard doubles as read-only view; CEO agent handles interactive actions
 
@@ -1337,113 +1485,149 @@ What depends on what. Read top-to-bottom as rough build order. Items at the same
 graph TD
     subgraph "Infrastructure (build first)"
         DOLT[Dolt server setup]
-        BEADS_MCP[Beads MCP tools<br/>list_ready, claim, update, close, search]
+        BEADS[Beads plugin + bd CLI<br/>agents use bd directly]
         GK[gk v2 MCP server<br/>✅ v0.1.0 built]
-        WORKTREE[Agent SDK worktree integration]
-        MAIL_MCP[Mail MCP tools<br/>send_mail, check_inbox, reply, archive, send_and_wait]
     end
 
-    subgraph "Orchestration (build second)"
-        LOOP[Main loop<br/>fillSlots + checkOpenPRs + deliverMail + checkPlanning]
+    subgraph "Plugin Scaffold (build second)"
+        CORE[autopilot-core plugin<br/>plugin.json, .mcp.json, hooks.json]
+        LEAD[autopilot-leadership plugin]
+        ENGP[autopilot-engineering plugin]
+        SECP[autopilot-security plugin]
+        PRODP[autopilot-product plugin]
+    end
+
+    subgraph "Personas (in autopilot-core/agents/)"
+        P_CTO[cto.md]
+        P_DIR[director.md]
+        P_STAFF[staff-engineer.md]
+        P_PRINC[principal-engineer.md]
+        P_ENG[engineer.md]
+        P_DOMAIN[security.md, product.md, qa.md]
+        P_CEO[ceo.md]
+    end
+
+    subgraph "Core Skills (in autopilot-core/skills/)"
+        S_KG[kg-conventions/ — query/write conventions]
+        S_CONTRACT[cto-contracts/ — interpret arch contracts]
+        S_EXTRACT[kg-extract/ — structured KG extraction]
+        S_INVESTIGATE[investigate/ — shared specialist exploration]
+        S_REVIEWPR[review-pr/ — shared specialist review]
+    end
+
+    subgraph "Leadership Skills (in autopilot-leadership/skills/)"
+        T_PLAN[planning-cycle/]
+        T_PREFLIGHT[pre-flight/]
+        T_POSTFLIGHT[post-flight/]
+        T_PROJECT[own-project/]
+        T_APPROVE[approve-external-issues/]
+    end
+
+    subgraph "Engineering Skills (in autopilot-engineering/skills/)"
+        T_IMPLEMENT[implement-bead/]
+        T_FIX[fix-pr/ + respond-review/]
+        T_DECOMPOSE[decompose-epic/]
+        T_REVIEWBATCH[review-batch/]
+        T_CROSSCHECK[cross-check-batch/]
+        T_SEED[seed-kg/]
+        T_GITSAFE[git-safety/]
+        T_DBPAT[database-patterns/]
+        T_DEPHEAL[dependency-health/]
+    end
+
+    subgraph "Domain Skills"
+        T_OWASP[autopilot-security/skills/owasp-top-10/]
+        T_PRODSTRAT[autopilot-product/skills/product-strategy/]
+    end
+
+    subgraph "Orchestration (build after plugins)"
+        LOOP[Main loop<br/>fillSlots + checkOpenPRs + checkPlanning]
         SLOTS[Slot management + budget tracking]
         STALE[Stale recovery]
         SHUTDOWN[Graceful shutdown + crash recovery]
         WORKFLOW[Workflow dimension mgmt<br/>bd set-state workflow=X]
     end
 
-    subgraph "Personas (build in parallel with orchestration)"
-        P_CTO[personas/cto.md]
-        P_DIR[personas/director.md]
-        P_STAFF[personas/staff-engineer.md]
-        P_ENG[personas/engineer.md]
-        P_PRMAINT[personas/pr-maintenance.md]
-        P_REVIEW[personas/architect.md<br/>security-reviewer.md<br/>qa-reviewer.md<br/>product-reviewer.md]
-        P_CEO[personas/ceo.md]
-    end
-
-    subgraph "Tasks (build after personas)"
-        T_PLAN[planning-cycle.md]
-        T_PREFLIGHT[pre-flight.md]
-        T_POSTFLIGHT[post-flight.md]
-        T_PROJECT[own-project.md]
-        T_DECOMPOSE[decompose-epic.md]
-        T_REVIEWBATCH[review-batch.md]
-        T_IMPLEMENT[implement-bead.md]
-        T_FIX[fix-pr.md + respond-review.md]
-        T_REVIEWPR[review-pr.md]
-        T_INBOX[inbox-dispatch.md]
-    end
-
-    subgraph "Skills"
-        S_KG[Knowledge graph skill<br/>query/write conventions]
-        S_MAIL[Mail skill<br/>when/how to communicate]
-        S_CONTRACT[CTO contract skill<br/>interpret arch contracts]
-    end
-
     subgraph "Integration"
-        DASHBOARD[Dashboard refresh<br/>beads state, mail queue, KG health]
+        DASHBOARD[Dashboard refresh<br/>beads state, KG health]
         CEO_CLI[bun run ceo CLI entry point]
         SETUP[bun run setup updates<br/>bd init, Dolt check, gk init]
     end
 
     %% Infrastructure dependencies
-    DOLT --> BEADS_MCP
+    DOLT --> BEADS
     DOLT --> GK
-    BEADS_MCP --> MAIL_MCP
-    BEADS_MCP --> WORKFLOW
+    BEADS --> WORKFLOW
 
-    %% Orchestration dependencies
-    BEADS_MCP --> LOOP
-    MAIL_MCP --> LOOP
-    WORKTREE --> LOOP
-    WORKFLOW --> LOOP
-    LOOP --> SLOTS
-    LOOP --> STALE
-    LOOP --> SHUTDOWN
+    %% Plugin scaffold depends on infrastructure
+    GK --> CORE
+    CORE --> LEAD
+    CORE --> ENGP
+    CORE --> SECP
+    CORE --> PRODP
 
-    %% Task dependencies on infrastructure
-    BEADS_MCP --> T_IMPLEMENT
-    BEADS_MCP --> T_DECOMPOSE
-    GK --> T_PREFLIGHT
-    GK --> T_POSTFLIGHT
-    GK --> T_IMPLEMENT
-    GK --> T_PROJECT
-    MAIL_MCP --> T_PREFLIGHT
-    MAIL_MCP --> T_PLAN
-    MAIL_MCP --> T_INBOX
+    %% Personas live in core plugin
+    CORE --> P_CTO
+    CORE --> P_DIR
+    CORE --> P_STAFF
+    CORE --> P_PRINC
+    CORE --> P_ENG
+    CORE --> P_DOMAIN
+    CORE --> P_CEO
 
-    %% Task dependencies on personas
+    %% Core skills live in core plugin
+    CORE --> S_KG
+    CORE --> S_CONTRACT
+    CORE --> S_EXTRACT
+    CORE --> S_INVESTIGATE
+    CORE --> S_REVIEWPR
+
+    %% Leadership skills depend on personas + infra
     P_CTO --> T_PLAN
     P_CTO --> T_PREFLIGHT
     P_CTO --> T_POSTFLIGHT
     P_DIR --> T_PROJECT
+    P_CEO --> T_APPROVE
+    GK --> T_PLAN
+    GK --> T_PREFLIGHT
+    GK --> T_POSTFLIGHT
+    GK --> T_PROJECT
+
+    %% Engineering skills depend on personas + infra
+    P_ENG --> T_IMPLEMENT
+    P_ENG --> T_FIX
     P_STAFF --> T_DECOMPOSE
     P_STAFF --> T_REVIEWBATCH
-    P_ENG --> T_IMPLEMENT
-    P_PRMAINT --> T_FIX
-    P_REVIEW --> T_REVIEWPR
+    P_PRINC --> T_CROSSCHECK
+    P_PRINC --> T_SEED
+    BEADS --> T_IMPLEMENT
+    BEADS --> T_DECOMPOSE
+    GK --> T_IMPLEMENT
+    GK --> T_SEED
+
+    %% Domain skills depend on personas
+    P_DOMAIN --> T_OWASP
+    P_DOMAIN --> T_PRODSTRAT
 
     %% Review pipeline
-    T_REVIEWBATCH --> T_REVIEWPR
     T_IMPLEMENT --> T_REVIEWBATCH
+    T_REVIEWBATCH --> S_REVIEWPR
 
-    %% Skills feed into personas
-    S_KG --> P_CTO
-    S_KG --> P_ENG
-    S_KG --> P_DIR
-    S_MAIL --> P_CTO
-    S_MAIL --> P_ENG
-    S_MAIL --> P_STAFF
-    S_CONTRACT --> P_ENG
+    %% Orchestration depends on plugins + infra
+    BEADS --> LOOP
+    WORKFLOW --> LOOP
+    CORE --> LOOP
+    LOOP --> SLOTS
+    LOOP --> STALE
+    LOOP --> SHUTDOWN
 
     %% Integration
     LOOP --> DASHBOARD
-    BEADS_MCP --> DASHBOARD
+    BEADS --> DASHBOARD
     GK --> DASHBOARD
     P_CEO --> CEO_CLI
-    BEADS_MCP --> CEO_CLI
+    BEADS --> CEO_CLI
     GK --> CEO_CLI
-    MAIL_MCP --> CEO_CLI
     DOLT --> SETUP
 ```
 
@@ -1454,54 +1638,52 @@ What each buildable component **requires** (must exist) and **produces** (enable
 | Component | Requires | Produces | Status |
 |-----------|----------|----------|--------|
 | **Dolt server** | — | SQL database for beads, gk, operational tables | Not started |
-| **Beads MCP tools** | Dolt, `bd` CLI | `list_ready`, `claim`, `update`, `close`, `search` for agents | Not started |
+| **Beads plugin + CLI** | Dolt, `bd` CLI | Agents use `bd` directly — `bd ready`, `bd claim`, `bd close`, etc. | Not started |
 | **gk v2** | Dolt (or SQLite) | Knowledge graph read/write for all agents | **v0.1.0 done** |
-| **Mail MCP tools** | Beads MCP (messages are beads) | `send_mail`, `check_inbox`, `reply`, `send_and_wait` | Not started |
-| **Workflow dimension** | Beads MCP | `bd set-state workflow=X`, orchestration queries by label | Not started |
-| **Agent SDK worktrees** | — | Isolated working dirs, replaces sandbox-clone.ts | Not started |
-| **Main orchestration loop** | Beads MCP, Mail MCP, Worktrees, Workflow | fillSlots, checkOpenPRs, deliverMail, checkPlanning | Evolves from v1 |
-| **CTO persona + planning** | gk, Mail, Beads MCP | Project epics, architectural contracts, KG entries | Not started |
-| **Director persona + project** | gk, Beads MCP | Project grooming, status updates (KG obs), completion | Not started |
-| **Staff Eng persona + decompose** | Beads MCP, gk | Ready beads with deps, approach notes, acceptance criteria | Not started |
-| **Staff Eng persona + review** | Mail, Review leg personas | PR verdicts (approve/block), escalations to CTO | Not started |
-| **Engineer persona + implement** | Beads MCP, gk, Worktrees, CTO contract skill | PRs, KG observations, bead status updates | Evolves from v1 |
-| **PR Maintenance persona** | Beads MCP, Mail | CI fixes, merge conflict resolution, review responses | Evolves from v1 |
-| **Review leg personas** | gk, Worktrees | PR verdicts with rationale | Not started |
-| **CEO CLI** | Beads MCP, gk, Mail | Interactive human interface | Not started |
-| **KG skill** | gk v2 | Teaches agents query/write conventions | Not started |
-| **Mail skill** | Mail MCP | Teaches agents communication patterns | Not started |
-| **Dashboard** | Beads MCP, gk, Main loop | Web UI for monitoring | Evolves from v1 |
+| **Workflow dimension** | Beads | `bd set-state workflow=X`, orchestration queries by label | Not started |
+| **autopilot-core plugin** | gk v2 | 9 personas (agents/), 5 core skills, hooks, .mcp.json (gk) | Not started |
+| **autopilot-leadership plugin** | autopilot-core | 5 leadership skills (planning-cycle, own-project, etc.) | Not started |
+| **autopilot-engineering plugin** | autopilot-core | 9 engineering skills (implement-bead, fix-pr, seed-kg, etc.) | Not started |
+| **autopilot-security plugin** | autopilot-core | owasp-top-10 skill | Not started |
+| **autopilot-product plugin** | autopilot-core | product-strategy skill | Not started |
+| **Main orchestration loop** | Beads, Workflow, autopilot-core | fillSlots, checkOpenPRs, checkPlanning (11 conditions) | Evolves from v1 |
+| **CTO invocation** | autopilot-core + autopilot-leadership | `query({ agent: "cto", prompt: "Invoke /planning-cycle..." })` | Not started |
+| **Director invocation** | autopilot-core + autopilot-leadership | `query({ agent: "director", prompt: "Invoke /own-project..." })` | Not started |
+| **Staff Eng invocation** | autopilot-core + autopilot-engineering | `query({ agent: "staff-engineer", prompt: "Invoke /decompose-epic..." })` | Not started |
+| **Principal Eng invocation** | autopilot-core + autopilot-engineering | Codebase investigation, cross-checks, KG seeding | Not started |
+| **Engineer invocation** | autopilot-core + autopilot-engineering | `query({ agent: "engineer", prompt: "Invoke /implement-bead..." })` | Evolves from v1 |
+| **Domain specialist invocations** | autopilot-core + autopilot-{security,product} | Planning investigation findings, PR review verdicts | Not started |
+| **CEO CLI** | autopilot-core + autopilot-leadership | Interactive human interface | Not started |
+| **Dashboard** | Beads, gk, Main loop | Web UI for monitoring | Evolves from v1 |
 | **Setup script** | Dolt, `bd` CLI, gk | Project onboarding | Evolves from v1 |
 
 ### What This Reveals
 
-**Critical path:** Dolt → Beads MCP → {Workflow, Mail MCP, Main loop} → everything else. Dolt and Beads MCP unblock the most downstream work. gk is off the critical path (already built).
+**Critical path:** Dolt → Beads plugin → {Workflow, Main loop} → everything else. Dolt and beads unblock the most downstream work. gk is off the critical path (already built). The autopilot-core plugin scaffold is the gateway to all persona and skill work.
 
-**Parallel tracks once Beads MCP exists:**
-1. **Orchestration track:** Main loop, slot management, stale recovery, shutdown
-2. **Persona track:** All personas can be written in parallel (they're markdown + iteration)
-3. **Skill track:** KG skill, Mail skill, Contract skill
-4. **Integration track:** Dashboard, CEO CLI, Setup script
+**Parallel tracks once beads + autopilot-core exist:**
+1. **Plugin track:** autopilot-leadership, autopilot-engineering, autopilot-security, autopilot-product can all be scaffolded in parallel (they just need autopilot-core)
+2. **Persona track:** All 9 personas (in autopilot-core/agents/) can be written in parallel — they're markdown + iteration
+3. **Skill track:** All ~20 skills across 5 plugins can be written in parallel with personas
+4. **Orchestration track:** Main loop (condition table), slot management, stale recovery, shutdown — depends on beads + autopilot-core plugin
+5. **Integration track:** Dashboard, CEO CLI, Setup script
 
 **Interface gaps (things consumed but not clearly produced):**
-- **CTO architectural contracts** — CTO produces them, engineers consume them via mail. The contract format isn't specified. Deliberate: the CTO persona defines this, not the architecture doc.
-- **Review verdicts** — Review legs produce verdicts, Staff Engineer consumes them. Format? Structured mail? Labels on the bead? Needs definition.
-- **Director ↔ Staff Engineer handoff** — Director says "decompose this epic." How? Mail? Or does the orchestration detect epics in the right state and spawn Staff Engineer? Needs definition.
-- **Specialist findings** — Specialists report to CTO via mail during planning. What does a finding look like? Structured? Free-form? Enough for CTO to synthesize, but format matters for quality.
-- **Project completion signal** — Director closes a project "when all beads are done." How does the Director detect this? Poll beads? Orchestration notifies? Needs definition.
+- **CTO architectural contracts** — CTO produces them, engineers consume them via KG. The contract format isn't specified. Deliberate: the CTO persona defines this, not the architecture doc.
+- **Review verdicts** — Review legs produce verdicts as subagent output to Staff Engineer. Format? Return value structure? Needs definition.
+- **Director ↔ Staff Engineer handoff** — Orchestrator detects epics needing decomposition and spawns Staff Engineer. No direct handoff needed.
+- **Specialist findings** — Returned directly to CTO's context as subagent output. Ephemeral, not persisted. Format is whatever the specialist outputs — CTO synthesizes.
+- **Project completion signal** — Orchestrator detects "Project All Tasks Done" condition and spawns Director for closure.
 
 **Not-yet-specified integration points:**
-- How does `deliverMail()` decide which persona to spawn for a message? By `assignee` field → persona mapping?
-- How does the orchestration know when to spawn the Director vs Staff Engineer vs CTO? Trigger conditions for each role.
-- How do review leg verdicts get applied? Staff Engineer calls `bd set-state` directly? Or sends mail to orchestration?
+- How does the orchestration detect "epics need decomposition"? Bead state? Label? Needs definition.
+- How do review leg verdicts get applied? Staff Engineer calls `bd set-state` directly after collecting subagent results.
 
 ## Open Questions
 
-1. ~~**Knowledge graph choice**~~ — **Resolved: gk v2.** Rewrite of gk in TypeScript with pluggable SQLite/Dolt backend, Hebbian + Ebbinghaus temporal dynamics, FTS (no vector search / Ollama). Full spec at `~/Builds/gk/v2.md`.
+1. ~~**Knowledge graph choice**~~ — **Resolved: gk v2.** Rewrite of gk in TypeScript with pluggable SQLite/Dolt backend, Hebbian + Ebbinghaus temporal dynamics, hybrid search (BM25 + optional semantic via Ollama). Full spec at `~/Builds/gk/v2.md`.
 
-2. **Knowledge graph seeding** — How do we bootstrap the knowledge graph
-   for a new project? Agent-driven codebase scan? Manual? Import from
-   existing docs?
+2. ~~**Knowledge graph seeding**~~ — **Resolved.** When the orchestrator detects an empty KG database (first run or fresh project), it spawns a dedicated **seeding agent** before the CTO's first planning cycle. This agent uses Scout-like codebase exploration (cheap model, read-only tools) to populate the graph with structural knowledge: modules, entry points, key patterns, existing architectural decisions found in docs/comments. The seeding agent runs once, populates the graph, then the CTO starts planning against a populated graph — not wasting expensive CTO context on mechanical scanning. Depth comes later from engineer observations during implementation.
 
 3. **CTO review granularity** — At batch boundaries only? Or also
    periodic in-flight checks? Batch boundaries are the natural trigger,
@@ -1516,8 +1698,8 @@ What each buildable component **requires** (must exist) and **produces** (enable
    Is it reasonable to require for all users?
 
 6. **Conversation API migration** — Moving from `query()` to conversation
-   API enables mid-session mail interrupts. How much of `runClaude()`
-   needs to change? What does the Agent SDK conversation API look like?
+   API could enable mid-session context injection (future, if mail is added).
+   How much of `runClaude()` needs to change?
 
 7. ~~**Beads leaf-only filtering**~~ — **Resolved.** `bd ready` excludes beads with open `blocks` dependencies. Parent beads with open children are blocked by those children, so they never appear in `bd ready`. Combined with `--label workflow:ready` filtering, this gives us exactly the right set of claimable work.
 
@@ -1528,7 +1710,7 @@ What each buildable component **requires** (must exist) and **produces** (enable
 | Capability | Value for us |
 |---|---|
 | Beads (bd) | **High** — replaces Linear, git-native task management |
-| Mail system | **Low** — we use beads' built-in message type |
+| Mail system | **Low** — deferred for v2; beads mail available for future use |
 | Deacon/Dogs (autonomous patrol) | **Low** — our event loop already does this |
 | Witness (health monitoring) | **Low** — we have timeout/inactivity watchdog |
 | Refinery (merge queue) | **Low** — not needed now, buildable later |
@@ -1560,7 +1742,7 @@ When Gastown matures (ExitBox stable, per-polecat tool scoping, pluggable execut
 
 - Our prompts, plugins, and skills port directly (they're content, not code)
 - Knowledge graph is an MCP server — works in any environment
-- Mail system: swap our SQLite table for Gastown's Dolt-backed mail
+- Mail system: if added, swap to Gastown's `gt mail`
 - Orchestration: replace our TypeScript loop with Gastown's Daemon/Deacon/Witness
 - Dashboard: adopt gastown-gui or keep our own
 
