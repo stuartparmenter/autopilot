@@ -12,7 +12,21 @@ Before touching any code, load the git-safety skill — it defines what git comm
 
 ---
 
-## Phase 1: Sync to the PR Branch
+## Phase 1: Acquire Merge Slot
+
+Before touching any code, acquire the merge slot. This prevents multiple fixers from racing on the same repo and creating cascading conflicts:
+
+```
+bd merge-slot acquire
+```
+
+If the slot is held by another agent, this will queue you. Wait for the slot before proceeding.
+
+**You MUST release the merge slot when you're done** — whether you succeed or fail. See Phase 6.
+
+---
+
+## Phase 2: Sync to the PR Branch
 
 Sync your clone to the current remote state of the branch before any other operation:
 
@@ -25,7 +39,7 @@ This is the only permitted use of `git reset --hard` in this skill. It aligns yo
 
 ---
 
-## Phase 2: KG Pattern Recognition
+## Phase 3: KG Pattern Recognition
 
 Before diagnosing the failure, query the knowledge graph. Recurring failures in the same module are a signal, not noise.
 
@@ -53,7 +67,7 @@ The escalation threshold is not a flat counter — assess whether the issue is w
 
 ---
 
-## Phase 3: Diagnose
+## Phase 4: Diagnose
 
 ### CI Failure
 
@@ -85,11 +99,11 @@ Forbidden during conflict resolution:
 - `git checkout --ours <file>` — silently discards upstream changes
 - Deleting upstream code to make your side "win"
 
-If a conflict is too complex to resolve safely — both sides rewrote the same function in incompatible ways — stop and escalate (see Phase 5).
+If a conflict is too complex to resolve safely — both sides rewrote the same function in incompatible ways — stop and escalate (see Phase 6).
 
 ---
 
-## Phase 4: Fix and Validate
+## Phase 5: Fix and Validate
 
 Apply the minimal fix. You have 3 attempts.
 
@@ -99,7 +113,7 @@ Apply the minimal fix. You have 3 attempts.
 3. Run the linter
 4. Run the formatter with auto-fix
 5. Run the test suite
-6. If all pass → proceed to Phase 5
+6. If all pass → proceed to Phase 6
 
 If still failing after 3 attempts, stop and escalate — do not make increasingly large changes to try to force things to pass.
 
@@ -112,7 +126,7 @@ If still failing after 3 attempts, stop and escalate — do not make increasingl
 
 ---
 
-## Phase 5: Push and Update
+## Phase 6: Push and Update
 
 ### On success
 
@@ -145,7 +159,12 @@ add_observations([{
 }])
 ```
 
-Update the bead: keep it in `in_review` state (CI will re-run automatically).
+The bead stays open with its PR gate pending (CI will re-run automatically).
+
+**Release the merge slot:**
+```
+bd merge-slot release
+```
 
 ### On failure (could not fix in 3 attempts, or conflict too complex)
 
@@ -155,6 +174,11 @@ Add a comment to the bead explaining:
 - Why it cannot be fixed automatically
 
 Update the bead to `blocked`. A blocked bead with a clear explanation is better than a destructive "fix."
+
+**Release the merge slot:**
+```
+bd merge-slot release
+```
 
 ---
 

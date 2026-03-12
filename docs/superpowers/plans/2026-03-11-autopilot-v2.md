@@ -2180,6 +2180,216 @@ git commit -m "docs(v2): update CLAUDE.md for v2 architecture"
 
 ---
 
+## Chunk 8: Work Hierarchy & Type-Based Routing
+
+**Decision (2026-03-11):** Three-level work hierarchy with type-based routing from a single `bd ready` call.
+
+### Architecture Change: initiative → epic → issue
+
+The CTO sets high-level strategic direction by creating **initiatives** (a custom bead type). Directors claim initiatives and break them into **epics**. Staff Engineers decompose epics into implementable **issues** (bug/feature/chore/task). Engineers implement issues.
+
+```
+CTO (planning-cycle) → creates initiative beads
+Director (own-project) → claims initiative, creates child epics
+Staff Engineer (decompose-epic) → decomposes epics into bug/feature/chore/task beads
+Engineer (implement-bead) → implements bug/feature/chore/task beads
+```
+
+### Event-Driven Dispatch
+
+**Decision (2026-03-11):** Replace the snapshot-based `evaluateConditions(SystemState)` model with a typed event bus.
+
+```
+External sources              Internal bus                    Handlers (dispatcher.ts)
+─────────────────             ──────────────                  ─────────
+Poll loop (reconcile) ──→     bus.emit("beadReady", bead) ──→ route by type → dispatch
+bd API endpoint ──POST──→     bus.emit("beadReady", bead) ──→   initiative → director
+GitHub poller ────────→       bus.emit("prFailed", pr) ──────→   epic → staff-engineer
+Agent runner ─────────→       bus.emit("agentDone", result) ─→   issue → engineer
+```
+
+**Key files:**
+- `src/lib/events.ts` — typed event bus (createBus pattern, ~15 lines, zero deps)
+- `src/dispatcher.ts` — event handlers that route beads by type and dispatch agents
+- `src/conditions.ts` — RETAINED for now as reference; will be superseded by dispatcher
+
+**Event types** (defined in `AutopilotEvents` interface):
+- `beadReady` — routed by bead type: initiative→Director, epic→Staff Eng, issue→Engineer
+- `prFailed`, `prMerged`, `prReviewNeeded`, `prReviewFeedback` — PR lifecycle
+- `agentDone` — slot release + dashboard update
+- `backlogLow` — CTO planning cycle trigger
+- `kgEmpty` — principal-engineer KG seeding
+- `batchComplete` — CTO post-flight
+
+**Type-based routing table** (implemented in dispatcher.ts beadReady handler):
+
+| Bead type | Dispatched persona | Skill |
+|-----------|-------------------|-------|
+| `initiative` | Director | own-project |
+| `epic` | Staff Engineer | decompose-epic |
+| `bug`, `feature`, `chore`, `task` | Engineer | implement-bead |
+
+### Task 40: Configure Custom Bead Type
+
+- [ ] **Step 1: Add `initiative` custom type to setup script**
+
+In `src/setup-project.ts`, add to the onboarding flow:
+```bash
+bd config set types.custom "initiative"
+```
+
+- [ ] **Step 2: Commit**
+
+---
+
+### Task 41: Update `getReadyBeads()` and Add Type Routing
+
+**Files:**
+- Modify: `src/lib/beads.ts` — ensure `type` field is in the `Bead` interface (already present)
+- Modify: `src/conditions.ts` — replace separate project/epic conditions with type-based routing from ready queue
+- Modify: `src/main.ts` — simplify `gatherSystemState()` to use single `bd ready` call and route by type
+
+- [ ] **Step 1: Update conditions.ts**
+
+Replace `triageProjects` and `completedProjects` fields in `SystemState` with type-filtered views from a single ready bead list:
+
+```typescript
+export interface SystemState {
+  // Single source: all ready beads from bd ready
+  readyBeads: BeadInfo[];
+  readyCount: number;
+  // Derived by type from readyBeads:
+  readyInitiatives: BeadInfo[];  // type === "initiative"
+  readyEpics: BeadInfo[];        // type === "epic"
+  readyIssues: BeadInfo[];       // type === "bug"|"feature"|"chore"|"task"
+  // Other conditions (unchanged):
+  kgEmpty: boolean;
+  failedPRs: PRInfo[];
+  reviewPRs: PRInfo[];
+  mergedPRs: Array<{ beadId: string; prNumber: number }>;
+  reviewFeedback: Array<{ beadId: string; prUrl: string }>;
+  batchComplete: boolean;
+}
+```
+
+Update `evaluateConditions()`:
+- Ready issues → Engineer + implement-bead (one per issue, up to builder slot limit)
+- Ready initiatives → Director + own-project (one per initiative, up to planner slot limit)
+- Ready epics → Staff Engineer + decompose-epic (one per epic, up to planner slot limit)
+- Backlog below threshold checks `readyIssues.length` (not total ready)
+
+- [ ] **Step 2: Update main.ts gatherSystemState()**
+
+Replace separate project queries with type filtering:
+
+```typescript
+const readyBeads = await getReadyBeads();
+const IMPLEMENTABLE = ["bug", "feature", "chore", "task"];
+
+const state: SystemState = {
+  readyBeads,
+  readyCount: readyBeads.length,
+  readyInitiatives: readyBeads.filter(b => b.type === "initiative"),
+  readyEpics: readyBeads.filter(b => b.type === "epic"),
+  readyIssues: readyBeads.filter(b => IMPLEMENTABLE.includes(b.type ?? "task")),
+  // ... other fields
+};
+```
+
+- [ ] **Step 3: Update beads.ts if needed**
+
+Ensure `getReadyBeads()` returns the `type` field from `bd ready --json`.
+
+- [ ] **Step 4: Run tests**
+
+Run: `bun test src/conditions.test.ts`
+Expected: Update tests for new SystemState shape
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/conditions.ts src/main.ts src/lib/beads.ts
+git commit -m "feat(v2): type-based routing — single bd ready call routes to persona by bead type"
+```
+
+---
+
+### Task 42: Update CTO Planning-Cycle Skill
+
+**Files:**
+- Modify: `plugins/autopilot-leadership/skills/planning-cycle/SKILL.md`
+
+- [ ] **Step 1: Update Phase 6**
+
+Change from creating epics to creating initiatives:
+```bash
+# Before:
+bd create "<Epic Title>" -t epic -p <priority>
+
+# After:
+bd create "<Initiative Title>" -t initiative -p <priority>
+```
+
+Update surrounding text: CTO creates high-level strategic themes as initiatives. Directors will break them into scoped epics.
+
+- [ ] **Step 2: Update description frontmatter**
+
+Change "creates project epics as beads" to "creates strategic initiatives as beads".
+
+- [ ] **Step 3: Commit**
+
+---
+
+### Task 43: Update Director Own-Project Skill
+
+**Files:**
+- Modify: `plugins/autopilot-leadership/skills/own-project/SKILL.md`
+
+- [ ] **Step 1: Add Initiative Intake Phase**
+
+Add a new phase before triage: when dispatched with an initiative bead, the Director:
+1. Reads the initiative (KG context, bead description)
+2. Breaks it into scoped epics via `bd create "<Epic Title>" -t epic --parent <initiative-id>`
+3. Writes project specs for each epic
+4. Hands off epics to Staff Engineers for decomposition
+
+- [ ] **Step 2: Update existing triage phase**
+
+Triage now operates on children of an epic (issues), not on raw beads in a project. The Director is dispatched per-initiative, not per-project.
+
+- [ ] **Step 3: Update completion check**
+
+Initiative completion = all child epics closed. Use `bd epic close-eligible` or check children.
+
+- [ ] **Step 4: Commit**
+
+---
+
+### Task 44: Update Conditions Tests
+
+**Files:**
+- Modify: `src/conditions.test.ts`
+
+- [ ] **Step 1: Update SystemState mocks**
+
+Replace `triageProjects`/`completedProjects` with `readyInitiatives`/`readyEpics`/`readyIssues`.
+
+- [ ] **Step 2: Add test cases for type routing**
+
+- Initiative bead ready → Director dispatch
+- Epic bead ready → Staff Engineer dispatch
+- Bug/feature/chore/task bead ready → Engineer dispatch
+- Mixed types → correct routing for each
+
+- [ ] **Step 3: Run tests**
+
+Run: `bun test src/conditions.test.ts`
+Expected: PASS
+
+- [ ] **Step 4: Commit**
+
+---
+
 ## Summary
 
 | Chunk | Tasks | What It Produces |
@@ -2191,7 +2401,8 @@ git commit -m "docs(v2): update CLAUDE.md for v2 architecture"
 | 5: Orchestration Rewrite | 27-33 | agent-runner, conditions, beads wrapper, slots, main loop, Linear removal |
 | 6: Dashboard & CLI | 34-36 | Dashboard refresh, CEO CLI, setup updates |
 | 7: Integration & Cleanup | 37-39 | Test fixes, typecheck, CLAUDE.md update |
+| 8: Work Hierarchy & Routing | 40-44 | initiative type, type-based routing, updated skills & conditions |
 
-**Critical path:** Chunk 1 (infrastructure) → Chunk 5 (orchestration) → Chunk 7 (integration). Chunks 2-4 (personas and skills) can run in parallel with each other and with Chunk 5.
+**Critical path:** Chunk 1 (infrastructure) → Chunk 5 (orchestration) → Chunk 8 (routing) → Chunk 7 (integration). Chunks 2-4 (personas and skills) can run in parallel with each other and with Chunk 5.
 
-**Parallelizable:** Tasks 7-13 (all personas), Tasks 14-22 (all skills in Chunks 3-4), Tasks 34-36 (dashboard/CLI).
+**Parallelizable:** Tasks 7-13 (all personas), Tasks 14-22 (all skills in Chunks 3-4), Tasks 34-36 (dashboard/CLI), Tasks 42-43 (skill updates).

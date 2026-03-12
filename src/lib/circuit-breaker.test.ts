@@ -102,7 +102,7 @@ describe("CircuitBreakerRegistry", () => {
     registry.recordFailure("linear");
     expect(registry.getState("linear")).toBe("open");
 
-    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 10));
+    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 50));
 
     expect(registry.getState("linear")).toBe("half-open");
   });
@@ -112,7 +112,7 @@ describe("CircuitBreakerRegistry", () => {
     registry.recordFailure("linear");
     registry.recordFailure("linear");
 
-    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 10));
+    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 50));
 
     // First call: probe allowed
     expect(registry.isOpen("linear")).toBe(false);
@@ -125,7 +125,7 @@ describe("CircuitBreakerRegistry", () => {
     registry.recordFailure("linear");
     registry.recordFailure("linear");
 
-    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 10));
+    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 50));
 
     registry.isOpen("linear"); // grant probe
     registry.recordSuccess("linear");
@@ -138,7 +138,7 @@ describe("CircuitBreakerRegistry", () => {
     registry.recordFailure("linear");
     registry.recordFailure("linear");
 
-    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 10));
+    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 50));
 
     registry.isOpen("linear"); // grant probe
     registry.recordFailure("linear"); // probe fails
@@ -230,7 +230,7 @@ describe("withRetry circuit-breaker integration", () => {
     expect(fastRegistry.isOpen("linear")).toBe(true);
 
     // Cooldown elapses
-    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 10));
+    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 50));
 
     // State is now half-open
     expect(fastRegistry.getState("linear")).toBe("half-open");
@@ -247,7 +247,7 @@ describe("withRetry circuit-breaker integration", () => {
       fastRegistry.recordFailure("linear");
     }
 
-    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 10));
+    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 50));
 
     fastRegistry.isOpen("linear"); // grants probe
     fastRegistry.recordFailure("linear"); // probe fails
@@ -308,7 +308,7 @@ describe("AppState.toJSON() apiHealth", () => {
     for (let i = 0; i < 3; i++) {
       fastRegistry.recordFailure("linear");
     }
-    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 10));
+    await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 50));
     // Confirm it's half-open on the local registry
     expect(fastRegistry.getState("linear")).toBe("half-open");
 

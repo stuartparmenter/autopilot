@@ -176,6 +176,31 @@ if (existsSync(gitignorePath)) {
   ok("Created .gitignore with .autopilot.yml");
 }
 
+// --- Configure bd custom bead types ---
+
+info("Configuring bead types...");
+
+const bdCheck = Bun.spawnSync(["bd", "--version"], {
+  stdout: "pipe",
+  stderr: "pipe",
+});
+if (bdCheck.exitCode === 0) {
+  const bdConfig = Bun.spawnSync(
+    ["bd", "config", "set", "types.custom", "initiative"],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  if (bdConfig.exitCode === 0) {
+    ok("Configured 'initiative' custom bead type");
+  } else {
+    const stderr = bdConfig.stderr.toString().trim();
+    warn(`Failed to configure initiative bead type: ${stderr}`);
+  }
+} else {
+  warn(
+    "bd not found on PATH — skipping initiative type configuration. Run 'bd config set types.custom \"initiative\"' manually after installing bd.",
+  );
+}
+
 // --- Validate prerequisites ---
 
 header("Checking prerequisites...");

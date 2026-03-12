@@ -125,7 +125,7 @@ Reply to individual inline comment threads only — do not reply to overall revi
 
 ### Update the bead
 
-Keep the bead in `in_review` state. The reviewer will now re-review.
+The bead stays open with its PR gate pending. The reviewer will now re-review.
 
 ---
 

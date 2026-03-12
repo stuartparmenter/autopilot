@@ -185,7 +185,7 @@ The subagent reads your changes and the KG to produce clean, high-confidence ent
 
 ---
 
-## Phase 6: Create the PR
+## Phase 6: Create the PR and Gate
 
 Push your branch and open a PR:
 
@@ -197,11 +197,24 @@ Create the PR with:
 - **Title**: `[<bead-id>] <bead title>`
 - **Body**: Link to the bead, summary of what was implemented, list of acceptance criteria and whether each is met, any known limitations
 
-After the PR is created, update the bead state:
+After the PR is created, link it to the bead and create a gate so the orchestrator tracks PR lifecycle automatically:
 
 ```
-bd update <id> --state in_review --pr <pr-url>
+# Link PR to bead
+bd update <id> --external-ref "gh-<pr-number>"
+
+# Create a gate that auto-resolves when the PR merges.
+# Use --parent to link the gate back to the implementation bead.
+bd create --type=gate --title="Wait for PR #<pr-number>" \
+  --await-type=gh:pr --await-id=<pr-number> --parent <id>
 ```
+
+The bead is NOT closed yet. The gate tracks the PR lifecycle:
+- **PR merges** → gate auto-resolves → orchestrator closes the bead and unblocks downstream work
+- **CI fails** → orchestrator detects the failed gate and dispatches an engineer with the `fix-pr` skill
+- **Review feedback** → orchestrator dispatches an engineer with the `respond-review` skill
+
+The gate's `--parent` flag links it back to the implementation bead so the orchestrator knows which bead to close when the gate resolves.
 
 ---
 

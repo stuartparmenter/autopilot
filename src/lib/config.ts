@@ -3,44 +3,6 @@ import { resolve } from "node:path";
 import YAML from "yaml";
 import { fatal, warn } from "./logger";
 
-export interface OAuthConfig {
-  client_id: string;
-  client_secret: string;
-}
-
-export interface LinearConfig {
-  team: string;
-  initiative: string;
-  labels: string[];
-  projects: string[];
-  oauth?: OAuthConfig;
-  states: {
-    triage: string;
-    ready: string;
-    in_progress: string;
-    in_review: string;
-    done: string;
-    blocked: string;
-  };
-}
-
-// Resolved IDs from Linear API — used at runtime, not in config
-export interface LinearIds {
-  teamId: string;
-  teamKey: string;
-  initiativeId?: string;
-  initiativeName?: string;
-  managedLabelId: string;
-  states: {
-    triage: string;
-    ready: string;
-    in_progress: string;
-    in_review: string;
-    done: string;
-    blocked: string;
-  };
-}
-
 export interface ExecutorConfig {
   parallel: number;
   builder_slots: number;
@@ -78,11 +40,6 @@ export interface PlanningConfig {
   model: string;
 }
 
-export interface MonitorConfig {
-  respond_to_reviews: boolean;
-  review_responder_timeout_minutes: number;
-}
-
 export interface GithubConfig {
   repo: string; // "owner/repo" override — empty = auto-detect from git remote
   automerge: boolean; // Enable auto-merge on PRs created by the executor
@@ -90,12 +47,6 @@ export interface GithubConfig {
 
 export interface ProjectConfig {
   name: string;
-}
-
-export interface WebhooksConfig {
-  enabled: boolean;
-  linear_secret: string;
-  github_secret: string;
 }
 
 export interface SandboxConfig {
@@ -118,39 +69,16 @@ export interface BudgetConfig {
   warn_at_percent: number;
 }
 
-export interface ProjectsConfig {
-  enabled: boolean;
-  poll_interval_minutes: number;
-  backlog_review_interval_minutes: number;
-  max_active_projects: number;
-  timeout_minutes: number;
-  model: string;
-}
-
-export interface ReviewerConfig {
-  enabled: boolean;
-  min_interval_minutes: number;
-  min_runs_before_review: number;
-  timeout_minutes: number;
-  model: string;
-  max_issues_per_review: number;
-}
-
 export interface GitConfig {
   user_name: string;
   user_email: string;
 }
 
 export interface AutopilotConfig {
-  linear: LinearConfig;
   executor: ExecutorConfig;
   planning: PlanningConfig;
-  projects: ProjectsConfig;
-  reviewer: ReviewerConfig;
-  monitor: MonitorConfig;
   github: GithubConfig;
   project: ProjectConfig;
-  webhooks?: WebhooksConfig;
   git: GitConfig;
   persistence: PersistenceConfig;
   sandbox: SandboxConfig;
@@ -160,21 +88,6 @@ export interface AutopilotConfig {
 }
 
 export const DEFAULTS: AutopilotConfig = {
-  linear: {
-    team: "",
-    initiative: "",
-    labels: [],
-    projects: [],
-    oauth: undefined,
-    states: {
-      triage: "Triage",
-      ready: "Todo",
-      in_progress: "In Progress",
-      in_review: "In Review",
-      done: "Done",
-      blocked: "Backlog",
-    },
-  },
   executor: {
     parallel: 8,
     builder_slots: 5,
@@ -200,21 +113,12 @@ export const DEFAULTS: AutopilotConfig = {
     inactivity_timeout_minutes: 30,
     model: "opus",
   },
-  monitor: {
-    respond_to_reviews: false,
-    review_responder_timeout_minutes: 20,
-  },
   github: {
     repo: "",
     automerge: false,
   },
   project: {
     name: "",
-  },
-  webhooks: {
-    enabled: false,
-    linear_secret: "",
-    github_secret: "",
   },
   git: {
     user_name: "autopilot[bot]",
@@ -224,22 +128,6 @@ export const DEFAULTS: AutopilotConfig = {
     enabled: true,
     db_path: ".claude/autopilot.db",
     retention_days: 30,
-  },
-  projects: {
-    enabled: true,
-    poll_interval_minutes: 10,
-    backlog_review_interval_minutes: 240,
-    max_active_projects: 5,
-    timeout_minutes: 60,
-    model: "opus",
-  },
-  reviewer: {
-    enabled: false,
-    min_interval_minutes: 120,
-    min_runs_before_review: 10,
-    timeout_minutes: 60,
-    model: "opus",
-    max_issues_per_review: 5,
   },
   sandbox: {
     enabled: true,
@@ -326,14 +214,6 @@ export function collectUnknownKeys(
 
 function validateConfigStrings(config: AutopilotConfig): void {
   const fields: Array<[string, string]> = [
-    ["linear.team", config.linear.team],
-    ["linear.initiative", config.linear.initiative],
-    ["linear.states.triage", config.linear.states.triage],
-    ["linear.states.ready", config.linear.states.ready],
-    ["linear.states.in_progress", config.linear.states.in_progress],
-    ["linear.states.in_review", config.linear.states.in_review],
-    ["linear.states.done", config.linear.states.done],
-    ["linear.states.blocked", config.linear.states.blocked],
     ["git.user_name", config.git.user_name],
     ["git.user_email", config.git.user_email],
   ];
@@ -349,20 +229,6 @@ function validateConfigStrings(config: AutopilotConfig): void {
       throw new Error(
         `Config validation error: "${key}" exceeds the maximum length of 200 characters`,
       );
-    }
-  }
-
-  for (const [arrayKey, array] of [
-    ["linear.labels", config.linear.labels],
-    ["linear.projects", config.linear.projects],
-  ] as [string, string[]][]) {
-    for (let i = 0; i < array.length; i++) {
-      const item = array[i];
-      if (typeof item !== "string" || item.trim() === "") {
-        throw new Error(
-          `Config validation error: "${arrayKey}[${i}]" must not be an empty string`,
-        );
-      }
     }
   }
 }
@@ -495,41 +361,6 @@ export function loadConfig(projectPath: string): AutopilotConfig {
   ) {
     throw new Error(
       "Config validation error: planning.inactivity_timeout_minutes must be a number between 1 and 120",
-    );
-  }
-
-  if (
-    typeof config.reviewer.min_interval_minutes !== "number" ||
-    Number.isNaN(config.reviewer.min_interval_minutes) ||
-    config.reviewer.min_interval_minutes < 0 ||
-    config.reviewer.min_interval_minutes > 1440
-  ) {
-    throw new Error(
-      "Config validation error: reviewer.min_interval_minutes must be a number between 0 and 1440",
-    );
-  }
-
-  if (
-    typeof config.reviewer.min_runs_before_review !== "number" ||
-    Number.isNaN(config.reviewer.min_runs_before_review) ||
-    !Number.isInteger(config.reviewer.min_runs_before_review) ||
-    config.reviewer.min_runs_before_review < 1 ||
-    config.reviewer.min_runs_before_review > 1000
-  ) {
-    throw new Error(
-      "Config validation error: reviewer.min_runs_before_review must be an integer between 1 and 1000",
-    );
-  }
-
-  if (
-    typeof config.reviewer.max_issues_per_review !== "number" ||
-    Number.isNaN(config.reviewer.max_issues_per_review) ||
-    !Number.isInteger(config.reviewer.max_issues_per_review) ||
-    config.reviewer.max_issues_per_review < 1 ||
-    config.reviewer.max_issues_per_review > 50
-  ) {
-    throw new Error(
-      "Config validation error: reviewer.max_issues_per_review must be an integer between 1 and 50",
     );
   }
 

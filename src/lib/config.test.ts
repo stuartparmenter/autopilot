@@ -121,10 +121,9 @@ describe("loadConfig", () => {
   });
 
   test("minimal YAML fills in defaults", () => {
-    writeFileSync(join(tmpDir, ".autopilot.yml"), "linear:\n  team: myteam\n");
+    writeFileSync(join(tmpDir, ".autopilot.yml"), "executor:\n  parallel: 4\n");
     const config = loadConfig(tmpDir);
-    expect(config.linear.team).toBe("myteam");
-    expect(config.executor.parallel).toBe(8);
+    expect(config.executor.parallel).toBe(4);
     expect(config.executor.timeout_minutes).toBe(60);
   });
 
@@ -145,78 +144,41 @@ describe("loadConfig", () => {
     expect(config).toEqual(DEFAULTS);
   });
 
-  test("nested state overrides are merged", () => {
-    writeFileSync(
-      join(tmpDir, ".autopilot.yml"),
-      "linear:\n  states:\n    ready: Backlog\n",
-    );
-    const config = loadConfig(tmpDir);
-    expect(config.linear.states.ready).toBe("Backlog");
-    expect(config.linear.states.done).toBe("Done");
-  });
-
   test("loads a valid config without throwing", () => {
     const dir = writeConfig(`
-linear:
-  team: ENG
+executor:
+  parallel: 5
 `);
     expect(() => loadConfig(dir)).not.toThrow();
   });
 
-  test("throws if linear.team contains a newline", () => {
+  test("throws if git.user_name contains a newline", () => {
     const dir = writeConfig(`
-linear:
-  team: |
-    ENG
+git:
+  user_name: |
+    bot
     EVIL
 `);
-    expect(() => loadConfig(dir)).toThrow(/linear\.team/);
+    expect(() => loadConfig(dir)).toThrow(/git\.user_name/);
   });
 
   test("throws if a config string exceeds 200 characters", () => {
-    const longTeam = "x".repeat(201);
+    const longName = "x".repeat(201);
     const dir = writeConfig(`
-linear:
-  team: "${longTeam}"
+git:
+  user_name: "${longName}"
 `);
-    expect(() => loadConfig(dir)).toThrow(/linear\.team/);
+    expect(() => loadConfig(dir)).toThrow(/git\.user_name/);
     expect(() => loadConfig(dir)).toThrow(/200/);
   });
 
   test("accepts values at exactly 200 characters", () => {
-    const exactTeam = "x".repeat(200);
+    const exactName = "x".repeat(200);
     const dir = writeConfig(`
-linear:
-  team: "${exactTeam}"
+git:
+  user_name: "${exactName}"
 `);
     expect(() => loadConfig(dir)).not.toThrow();
-  });
-
-  test("accepts legitimate state names", () => {
-    const dir = writeConfig(`
-linear:
-  team: ENG
-  states:
-    triage: Triage
-    ready: Todo
-    in_progress: In Progress
-    in_review: In Review
-    done: Done
-    blocked: Backlog
-`);
-    expect(() => loadConfig(dir)).not.toThrow();
-  });
-
-  test("throws if a state name contains a newline", () => {
-    const dir = writeConfig(`
-linear:
-  team: ENG
-  states:
-    ready: |
-      Todo
-      EVIL
-`);
-    expect(() => loadConfig(dir)).toThrow(/linear\.states\.ready/);
   });
 
   test("planning timeout_minutes defaults to 90", () => {
@@ -664,30 +626,6 @@ sandbox:
     ]);
   });
 
-  test("monitor defaults are applied when YAML omits them", () => {
-    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
-    const config = loadConfig(tmpDir);
-    expect(config.monitor.respond_to_reviews).toBe(false);
-    expect(config.monitor.review_responder_timeout_minutes).toBe(20);
-  });
-
-  test("monitor config can be overridden", () => {
-    const dir = writeConfig(`
-monitor:
-  respond_to_reviews: true
-  review_responder_timeout_minutes: 30
-`);
-    const config = loadConfig(dir);
-    expect(config.monitor.respond_to_reviews).toBe(true);
-    expect(config.monitor.review_responder_timeout_minutes).toBe(30);
-  });
-
-  test("empty YAML returns monitor.respond_to_reviews === false", () => {
-    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
-    const config = loadConfig(tmpDir);
-    expect(config.monitor.respond_to_reviews).toBe(false);
-  });
-
   test("budget defaults are applied when YAML omits them", () => {
     writeFileSync(join(tmpDir, ".autopilot.yml"), "");
     const config = loadConfig(tmpDir);
@@ -839,232 +777,6 @@ planning:
     const calls = spy.mock.calls.map((c) => c.join(" "));
     expect(calls.some((msg) => msg.includes("[WARN]"))).toBe(false);
     spy.mockRestore();
-  });
-
-  test("linear.labels defaults to empty array", () => {
-    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
-    const config = loadConfig(tmpDir);
-    expect(config.linear.labels).toEqual([]);
-  });
-
-  test("linear.projects defaults to empty array", () => {
-    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
-    const config = loadConfig(tmpDir);
-    expect(config.linear.projects).toEqual([]);
-  });
-
-  test("linear.labels can be overridden", () => {
-    const dir = writeConfig(`
-linear:
-  labels:
-    - bug
-    - autopilot
-`);
-    const config = loadConfig(dir);
-    expect(config.linear.labels).toEqual(["bug", "autopilot"]);
-  });
-
-  test("linear.projects can be overridden", () => {
-    const dir = writeConfig(`
-linear:
-  projects:
-    - frontend
-    - backend
-`);
-    const config = loadConfig(dir);
-    expect(config.linear.projects).toEqual(["frontend", "backend"]);
-  });
-
-  test("linear.labels throws on empty string element", () => {
-    const dir = writeConfig(`
-linear:
-  labels:
-    - bug
-    - ""
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      'linear.labels[1]" must not be an empty string',
-    );
-  });
-
-  test("linear.projects throws on empty string element", () => {
-    const dir = writeConfig(`
-linear:
-  projects:
-    - ""
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      'linear.projects[0]" must not be an empty string',
-    );
-  });
-
-  test("linear.labels and linear.projects together are valid", () => {
-    const dir = writeConfig(`
-linear:
-  labels:
-    - autopilot
-  projects:
-    - frontend
-    - backend
-`);
-    expect(() => loadConfig(dir)).not.toThrow();
-    const config = loadConfig(dir);
-    expect(config.linear.labels).toEqual(["autopilot"]);
-    expect(config.linear.projects).toEqual(["frontend", "backend"]);
-  });
-
-  test("reviewer defaults are applied when YAML omits them", () => {
-    writeFileSync(join(tmpDir, ".autopilot.yml"), "");
-    const config = loadConfig(tmpDir);
-    expect(config.reviewer.enabled).toBe(false);
-    expect(config.reviewer.min_interval_minutes).toBe(120);
-    expect(config.reviewer.min_runs_before_review).toBe(10);
-    expect(config.reviewer.timeout_minutes).toBe(60);
-    expect(config.reviewer.model).toBe("opus");
-    expect(config.reviewer.max_issues_per_review).toBe(5);
-  });
-
-  test("reviewer config can be overridden", () => {
-    const dir = writeConfig(`
-reviewer:
-  enabled: true
-  min_interval_minutes: 60
-  min_runs_before_review: 5
-  max_issues_per_review: 3
-`);
-    const config = loadConfig(dir);
-    expect(config.reviewer.enabled).toBe(true);
-    expect(config.reviewer.min_interval_minutes).toBe(60);
-    expect(config.reviewer.min_runs_before_review).toBe(5);
-    expect(config.reviewer.max_issues_per_review).toBe(3);
-  });
-
-  test("reviewer.min_interval_minutes throws below 0", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_interval_minutes: -1
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      "reviewer.min_interval_minutes must be a number between 0 and 1440",
-    );
-  });
-
-  test("reviewer.min_interval_minutes throws above 1440", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_interval_minutes: 1441
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      "reviewer.min_interval_minutes must be a number between 0 and 1440",
-    );
-  });
-
-  test("reviewer.min_interval_minutes accepts boundary value 0", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_interval_minutes: 0
-`);
-    expect(() => loadConfig(dir)).not.toThrow();
-  });
-
-  test("reviewer.min_interval_minutes accepts boundary value 1440", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_interval_minutes: 1440
-`);
-    expect(() => loadConfig(dir)).not.toThrow();
-  });
-
-  test("reviewer.min_runs_before_review throws below 1", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_runs_before_review: 0
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      "reviewer.min_runs_before_review must be an integer between 1 and 1000",
-    );
-  });
-
-  test("reviewer.min_runs_before_review throws above 1000", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_runs_before_review: 1001
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      "reviewer.min_runs_before_review must be an integer between 1 and 1000",
-    );
-  });
-
-  test("reviewer.min_runs_before_review throws for non-integer value", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_runs_before_review: 5.5
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      "reviewer.min_runs_before_review must be an integer between 1 and 1000",
-    );
-  });
-
-  test("reviewer.min_runs_before_review accepts boundary value 1", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_runs_before_review: 1
-`);
-    expect(() => loadConfig(dir)).not.toThrow();
-  });
-
-  test("reviewer.min_runs_before_review accepts boundary value 1000", () => {
-    const dir = writeConfig(`
-reviewer:
-  min_runs_before_review: 1000
-`);
-    expect(() => loadConfig(dir)).not.toThrow();
-  });
-
-  test("reviewer.max_issues_per_review throws below 1", () => {
-    const dir = writeConfig(`
-reviewer:
-  max_issues_per_review: 0
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      "reviewer.max_issues_per_review must be an integer between 1 and 50",
-    );
-  });
-
-  test("reviewer.max_issues_per_review throws above 50", () => {
-    const dir = writeConfig(`
-reviewer:
-  max_issues_per_review: 51
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      "reviewer.max_issues_per_review must be an integer between 1 and 50",
-    );
-  });
-
-  test("reviewer.max_issues_per_review throws for non-integer value", () => {
-    const dir = writeConfig(`
-reviewer:
-  max_issues_per_review: 2.5
-`);
-    expect(() => loadConfig(dir)).toThrow(
-      "reviewer.max_issues_per_review must be an integer between 1 and 50",
-    );
-  });
-
-  test("reviewer.max_issues_per_review accepts boundary value 1", () => {
-    const dir = writeConfig(`
-reviewer:
-  max_issues_per_review: 1
-`);
-    expect(() => loadConfig(dir)).not.toThrow();
-  });
-
-  test("reviewer.max_issues_per_review accepts boundary value 50", () => {
-    const dir = writeConfig(`
-reviewer:
-  max_issues_per_review: 50
-`);
-    expect(() => loadConfig(dir)).not.toThrow();
   });
 
   test("beads defaults are applied when YAML omits them", () => {

@@ -62,20 +62,6 @@ function makeConfig(
   }> = {},
 ): AutopilotConfig {
   return {
-    linear: {
-      team: "ENG",
-      initiative: "",
-      labels: [],
-      projects: [],
-      states: {
-        triage: "triage-id",
-        ready: "ready-id",
-        in_progress: "in-progress-id",
-        in_review: "in-review-id",
-        done: "done-id",
-        blocked: "blocked-id",
-      },
-    },
     executor: {
       parallel: 3,
       builder_slots: 5,
@@ -102,26 +88,6 @@ function makeConfig(
       inactivity_timeout_minutes: 30,
       model: "opus",
       ...overrides.planning,
-    },
-    projects: {
-      enabled: true,
-      poll_interval_minutes: 10,
-      backlog_review_interval_minutes: 240,
-      max_active_projects: 5,
-      timeout_minutes: 60,
-      model: "opus",
-    },
-    reviewer: {
-      enabled: false,
-      min_interval_minutes: 120,
-      min_runs_before_review: 10,
-      timeout_minutes: 60,
-      model: "opus",
-      max_issues_per_review: 5,
-    },
-    monitor: {
-      respond_to_reviews: false,
-      review_responder_timeout_minutes: 20,
     },
     github: { repo: "", automerge: false },
     project: { name: "" },
@@ -233,87 +199,88 @@ afterEach(() => {
 // ─── getPluginsForPersona ────────────────────────────────────────────────────
 
 describe("getPluginsForPersona", () => {
-  const projectPath = "/test/project";
-
   test("cto gets core + leadership", () => {
-    const plugins = getPluginsForPersona("cto", projectPath);
+    const plugins = getPluginsForPersona("cto");
     expect(plugins).toHaveLength(2);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
     expect(plugins[1].path).toContain("plugins/autopilot-leadership");
   });
 
   test("director gets core + leadership", () => {
-    const plugins = getPluginsForPersona("director", projectPath);
+    const plugins = getPluginsForPersona("director");
     expect(plugins).toHaveLength(2);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
     expect(plugins[1].path).toContain("plugins/autopilot-leadership");
   });
 
   test("ceo gets core + leadership", () => {
-    const plugins = getPluginsForPersona("ceo", projectPath);
+    const plugins = getPluginsForPersona("ceo");
     expect(plugins).toHaveLength(2);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
     expect(plugins[1].path).toContain("plugins/autopilot-leadership");
   });
 
   test("engineer gets core + engineering", () => {
-    const plugins = getPluginsForPersona("engineer", projectPath);
+    const plugins = getPluginsForPersona("engineer");
     expect(plugins).toHaveLength(2);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
     expect(plugins[1].path).toContain("plugins/autopilot-engineering");
   });
 
   test("staff-engineer gets core + engineering", () => {
-    const plugins = getPluginsForPersona("staff-engineer", projectPath);
+    const plugins = getPluginsForPersona("staff-engineer");
     expect(plugins).toHaveLength(2);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
     expect(plugins[1].path).toContain("plugins/autopilot-engineering");
   });
 
   test("principal-engineer gets core + engineering", () => {
-    const plugins = getPluginsForPersona("principal-engineer", projectPath);
+    const plugins = getPluginsForPersona("principal-engineer");
     expect(plugins).toHaveLength(2);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
     expect(plugins[1].path).toContain("plugins/autopilot-engineering");
   });
 
   test("security gets core + security", () => {
-    const plugins = getPluginsForPersona("security", projectPath);
+    const plugins = getPluginsForPersona("security");
     expect(plugins).toHaveLength(2);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
     expect(plugins[1].path).toContain("plugins/autopilot-security");
   });
 
   test("product gets core + product", () => {
-    const plugins = getPluginsForPersona("product", projectPath);
+    const plugins = getPluginsForPersona("product");
     expect(plugins).toHaveLength(2);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
     expect(plugins[1].path).toContain("plugins/autopilot-product");
   });
 
   test("qa gets core only", () => {
-    const plugins = getPluginsForPersona("qa", projectPath);
+    const plugins = getPluginsForPersona("qa");
     expect(plugins).toHaveLength(1);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
   });
 
   test("unknown persona gets core only", () => {
-    const plugins = getPluginsForPersona("unknown-role", projectPath);
+    const plugins = getPluginsForPersona("unknown-role");
     expect(plugins).toHaveLength(1);
     expect(plugins[0].path).toContain("plugins/autopilot-core");
   });
 
   test("all plugins have type 'local'", () => {
-    const plugins = getPluginsForPersona("engineer", projectPath);
+    const plugins = getPluginsForPersona("engineer");
     for (const p of plugins) {
       expect(p.type).toBe("local");
     }
   });
 
-  test("plugin paths are resolved from projectPath", () => {
-    const plugins = getPluginsForPersona("cto", "/my/project");
-    expect(plugins[0].path).toBe("/my/project/plugins/autopilot-core");
-    expect(plugins[1].path).toBe("/my/project/plugins/autopilot-leadership");
+  test("plugin paths resolve from autopilot repo root", () => {
+    const plugins = getPluginsForPersona("cto");
+    // Paths should be absolute and contain the autopilot plugin directories
+    expect(plugins[0].path).toMatch(/.*\/plugins\/autopilot-core$/);
+    expect(plugins[1].path).toMatch(/.*\/plugins\/autopilot-leadership$/);
+    // Should NOT contain the target project path
+    expect(plugins[0].path).not.toContain("/test/project");
   });
 });
 
@@ -446,6 +413,8 @@ describe("runAgent — success path", () => {
     expect(callArgs.options.plugins).toHaveLength(2);
     expect(callArgs.options.plugins[0].path).toContain("autopilot-core");
     expect(callArgs.options.plugins[1].path).toContain("autopilot-leadership");
+    // Plugins resolve from autopilot repo, not target project
+    expect(callArgs.options.plugins[0].path).not.toContain("/test/project");
   });
 
   test("onActivity callback receives events", async () => {

@@ -9,21 +9,16 @@
  * with a single unified condition evaluator + slot manager.
  */
 
-import { evaluateConditions, type SystemState } from "./conditions";
-import { closeAllAgents, runAgent } from "./lib/agent-runner";
-import {
-  claimBead,
-  closeBead,
-  getReadyBeads,
-  getStaleBeads,
-  getTriageBeads,
-} from "./lib/beads";
-import type { AutopilotConfig } from "./lib/config";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { wireDispatcher } from "./dispatcher";
+import { closeAllAgents } from "./lib/agent-runner";
+import { checkGates, getReadyBeads } from "./lib/beads";
 import { loadConfig, resolveProjectPath } from "./lib/config";
 import { closeDolt, getDolt } from "./lib/dolt";
 import { ensureOperationalTables } from "./lib/dolt-schema";
 import { interruptibleSleep } from "./lib/errors";
-import { detectRepo } from "./lib/github";
+import { createBus, IMPLEMENTABLE_TYPES } from "./lib/events";
 import { fatal, header, info, ok, warn } from "./lib/logger";
 import { sanitizeMessage } from "./lib/sanitize";
 import { SlotManager } from "./lib/slots";
@@ -110,14 +105,6 @@ const slots = new SlotManager({
   builderSlots: config.executor.builder_slots,
   plannerSlots: config.executor.planner_slots,
 });
-
-// --- Detect GitHub repo ---
-
-const { owner: ghOwner, repo: ghRepo } = detectRepo(
-  projectPath,
-  config.github.repo || undefined,
-);
-ok(`GitHub repo: ${ghOwner}/${ghRepo}`);
 
 // --- Dashboard setup ---
 
@@ -214,43 +201,32 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
-// --- Gather SystemState ---
+// --- Event bus + dispatcher ---
 
-async function gatherSystemState(cfg: AutopilotConfig): Promise<SystemState> {
-  const [readyBeads, _triageBeads, staleBeads] = await Promise.all([
-    getReadyBeads(),
-    getTriageBeads(),
-    getStaleBeads(cfg.executor.stale_timeout_minutes),
-  ]);
+const bus = createBus();
+const teardownDispatcher = wireDispatcher({
+  bus,
+  slots,
+  config,
+  projectPath,
+  state,
+  shutdownSignal: shutdownController.signal,
+});
 
-  return {
-    readyBeads: readyBeads.map((b) => ({ id: b.id, title: b.title })),
-    readyCount: readyBeads.length,
-    kgEmpty: false, // TODO: check via gk MCP — stub for now
-    triageProjects: [], // TODO: wire to project beads
-    completedProjects: [], // TODO: wire to project beads
-    failedPRs: [], // TODO: wire to GitHub API
-    reviewPRs: [], // TODO: wire to GitHub API
-    mergedPRs: [], // TODO: wire to GitHub API
-    reviewFeedback: [], // TODO: wire to GitHub API
-    batchComplete: false, // TODO: implement batch tracking
-    staleBeads: staleBeads.map((b) => ({
-      id: b.id,
-      claimedAt: new Date(), // approximate — bd stale doesn't expose claim time yet
-      agentId: "unknown",
-    })),
-  };
-}
-
-// --- Main loop ---
+// --- Poll loop (reconciliation) ---
+//
+// The poll loop is a lightweight reconciliation pass. It calls `bd ready`
+// and emits beadReady events. The dispatcher tries `bd claim` — if the
+// bead was already claimed (by a previous cycle or a bd hook notification),
+// the claim fails and nothing happens. No local state tracking needed.
 
 const POLL_INTERVAL_MS = config.executor.poll_interval_minutes * 60 * 1000;
 const BASE_BACKOFF_MS = 10_000;
 const MAX_BACKOFF_MS = 5 * 60 * 1000;
 const MAX_CONSECUTIVE_FAILURES = 5;
 
-const runningAgents = new Set<Promise<unknown>>();
 let consecutiveFailures = 0;
+let prevBuildersActive = 0;
 
 info("Starting main loop (Ctrl+C to stop)...");
 console.log();
@@ -264,120 +240,88 @@ while (!shuttingDown) {
 
     if (shuttingDown) break;
 
-    // 1. Gather system state from beads
-    const systemState = await gatherSystemState(config);
+    // 1. Poll for ready beads and emit events
+    const readyBeads = await getReadyBeads();
 
     // Update dashboard queue info
-    state.updateQueue(systemState.readyCount, slots.totalActive());
+    state.updateQueue(readyBeads.length, slots.totalActive());
 
-    // 2. Evaluate conditions
-    const conditionResults = evaluateConditions(systemState, {
-      minReadyThreshold: config.planning.min_ready_threshold,
-      builderSlotsAvailable: slots.availableBuilderSlots(),
-      plannerSlotsAvailable: slots.availablePlannerSlots(),
-    });
-
-    // 3. Execute triggered conditions
-    for (const condResult of conditionResults) {
-      if (!condResult.triggered || condResult.invocations.length === 0) {
-        // Handle pr-merged directly (no agent needed)
-        if (condResult.condition === "pr-merged" && condResult.triggered) {
-          for (const pr of systemState.mergedPRs) {
-            await closeBead(pr.beadId, `PR #${pr.prNumber} merged`);
-            info(`Closed bead ${pr.beadId} — PR #${pr.prNumber} merged`);
-          }
-        }
-        continue;
-      }
-
-      for (const invocation of condResult.invocations) {
-        // Check slot availability
-        const slotOk =
-          invocation.slotType === "builder"
-            ? slots.acquireBuilder(invocation.agentId, invocation.beadId ?? "")
-            : slots.acquirePlanner(invocation.agentId, invocation.skill);
-
-        if (!slotOk) continue;
-
-        // Claim bead for builder invocations
-        if (invocation.slotType === "builder" && invocation.beadId) {
-          const claimed = await claimBead(
-            invocation.beadId,
-            invocation.agentId,
-          );
-          if (!claimed) {
-            slots.release(invocation.agentId);
-            continue;
-          }
-        }
-
-        // Register agent in dashboard state
-        state.addAgent(
-          invocation.agentId,
-          invocation.beadId ?? invocation.skill,
-          `${invocation.persona}/${invocation.skill}`,
-        );
-
-        // Spawn agent (fire-and-forget with cleanup)
-        const agentPromise = runAgent(
-          invocation,
-          config,
-          projectPath,
-          (entry) => {
-            state.addActivity(invocation.agentId, entry);
-          },
-          shutdownController.signal,
-        )
-          .then(async (result) => {
-            const status = result.error
-              ? "failed"
-              : result.timedOut || result.inactivityTimedOut
-                ? "timed_out"
-                : "completed";
-            info(
-              `Agent ${invocation.persona}/${invocation.skill} ${status}` +
-                (result.costUsd ? ` ($${result.costUsd.toFixed(4)})` : ""),
-            );
-            await state.completeAgent(invocation.agentId, status, {
-              costUsd: result.costUsd,
-              durationMs: result.durationMs,
-              numTurns: result.numTurns,
-              sessionId: result.sessionId,
-              error: result.error,
-              runType: invocation.slotType,
-            });
-          })
-          .catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            warn(
-              `Agent ${invocation.persona}/${invocation.skill} error: ${msg}`,
-            );
-          })
-          .finally(() => {
-            slots.release(invocation.agentId);
-            runningAgents.delete(agentPromise);
-          });
-
-        runningAgents.add(agentPromise);
-      }
+    // Emit beadReady for each — dispatcher handles routing + claiming
+    for (const bead of readyBeads) {
+      bus.emit("beadReady", {
+        id: bead.id,
+        title: bead.title,
+        beadType: bead.type,
+      });
     }
+
+    // 2. Check backlog threshold (issue count only, not initiatives/epics)
+    const issueCount = readyBeads.filter((b) =>
+      IMPLEMENTABLE_TYPES.includes(b.type ?? "task"),
+    ).length;
+    if (issueCount < config.planning.min_ready_threshold) {
+      bus.emit("backlogLow", {
+        readyCount: issueCount,
+        threshold: config.planning.min_ready_threshold,
+      });
+    }
+
+    // 3. Check gates — beads handles PR merge/CI status tracking natively.
+    //    `bd gate check` auto-resolves gates whose conditions are met
+    //    (PR merged, CI passed, timer expired) and reports failures.
+    try {
+      const gateResult = await checkGates();
+
+      // Resolved gates: bd gate check auto-closes them, no action needed.
+      // The engineer already closed the bead when creating the PR.
+
+      for (const gate of gateResult.failed) {
+        if (gate.await_type === "gh:run" || gate.await_type === "gh:pr") {
+          bus.emit("prFailed", {
+            gateId: gate.id,
+            gateTitle: gate.title,
+            beadId: gate.parent,
+          });
+        }
+      }
+
+      // Pending PR gates = beads in review → Staff Engineer dispatch
+      for (const gate of gateResult.pending) {
+        if (gate.await_type === "gh:pr" && gate.parent) {
+          bus.emit("beadNeedsReview", {
+            beadId: gate.parent,
+            title: gate.title,
+          });
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      warn(`Gate check error (non-fatal): ${sanitizeMessage(msg)}`);
+    }
+
+    // 4. Check KG health — emit kgEmpty if database doesn't exist
+    const kgPath = resolve(projectPath, config.knowledge_graph.db_path);
+    if (!existsSync(kgPath)) {
+      bus.emit("kgEmpty", undefined);
+    }
+
+    // 5. Batch complete detection — builders went from active to idle
+    //    with no more ready work. Triggers CTO post-flight.
+    const buildersActive = slots.totalActive();
+    if (
+      prevBuildersActive > 0 &&
+      buildersActive === 0 &&
+      readyBeads.length === 0
+    ) {
+      bus.emit("batchComplete", undefined);
+    }
+    prevBuildersActive = buildersActive;
 
     // Reset failure counter after a successful iteration
     consecutiveFailures = 0;
 
-    // Wait for poll interval or any agent to finish
-    if (runningAgents.size > 0) {
-      const pollTimer = interruptibleSleep(
-        POLL_INTERVAL_MS,
-        shutdownController.signal,
-      ).then(() => "poll" as const);
-      await Promise.race([pollTimer, ...runningAgents]);
-    } else {
-      info(
-        `No agents running. Polling again in ${POLL_INTERVAL_MS / 1000}s...`,
-      );
-      await interruptibleSleep(POLL_INTERVAL_MS, shutdownController.signal);
-    }
+    // Wait for poll interval
+    await interruptibleSleep(POLL_INTERVAL_MS, shutdownController.signal);
   } catch (e) {
     const stack = e instanceof Error ? (e.stack ?? e.message) : String(e);
     const msg = e instanceof Error ? e.message : String(e);
@@ -404,16 +348,13 @@ while (!shuttingDown) {
 
 // --- Drain phase ---
 
-const drainablePromises = [...runningAgents];
+teardownDispatcher();
 
-if (drainablePromises.length > 0) {
-  info(
-    `Waiting for ${drainablePromises.length} agent(s) to shut down (up to 60s)...`,
-  );
-  await Promise.race([
-    Promise.all([Promise.allSettled(drainablePromises), Bun.sleep(6_000)]),
-    Bun.sleep(60_000),
-  ]);
+const activeCount = slots.totalActive();
+if (activeCount > 0) {
+  info(`Waiting for ${activeCount} agent(s) to shut down (up to 60s)...`);
+  // closeAllAgents() already sent kill signals; give them time to exit
+  await Bun.sleep(Math.min(activeCount * 2_000, 60_000));
 }
 
 // --- Cleanup ---

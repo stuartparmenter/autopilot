@@ -2,18 +2,12 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   _runner,
   type Bead,
-  claimBead,
-  closeBead,
   createBead,
   getBead,
   getBeadsByProject,
   getBlockedBeads,
-  getInReviewBeads,
   getReadyBeads,
-  getReadyCount,
   getStaleBeads,
-  getTriageBeads,
-  setBeadState,
 } from "./beads";
 
 const mockExec = mock<(cmd: string[]) => Promise<string>>(() =>
@@ -50,46 +44,6 @@ describe("getReadyBeads", () => {
   });
 });
 
-describe("claimBead", () => {
-  test("returns true on success", async () => {
-    mockExec.mockResolvedValue("");
-    const result = await claimBead("bd-1", "agent-1");
-    expect(result).toBe(true);
-    expect(mockExec).toHaveBeenCalledWith([
-      "bd",
-      "claim",
-      "bd-1",
-      "--agent",
-      "agent-1",
-    ]);
-  });
-
-  test("returns false when already claimed", async () => {
-    mockExec.mockRejectedValue(new Error("already claimed"));
-    const result = await claimBead("bd-1", "agent-1");
-    expect(result).toBe(false);
-  });
-});
-
-describe("closeBead", () => {
-  test("calls bd close with id and reason", async () => {
-    mockExec.mockResolvedValue("");
-    await closeBead("bd-1", "completed successfully");
-    expect(mockExec).toHaveBeenCalledWith([
-      "bd",
-      "close",
-      "bd-1",
-      "--reason",
-      "completed successfully",
-    ]);
-  });
-
-  test("propagates errors", async () => {
-    mockExec.mockRejectedValue(new Error("bead not found"));
-    await expect(closeBead("bd-999", "done")).rejects.toThrow("bead not found");
-  });
-});
-
 describe("getBeadsByProject", () => {
   test("passes project id to bd list", async () => {
     const projectBeads = [
@@ -109,41 +63,6 @@ describe("getBeadsByProject", () => {
   });
 });
 
-describe("getTriageBeads", () => {
-  test("queries beads with workflow:triage label", async () => {
-    const triageBead = {
-      ...sampleBead,
-      status: "triage",
-      labels: { workflow: "triage" },
-    };
-    mockExec.mockResolvedValue(JSON.stringify([triageBead]));
-    const beads = await getTriageBeads();
-    expect(beads).toHaveLength(1);
-    expect(beads[0].status).toBe("triage");
-    expect(mockExec).toHaveBeenCalledWith([
-      "bd",
-      "list",
-      "--label",
-      "workflow:triage",
-      "--json",
-    ]);
-  });
-});
-
-describe("getInReviewBeads", () => {
-  test("queries beads with workflow:in_review label", async () => {
-    mockExec.mockResolvedValue("[]");
-    await getInReviewBeads();
-    expect(mockExec).toHaveBeenCalledWith([
-      "bd",
-      "list",
-      "--label",
-      "workflow:in_review",
-      "--json",
-    ]);
-  });
-});
-
 describe("getStaleBeads", () => {
   test("passes timeout in minutes", async () => {
     const staleBead = { ...sampleBead, status: "in_progress" };
@@ -157,35 +76,6 @@ describe("getStaleBeads", () => {
       "30",
       "--json",
     ]);
-  });
-});
-
-describe("setBeadState", () => {
-  test("sets workflow state label", async () => {
-    mockExec.mockResolvedValue("");
-    await setBeadState("bd-1", "in_progress");
-    expect(mockExec).toHaveBeenCalledWith([
-      "bd",
-      "set-state",
-      "bd-1",
-      "workflow=in_progress",
-    ]);
-  });
-});
-
-describe("getReadyCount", () => {
-  test("returns count of ready beads", async () => {
-    mockExec.mockResolvedValue(
-      JSON.stringify([sampleBead, { ...sampleBead, id: "bd-2" }]),
-    );
-    const count = await getReadyCount();
-    expect(count).toBe(2);
-  });
-
-  test("returns 0 when no beads ready", async () => {
-    mockExec.mockResolvedValue("[]");
-    const count = await getReadyCount();
-    expect(count).toBe(0);
   });
 });
 

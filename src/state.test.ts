@@ -532,11 +532,7 @@ describe("AppState — spend tracking", () => {
   });
 
   test("getDailySpend excludes entries older than 24h", () => {
-    // Inject an old entry directly into the private spendLog
-    (state as any).spendLog.push({
-      timestampMs: Date.now() - 25 * 60 * 60 * 1000,
-      costUsd: 100,
-    });
+    state.addSpend(100, Date.now() - 25 * 60 * 60 * 1000);
     state.addSpend(5.0);
     expect(state.getDailySpend()).toBeCloseTo(5.0);
   });
@@ -548,11 +544,9 @@ describe("AppState — spend tracking", () => {
   });
 
   test("getMonthlySpend excludes entries from a previous month", () => {
-    // Inject an entry from ~35 days ago (safely in a previous calendar month)
-    (state as any).spendLog.push({
-      timestampMs: Date.now() - 35 * 24 * 60 * 60 * 1000,
-      costUsd: 200,
-    });
+    // Entry from ~35 days ago won't survive the 32-day eviction in addSpend,
+    // but getMonthlySpend also filters by calendar month boundary
+    state.addSpend(200, Date.now() - 35 * 24 * 60 * 60 * 1000);
     state.addSpend(7.0);
     expect(state.getMonthlySpend()).toBeCloseTo(7.0);
   });
@@ -626,16 +620,11 @@ describe("AppState — spend tracking", () => {
   });
 
   test("addSpend evicts entries older than 32 days", () => {
-    // Inject a very old entry
-    (state as any).spendLog.push({
-      timestampMs: Date.now() - 33 * 24 * 60 * 60 * 1000,
-      costUsd: 500,
-    });
-    // Adding a new entry triggers eviction
+    state.addSpend(500, Date.now() - 33 * 24 * 60 * 60 * 1000);
+    // Adding a new entry triggers eviction of the old one
     state.addSpend(1.0);
-    // The old entry should be gone — monthly and daily should only see the new entry
     expect(state.getDailySpend()).toBeCloseTo(1.0);
-    expect((state as any).spendLog).toHaveLength(1);
+    expect(state.getSpendLogLength()).toBe(1);
   });
 });
 

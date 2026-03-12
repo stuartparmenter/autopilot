@@ -372,11 +372,15 @@ export class AppState {
     this.issueFailureCount.delete(issueId);
   }
 
-  addSpend(costUsd: number): void {
-    this.spendLog.push({ timestampMs: Date.now(), costUsd });
+  addSpend(costUsd: number, timestampMs?: number): void {
+    this.spendLog.push({ timestampMs: timestampMs ?? Date.now(), costUsd });
     // Evict entries older than 32 days to prevent unbounded growth
     const cutoff = Date.now() - 32 * 24 * 60 * 60 * 1000;
     this.spendLog = this.spendLog.filter((e) => e.timestampMs >= cutoff);
+  }
+
+  getSpendLogLength(): number {
+    return this.spendLog.length;
   }
 
   getDailySpend(): number {

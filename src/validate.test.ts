@@ -31,7 +31,7 @@ afterEach(() => {
 
 describe("checkConfig", () => {
   test("passes with valid config", async () => {
-    writeConfig("linear:\n  team: ENG\n");
+    writeConfig("executor:\n  parallel: 4\n");
     const result = await checkConfig(tmpDir);
     expect(result).toContain("Loaded");
   });
@@ -53,7 +53,7 @@ describe("checkConfig", () => {
   });
 
   test("throws actionable error for config value with newline injection", async () => {
-    writeConfig('linear:\n  team: "ENG\\nmalicious"\n');
+    writeConfig('git:\n  user_name: "bot\\nmalicious"\n');
     await expect(checkConfig(tmpDir)).rejects.toThrow("newline");
   });
 });
@@ -242,7 +242,7 @@ describe("runPreflight", () => {
   function writeMinimalConfig(): void {
     writeFileSync(
       join(tmpDir, ".autopilot.yml"),
-      "linear:\n  team: ENG\n",
+      "executor:\n  parallel: 4\n",
       "utf-8",
     );
   }

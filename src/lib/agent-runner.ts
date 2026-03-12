@@ -3,6 +3,7 @@ import { query, type SdkPluginConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { ActivityEntry } from "../state";
 import type { AutopilotConfig } from "./config";
 import { info, warn } from "./logger";
+import { AUTOPILOT_ROOT } from "./paths";
 
 export interface AgentInvocation {
   agentId: string;
@@ -67,13 +68,15 @@ export function resetSpawnGate(): void {
  * Resolve which plugins a persona needs.
  * Every persona gets autopilot-core. Team plugins are persona-specific.
  */
-export function getPluginsForPersona(
-  persona: string,
-  projectPath: string,
-): SdkPluginConfig[] {
+/**
+ * Resolve which plugins a persona needs.
+ * Every persona gets autopilot-core. Team plugins are persona-specific.
+ * Plugins live in the autopilot repo (AUTOPILOT_ROOT), not the target project.
+ */
+export function getPluginsForPersona(persona: string): SdkPluginConfig[] {
   const core: SdkPluginConfig = {
     type: "local",
-    path: resolve(projectPath, "plugins/autopilot-core"),
+    path: resolve(AUTOPILOT_ROOT, "plugins/autopilot-core"),
   };
   const pluginMap: Record<string, string[]> = {
     cto: ["autopilot-leadership"],
@@ -88,7 +91,7 @@ export function getPluginsForPersona(
   };
   const teamPlugins = (pluginMap[persona] ?? []).map((name) => ({
     type: "local" as const,
-    path: resolve(projectPath, `plugins/${name}`),
+    path: resolve(AUTOPILOT_ROOT, `plugins/${name}`),
   }));
   return [core, ...teamPlugins];
 }
@@ -104,7 +107,7 @@ export async function runAgent(
   shutdownSignal?: AbortSignal,
 ): Promise<AgentResult> {
   const startTime = Date.now();
-  const plugins = getPluginsForPersona(invocation.persona, projectPath);
+  const plugins = getPluginsForPersona(invocation.persona);
 
   info(
     `[agent-runner] Starting ${invocation.persona}/${invocation.skill} (${invocation.agentId})`,

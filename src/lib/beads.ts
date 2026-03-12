@@ -9,7 +9,24 @@ export interface Bead {
   type?: string;
   priority?: string;
   parent?: string;
+  external_ref?: string;
   labels: Record<string, string>;
+}
+
+export interface Gate {
+  id: string;
+  title: string;
+  status: string;
+  await_type: string; // "gh:pr", "gh:run", "timer", "bead"
+  await_id: string; // PR number, run ID, duration, bead ID
+  parent?: string; // parent bead ID — links gate back to the bead it tracks
+}
+
+export interface GateCheckResult {
+  checked: number;
+  resolved: Gate[];
+  failed: Gate[];
+  pending: Gate[];
 }
 
 /**
@@ -32,25 +49,6 @@ export async function getReadyBeads(): Promise<Bead[]> {
 }
 
 /**
- * Claim a bead for implementation. Returns false if already claimed.
- */
-export async function claimBead(id: string, agentId: string): Promise<boolean> {
-  try {
-    await _runner.exec(["bd", "claim", id, "--agent", agentId]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Close a completed bead with a reason.
- */
-export async function closeBead(id: string, reason: string): Promise<void> {
-  await _runner.exec(["bd", "close", id, "--reason", reason]);
-}
-
-/**
  * Get all beads for a specific project.
  */
 export async function getBeadsByProject(projectId: string): Promise<Bead[]> {
@@ -59,34 +57,6 @@ export async function getBeadsByProject(projectId: string): Promise<Bead[]> {
     "list",
     "--project",
     projectId,
-    "--json",
-  ]);
-  return JSON.parse(result);
-}
-
-/**
- * Get beads in triage state (pending grooming).
- */
-export async function getTriageBeads(): Promise<Bead[]> {
-  const result = await _runner.exec([
-    "bd",
-    "list",
-    "--label",
-    "workflow:triage",
-    "--json",
-  ]);
-  return JSON.parse(result);
-}
-
-/**
- * Get beads in review state (PR submitted).
- */
-export async function getInReviewBeads(): Promise<Bead[]> {
-  const result = await _runner.exec([
-    "bd",
-    "list",
-    "--label",
-    "workflow:in_review",
     "--json",
   ]);
   return JSON.parse(result);
@@ -104,27 +74,6 @@ export async function getStaleBeads(timeoutMinutes: number): Promise<Bead[]> {
     "--json",
   ]);
   return JSON.parse(result);
-}
-
-/**
- * Set a bead's workflow state label.
- */
-export async function setBeadState(id: string, state: string): Promise<void> {
-  await _runner.exec(["bd", "set-state", id, `workflow=${state}`]);
-}
-
-/**
- * Get the count of ready beads (for backlog threshold checks).
- */
-export async function getReadyCount(): Promise<number> {
-  const result = await _runner.exec([
-    "bd",
-    "list",
-    "--label",
-    "workflow:ready",
-    "--json",
-  ]);
-  return JSON.parse(result).length;
 }
 
 /**
@@ -156,5 +105,22 @@ export async function getBead(id: string): Promise<Bead> {
  */
 export async function getBlockedBeads(): Promise<Bead[]> {
   const result = await _runner.exec(["bd", "blocked", "--json"]);
+  return JSON.parse(result);
+}
+
+/**
+ * Check all gates — auto-resolves merged PRs, passed CI, expired timers.
+ * Returns which gates were resolved, failed, or still pending.
+ */
+export async function checkGates(): Promise<GateCheckResult> {
+  const result = await _runner.exec(["bd", "gate", "check", "--json"]);
+  return JSON.parse(result);
+}
+
+/**
+ * List open (unresolved) gates.
+ */
+export async function listOpenGates(): Promise<Gate[]> {
+  const result = await _runner.exec(["bd", "gate", "list", "--json"]);
   return JSON.parse(result);
 }
