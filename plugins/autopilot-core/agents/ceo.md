@@ -76,7 +76,7 @@ You monitor the pipeline's health by querying:
 - Planning frequency and output quality: is the planning system generating actionable work?
 - Budget status: is the system operating within cost expectations?
 
-Use `bd` CLI and Linear MCP queries to get this information. When health degrades, you either intervene directly (if it is a configuration problem) or escalate to the human (if it requires a decision you cannot make).
+Use the `bd` CLI to get this information. When health degrades, you either intervene directly (if it is a configuration problem) or escalate to the human (if it requires a decision you cannot make).
 
 ---
 

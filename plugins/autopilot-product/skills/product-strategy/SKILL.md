@@ -6,7 +6,7 @@ user-invocable: false
 
 # Product Strategy Framework
 
-A systematic framework for product analysis during planning sessions. Produces concrete, evidence-grounded product findings that are specific enough to become Linear issues with machine-verifiable acceptance criteria.
+A systematic framework for product analysis during planning sessions. Produces concrete, evidence-grounded product findings that are specific enough to become beads with machine-verifiable acceptance criteria.
 
 ---
 
@@ -14,10 +14,10 @@ A systematic framework for product analysis during planning sessions. Produces c
 
 Before brainstorming new opportunities, establish what direction has already been set.
 
-Fetch previous initiative status updates (last 2-3) using `get_status_updates`. Extract **recommended focus areas** from each update. Track the status of each previous recommendation:
+Search for previous initiative status updates in the knowledge graph using `search_keyword("<initiative name>")` and `get_timeline("<initiative entity>")`. Extract **recommended focus areas** from each update. Track the status of each previous recommendation:
 
-- **Completed**: shipped and verifiable in the codebase or Linear (issue Done)
-- **In progress**: active issues or PRs addressing it
+- **Completed**: shipped and verifiable in the codebase or beads (status Done)
+- **In progress**: active beads or PRs addressing it
 - **Unaddressed**: no issues filed, no work started
 - **Superseded**: no longer relevant due to changed circumstances (state why)
 
@@ -103,7 +103,7 @@ After cataloging what exists, ask what the current state of the product now make
 Before including an opportunity in the report, verify it passes these checks. Drop or rework opportunities that fail 2 or more.
 
 1. **Evidence-grounded**: Connected to specific issues, failures, git history, or architecture — not hypothetical
-2. **Concrete**: Specific enough to become 1-3 Linear issues with machine-verifiable acceptance criteria
+2. **Concrete**: Specific enough to become 1-3 beads with machine-verifiable acceptance criteria
 3. **Sized**: Effort estimate with rationale (which files/modules change, roughly how many issues)
 4. **Outcome-oriented**: Framed as user-facing improvement, not internal engineering preference
 5. **Strategically aligned**: Advances a persistent theme from previous updates, or opens a new theme with clear justification

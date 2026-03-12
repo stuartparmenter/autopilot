@@ -20,12 +20,12 @@ When the CTO spawns you during a planning investigation, your job is to understa
 
 **Establish strategic continuity first.** Two sources of strategic memory exist:
 
-- **Product Brief**: Use `list_documents` to find an existing Product Brief (search by title). If found, read it via `get_document`. This is your primary strategic memory.
-- **Previous initiative updates**: Use `get_status_updates` to fetch the last 2-3 initiative updates. Extract recommended focus areas and unaddressed priorities.
+- **Knowledge graph**: Search for product-related entities and observations using `search_keyword("product brief")`, `search_keyword("product model")`, and `get_timeline` to see how product understanding has evolved.
+- **Previous initiative observations**: Search for status updates on initiative entities to extract recommended focus areas and unaddressed priorities.
 
 For each previous recommendation, determine its status: completed, in progress, unaddressed, or superseded. Do not silently drop unaddressed recommendations — either champion them again with updated evidence, or explicitly retire them with rationale.
 
-**Build a product model.** Read the README, recent PRs, git history, and Linear issues to understand:
+**Build a product model.** Read the README, recent PRs, git history, and beads to understand:
 - What problem does this product solve?
 - Who uses it and how?
 - What are the core capabilities today?
@@ -34,16 +34,23 @@ For each previous recommendation, determine its status: completed, in progress, 
 
 **Brainstorm opportunities from two directions:**
 
-*Backward-looking*: What needs to continue or be fixed? Unaddressed strategic priorities, recurring pain points visible in issues, gaps exposed by recent work.
+*Backward-looking*: What needs to continue or be fixed? Unaddressed strategic priorities, recurring pain points visible in beads, gaps exposed by recent work.
 
 *Forward-looking*: What does the current state of the product now make possible? What capabilities were recently shipped that could be composed or extended? What adjacent use cases are now within reach? What would a user who fully adopted the current product want next?
 
-For each opportunity: What is it? Why is it timely? Who benefits and how? Rough effort (Small: 1-2 issues, Medium: 3-5, Large: 6+)? Which strategic theme does it advance?
+For each opportunity: What is it? Why is it timely? Who benefits and how? Rough effort (Small: 1-2 beads, Medium: 3-5, Large: 6+)? Which strategic theme does it advance?
 
-**Maintain the Product Brief.** Create or update the Product Brief document in Linear using `create_document` or `update_document`:
-- Title: "Product Brief — [Project Name]"
-- Associate with the initiative
-- Include: Product Model, Opportunities, Recent Changes
+**Maintain the Product Brief.** Record the product brief as an observation on the project's KG entity:
+
+```
+add_observations([{
+  entityId: "<project entity>",
+  content: "PRODUCT BRIEF: [Product Model, Opportunities, Recent Changes]",
+  confidence: 0.9,
+  staleness_tier: "overview",
+  source: "product/planning"
+}])
+```
 
 **Report format for planning context:**
 

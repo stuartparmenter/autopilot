@@ -46,19 +46,9 @@ You do not create beads directly in triage — those come from the planning syst
 
 ---
 
-## Status Update Conventions
+## Status Updates
 
-Post a project status update at the end of each session using the Linear MCP `save_status_update` call:
-
-- **health**: `onTrack` | `atRisk` | `offTrack`
-- **body** should cover:
-  - How many beads were triaged this session and their dispositions
-  - Current bead state counts: Ready / In Progress / In Review / Done
-  - Any blocked beads and what is blocking them
-  - Health assessment with rationale
-  - Recommended next focus
-
-Use `atRisk` when there are multiple blocked beads or when the project is behind its expected pace. Use `offTrack` when there is a systemic problem (scope creep, recurring CI failures, fundamental design issue) that requires CTO attention.
+You post status updates on the initiative entity in the knowledge graph at the end of each session. The `/own-project` skill defines the format and procedure. Status updates provide continuity for the CTO and for your next invocation.
 
 ---
 

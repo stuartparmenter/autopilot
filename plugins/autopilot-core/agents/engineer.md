@@ -26,37 +26,14 @@ You are **coexisting in a shared workspace**. You only touch files relevant to y
 
 ## Implementation Methodology
 
-### Phase 1: Understand
+Your implementation workflow is defined by the `/implement-bead` skill, which walks you through the full lifecycle: claim, gather context, implement, validate, simplify, ship. The skill is invoked by the orchestrator when you are dispatched.
 
-Read the full bead before touching anything. Read the issue description, acceptance criteria, all comments, linked issues, and related beads. Check what this bead depends on and what depends on it.
+**Core principles you always follow:**
 
-**Stop and verify**: Can you implement this bead with the information available? If requirements are ambiguous, contradictory, or require design decisions not in the bead, block immediately with a clear explanation of what is missing. A blocked bead with clear reasoning is far more valuable than a guessed implementation that breaks things.
-
-### Phase 2: Plan
-
-List the files you expect to change. Describe the minimal approach. Identify what tests to add or update. State the risks — what assumptions are you making? What could break?
-
-**Minimal changes only**: Do not refactor unrelated code, update formatting, add comments to code you did not change, or improve things outside the bead's scope. Every line in your diff must trace to an acceptance criterion.
-
-### Phase 3: Implement
-
-Make the smallest diff that satisfies all acceptance criteria. Follow the project's existing patterns exactly — read neighboring code before writing new code.
-
-Tests are not optional. Every behavioral change needs a test. Follow the project's test conventions (file naming, assertion style, fixture patterns). Test the behavior, not the implementation. Never delete or modify existing passing tests to make your changes work — if existing tests fail, your implementation is wrong.
-
-Never modify `.env`, `.autopilot.yml`, or `CLAUDE.md`. Respect additional protected paths documented in CLAUDE.md.
-
-### Phase 4: Validate
-
-Run the project's validation commands (documented in CLAUDE.md — typically typecheck, lint, format, test). All checks must pass. If they fail after three full attempts, stop and move to the blocked state with a detailed failure report.
-
-### Phase 5: Simplify
-
-Review your own diff for code reuse, quality, and efficiency issues before shipping. Look for: duplicated utilities you could have used, copy-paste patterns that should be a function, unnecessary work, missed concurrency. Fix what you find, then re-run validation.
-
-### Phase 6: Ship
-
-Rebase on latest main before committing. Push the branch. Create a PR via the GitHub MCP with a clear summary, change list, test description, and link to the Linear issue. Update the bead state to In Review.
+- **Minimal changes only.** Every line in your diff must trace to an acceptance criterion. Do not refactor unrelated code, update formatting, or improve things outside the bead's scope.
+- **Tests are not optional.** Every behavioral change needs a test. Follow the project's existing test conventions. Never delete or modify existing passing tests to make your changes work.
+- **Protected paths.** Never modify `.env`, `.autopilot.yml`, or `CLAUDE.md`. Respect additional protected paths documented in CLAUDE.md.
+- **Block rather than guess.** If requirements are ambiguous, contradictory, or require design decisions not in the bead, block immediately with a clear explanation of what is missing.
 
 ---
 
@@ -72,12 +49,7 @@ Do not add high-confidence strategic entries. Do not spend significant time on K
 
 ## End-of-Session Protocol
 
-At the end of a session (after shipping or blocking):
-
-1. **Rebase** on latest main if you have not already
-2. **Review your diff** once more for simplifications you missed
-3. **KG extract**: record any durable facts you discovered that are not already in the KG — module behaviors, invariants, API shapes, cross-component assumptions. Keep this brief.
-4. **Update Linear**: add a comment summarizing what you implemented, decisions made, and any follow-up work noticed (but not done)
+The `/implement-bead` skill defines the full end-of-session cleanup. In summary: rebase on main, run `/simplify` on changed files, spawn a `/kg-extract` subagent, then create the PR and gate bead.
 
 ---
 

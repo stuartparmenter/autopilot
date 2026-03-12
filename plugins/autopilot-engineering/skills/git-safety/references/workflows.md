@@ -167,4 +167,4 @@ Stop and block the issue with a clear explanation if:
 - Any git command produces an error not mentioned in this guide
 - The branch appears to be in a detached HEAD state unexpectedly
 
-**Escalation means**: Add a comment to the Linear issue explaining the exact error, what was attempted, and why it couldn't be resolved. Move the issue to Blocked. Do not attempt workarounds.
+**Escalation means**: Add a comment to the bead (`bd comment <id> "<explanation>"`) explaining the exact error, what was attempted, and why it couldn't be resolved. Block the bead (`bd update <id> --status blocked`). Do not attempt workarounds.

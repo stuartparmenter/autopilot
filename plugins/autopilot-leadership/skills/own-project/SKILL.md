@@ -66,7 +66,7 @@ bd create "<Epic Title>" \
 - `p4` — Developer experience, documentation, nice-to-have features
 
 **Epic title format:** Start with a verb. State the outcome, not the activity.
-- Good: "Eliminate retry gaps in Linear and GitHub API calls"
+- Good: "Eliminate retry gaps in GitHub API calls"
 - Good: "Add end-to-end tests for executor state transitions"
 - Bad: "Retry improvements" (too vague)
 - Bad: "Fix stuff in monitor.ts" (not outcome-oriented)

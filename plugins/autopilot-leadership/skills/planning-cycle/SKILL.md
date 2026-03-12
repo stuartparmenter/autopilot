@@ -188,7 +188,7 @@ add_observations([{
 
 **Example constraints:**
 - "CONSTRAINT: All new retry logic must use withRetry() from src/lib/retry.ts, not manual setTimeout loops. Rationale: withRetry() handles Retry-After headers and jitter; manual loops do not."
-- "CONSTRAINT: State transition logging must call insertStateTransition() immediately after the Linear status update, in the same try block. Rationale: Partial logging (Linear updated, DB not) creates audit gaps."
+- "CONSTRAINT: State transition logging must call insertStateTransition() immediately after the bead status update, in the same try block. Rationale: Partial logging (bead updated, DB not) creates audit gaps."
 - "CONSTRAINT: No new SQLite tables may be added without a corresponding migration in src/lib/db/migrations/. Rationale: Schema drift between environments breaks production upgrades."
 
 Write 1-3 constraints per initiative. More than that suggests the initiative is too broad or too vague.
