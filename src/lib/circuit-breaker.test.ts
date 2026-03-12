@@ -287,35 +287,33 @@ describe("AppState.toJSON() apiHealth", () => {
     const state = new AppState();
     const snapshot = state.toJSON();
     expect(snapshot.apiHealth).toBeDefined();
-    expect(snapshot.apiHealth.linear).toBe("closed");
     expect(snapshot.apiHealth.github).toBe("closed");
   });
 
-  test("toJSON reflects open circuit state", () => {
+  test("toJSON reflects open circuit state for github", () => {
     for (let i = 0; i < 10; i++) {
-      defaultRegistry.recordFailure("linear");
+      defaultRegistry.recordFailure("github");
     }
 
     const state = new AppState();
     const snapshot = state.toJSON();
-    expect(snapshot.apiHealth.linear).toBe("open");
-    expect(snapshot.apiHealth.github).toBe("closed");
+    expect(snapshot.apiHealth.github).toBe("open");
   });
 
   test("toJSON reflects half-open state after cooldown", async () => {
     // Use a registry with short cooldown
     const fastRegistry = new CircuitBreakerRegistry(TEST_CONFIG);
     for (let i = 0; i < 3; i++) {
-      fastRegistry.recordFailure("linear");
+      fastRegistry.recordFailure("github");
     }
     await new Promise((r) => setTimeout(r, TEST_CONFIG.cooldownMs + 50));
     // Confirm it's half-open on the local registry
-    expect(fastRegistry.getState("linear")).toBe("half-open");
+    expect(fastRegistry.getState("github")).toBe("half-open");
 
     // The defaultRegistry is still in initial state for this test
     const state = new AppState();
     const snapshot = state.toJSON();
     // defaultRegistry was reset in beforeEach, so apiHealth should be closed
-    expect(snapshot.apiHealth.linear).toBe("closed");
+    expect(snapshot.apiHealth.github).toBe("closed");
   });
 });

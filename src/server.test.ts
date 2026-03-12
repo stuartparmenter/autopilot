@@ -441,7 +441,7 @@ describe("POST /api/retry/:historyId", () => {
   beforeEach(() => {
     state = new AppState();
     // Create an agent and complete it as failed
-    state.addAgent("exec-ENG-5-123", "ENG-5", "Some issue", "linear-uuid-5");
+    state.addAgent("exec-ENG-5-123", "ENG-5", "Some issue");
     state.completeAgent("exec-ENG-5-123", "failed", { error: "timed out" });
   });
 
@@ -452,7 +452,7 @@ describe("POST /api/retry/:historyId", () => {
   });
 
   test("returns 400 when retrying a completed issue", async () => {
-    state.addAgent("exec-ENG-6-456", "ENG-6", "Another", "linear-uuid-6");
+    state.addAgent("exec-ENG-6-456", "ENG-6", "Another");
     state.completeAgent("exec-ENG-6-456", "completed");
     const app = createApp(state);
     const res = await app.request("/api/retry/exec-ENG-6-456", {
@@ -472,20 +472,7 @@ describe("POST /api/retry/:historyId", () => {
     expect(res.status).toBe(409);
   });
 
-  test("returns 400 when no linearIssueId available", async () => {
-    // Add history item without linearIssueId
-    state.addAgent("exec-ENG-7-789", "ENG-7", "No uuid");
-    state.completeAgent("exec-ENG-7-789", "failed");
-    const app = createApp(state);
-    const res = await app.request("/api/retry/exec-ENG-7-789", {
-      method: "POST",
-    });
-    expect(res.status).toBe(400);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("No Linear issue ID available for retry");
-  });
-
-  test("calls retryIssue and returns retried: true for failed issue", async () => {
+  test("calls retryIssue with bead ID for failed issue", async () => {
     const retryIssue = mock(async (_id: string) => {});
     const app = createApp(state, { retryIssue });
     const res = await app.request("/api/retry/exec-ENG-5-123", {
@@ -494,12 +481,12 @@ describe("POST /api/retry/:historyId", () => {
     expect(res.status).toBe(200);
     const json = (await res.json()) as { retried: boolean };
     expect(json.retried).toBe(true);
-    expect(retryIssue).toHaveBeenCalledWith("linear-uuid-5");
+    expect(retryIssue).toHaveBeenCalledWith("ENG-5");
   });
 
   test("returns 500 with error key when retryIssue throws", async () => {
     const retryIssue = mock(async (_id: string) => {
-      throw new Error("Linear API error");
+      throw new Error("Retry failed");
     });
     const app = createApp(state, { retryIssue });
     const res = await app.request("/api/retry/exec-ENG-5-123", {
@@ -507,7 +494,7 @@ describe("POST /api/retry/:historyId", () => {
     });
     expect(res.status).toBe(500);
     const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Retry failed: Linear API error");
+    expect(json.error).toBe("Retry failed: Retry failed");
   });
 });
 
@@ -824,7 +811,7 @@ describe("CSRF protection", () => {
 
   test("cookie-only POST to /api/retry/:historyId returns 403", async () => {
     const state = new AppState();
-    state.addAgent("csrf-exec-1", "ENG-1", "Test issue", "linear-uuid-csrf");
+    state.addAgent("csrf-exec-1", "ENG-1", "Test issue");
     state.completeAgent("csrf-exec-1", "failed", { error: "timed out" });
     const app = createApp(state, { authToken: TOKEN });
     const res = await app.request("/api/retry/csrf-exec-1", {

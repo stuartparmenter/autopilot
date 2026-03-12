@@ -286,16 +286,6 @@ while (!shuttingDown) {
           });
         }
       }
-
-      // Pending PR gates = beads in review → Staff Engineer dispatch
-      for (const gate of gateResult.pending) {
-        if (gate.await_type === "gh:pr" && gate.parent) {
-          bus.emit("beadNeedsReview", {
-            beadId: gate.parent,
-            title: gate.title,
-          });
-        }
-      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       warn(`Gate check error (non-fatal): ${sanitizeMessage(msg)}`);

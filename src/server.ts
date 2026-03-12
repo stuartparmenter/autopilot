@@ -27,7 +27,7 @@ export interface DashboardOptions {
   authToken?: string;
   secureCookie?: boolean;
   triggerPlanning?: () => void;
-  retryIssue?: (linearIssueId: string) => Promise<void>;
+  retryIssue?: (beadId: string) => Promise<void>;
   config?: AutopilotConfig;
   triageIssues?: () => Promise<
     Array<{ id: string; identifier: string; title: string; priority: number }>
@@ -542,12 +542,9 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
     if (alreadyRunning) {
       return c.json({ error: "Issue is already running" }, 409);
     }
-    if (!hist.linearIssueId) {
-      return c.json({ error: "No Linear issue ID available for retry" }, 400);
-    }
     if (options?.retryIssue) {
       try {
-        await options.retryIssue(hist.linearIssueId);
+        await options.retryIssue(hist.issueId);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return c.json({ error: `Retry failed: ${msg}` }, 500);
@@ -775,7 +772,7 @@ export function createApp(state: AppState, options?: DashboardOptions): Hono {
               ? `${Math.round(h.durationMs / 1000)}s`
               : "";
             const costStr = h.costUsd ? `$${h.costUsd.toFixed(4)}` : "";
-            const canRetry = h.status !== "completed" && h.linearIssueId;
+            const canRetry = h.status !== "completed";
             const retryBtn = canRetry
               ? `<button class="action-btn" hx-post="/api/retry/${escapeHtml(h.id)}" onclick="event.stopPropagation()">Retry</button>`
               : "";

@@ -19,14 +19,6 @@ export interface AutopilotEvents {
     gateTitle: string;
     beadId?: string; // parent bead linked to this gate
   };
-  prReviewNeeded: {
-    beadId: string;
-    prUrl: string;
-  };
-  prReviewFeedback: {
-    beadId: string;
-    prUrl: string;
-  };
   agentDone: {
     agentId: string;
     persona: string;
@@ -45,10 +37,6 @@ export interface AutopilotEvents {
   };
   kgEmpty: undefined;
   batchComplete: undefined;
-  beadNeedsReview: {
-    beadId: string;
-    title: string;
-  };
 }
 
 type Handler<T> = (data: T) => void | Promise<void>;

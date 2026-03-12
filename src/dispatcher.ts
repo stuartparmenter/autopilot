@@ -100,40 +100,6 @@ export function wireDispatcher(opts: DispatcherOpts): () => void {
     }),
   );
 
-  // --- prReviewNeeded: staff-engineer runs review batch ---
-  unsubs.push(
-    bus.on("prReviewNeeded", async (e) => {
-      await dispatchAgent(
-        {
-          agentId: makeId(),
-          persona: "staff-engineer",
-          skill: "review-batch",
-          prompt: `Invoke /review-batch. PR ${e.prUrl} needs review. Bead: ${e.beadId}`,
-          beadId: e.beadId,
-          slotType: "planner",
-        },
-        opts,
-      );
-    }),
-  );
-
-  // --- prReviewFeedback: engineer responds to review ---
-  unsubs.push(
-    bus.on("prReviewFeedback", async (e) => {
-      await dispatchAgent(
-        {
-          agentId: makeId(),
-          persona: "engineer",
-          skill: "respond-review",
-          prompt: `Invoke /respond-review. PR ${e.prUrl} has review feedback. Bead: ${e.beadId}`,
-          beadId: e.beadId,
-          slotType: "builder",
-        },
-        opts,
-      );
-    }),
-  );
-
   // --- backlogLow: CTO runs planning cycle ---
   unsubs.push(
     bus.on("backlogLow", async (e) => {
@@ -177,23 +143,6 @@ export function wireDispatcher(opts: DispatcherOpts): () => void {
           skill: "post-flight",
           prompt:
             "Invoke /post-flight. Current batch is complete — run post-flight analysis.",
-          slotType: "planner",
-        },
-        opts,
-      );
-    }),
-  );
-
-  // --- beadNeedsReview: Staff Engineer runs review batch ---
-  unsubs.push(
-    bus.on("beadNeedsReview", async (e) => {
-      await dispatchAgent(
-        {
-          agentId: makeId(),
-          persona: "staff-engineer",
-          skill: "review-batch",
-          prompt: `Invoke /review-batch. Bead "${e.title}" (${e.beadId}) has a PR awaiting review.`,
-          beadId: e.beadId,
           slotType: "planner",
         },
         opts,

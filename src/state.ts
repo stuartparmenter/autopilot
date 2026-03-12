@@ -15,7 +15,6 @@ export interface AgentState {
   id: string;
   issueId: string;
   issueTitle: string;
-  linearIssueId?: string;
   startedAt: number;
   status: "running" | "completed" | "failed" | "timed_out";
   activities: ActivityEntry[];
@@ -29,7 +28,6 @@ export interface AgentResult {
   id: string;
   issueId: string;
   issueTitle: string;
-  linearIssueId?: string;
   status: "completed" | "failed" | "timed_out";
   startedAt: number;
   finishedAt: number;
@@ -57,12 +55,6 @@ export interface PlanningStatus {
   threshold?: number;
 }
 
-export interface ReviewerStatus {
-  running: boolean;
-  lastRunAt?: number;
-  lastResult?: "completed" | "skipped" | "failed" | "timed_out";
-}
-
 export interface PlanningSession {
   id: string;
   agentRunId: string;
@@ -88,7 +80,6 @@ export interface StateTransition {
 }
 
 export interface ApiHealthStatus {
-  linear: CircuitState;
   github: CircuitState;
 }
 
@@ -99,7 +90,6 @@ export interface AppStateSnapshot {
   queue: QueueInfo;
   planning: PlanningStatus;
   planningHistory: PlanningSession[];
-  reviewer: ReviewerStatus;
   startedAt: number;
   apiHealth: ApiHealthStatus;
 }
@@ -143,7 +133,6 @@ export class AppState {
   };
   private planning: PlanningStatus = { running: false };
   private planningHistory: PlanningSession[] = [];
-  private reviewer: ReviewerStatus = { running: false };
   private paused = false;
   private issueFailureCount = new Map<string, number>();
   private spendLog: Array<{ timestampMs: number; costUsd: number }> = [];
@@ -154,17 +143,11 @@ export class AppState {
     this.maxParallel = maxParallel;
   }
 
-  addAgent(
-    id: string,
-    issueId: string,
-    issueTitle: string,
-    linearIssueId?: string,
-  ): void {
+  addAgent(id: string, issueId: string, issueTitle: string): void {
     this.agents.set(id, {
       id,
       issueId,
       issueTitle,
-      linearIssueId,
       startedAt: Date.now(),
       status: "running",
       activities: [],
@@ -210,7 +193,6 @@ export class AppState {
       id: agent.id,
       issueId: agent.issueId,
       issueTitle: agent.issueTitle,
-      linearIssueId: agent.linearIssueId,
       status,
       startedAt: agent.startedAt,
       finishedAt: Date.now(),
@@ -333,14 +315,6 @@ export class AppState {
 
   logStateTransition(_transition: StateTransition): void {
     // TODO(v2): Persist to Dolt.
-  }
-
-  updateReviewer(status: Partial<ReviewerStatus>): void {
-    Object.assign(this.reviewer, status);
-  }
-
-  getReviewerStatus(): ReviewerStatus {
-    return this.reviewer;
   }
 
   isPaused(): boolean {
@@ -482,9 +456,8 @@ export class AppState {
       queue: this.queue,
       planning: this.planning,
       planningHistory: this.planningHistory,
-      reviewer: this.reviewer,
       startedAt: this.startedAt,
-      apiHealth: defaultRegistry.getAllStates(),
+      apiHealth: { github: defaultRegistry.getState("github") },
     };
   }
 }

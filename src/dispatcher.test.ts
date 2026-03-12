@@ -218,38 +218,6 @@ describe("wireDispatcher — PR events", () => {
     expect(inv.skill).toBe("fix-pr");
     expect(inv.slotType).toBe("builder");
   });
-
-  test("prReviewNeeded → staff-engineer/review-batch (planner slot)", async () => {
-    const opts = makeOpts();
-    wireDispatcher(opts);
-
-    opts.bus.emit("prReviewNeeded", {
-      beadId: "bd-12",
-      prUrl: "https://github.com/pull/43",
-    });
-    await flush();
-
-    const inv = mockRunAgent.mock.calls[0][0];
-    expect(inv.persona).toBe("staff-engineer");
-    expect(inv.skill).toBe("review-batch");
-    expect(inv.slotType).toBe("planner");
-  });
-
-  test("prReviewFeedback → engineer/respond-review (builder slot)", async () => {
-    const opts = makeOpts();
-    wireDispatcher(opts);
-
-    opts.bus.emit("prReviewFeedback", {
-      beadId: "bd-13",
-      prUrl: "https://github.com/pull/44",
-    });
-    await flush();
-
-    const inv = mockRunAgent.mock.calls[0][0];
-    expect(inv.persona).toBe("engineer");
-    expect(inv.skill).toBe("respond-review");
-    expect(inv.slotType).toBe("builder");
-  });
 });
 
 describe("wireDispatcher — planning events", () => {
@@ -296,23 +264,6 @@ describe("wireDispatcher — planning events", () => {
     expect(inv.persona).toBe("cto");
     expect(inv.skill).toBe("post-flight");
     expect(inv.slotType).toBe("planner");
-  });
-
-  test("beadNeedsReview → staff-engineer/review-batch (planner slot)", async () => {
-    const opts = makeOpts();
-    wireDispatcher(opts);
-
-    opts.bus.emit("beadNeedsReview", {
-      beadId: "bd-30",
-      title: "Fix auth flow",
-    });
-    await flush();
-
-    const inv = mockRunAgent.mock.calls[0][0];
-    expect(inv.persona).toBe("staff-engineer");
-    expect(inv.skill).toBe("review-batch");
-    expect(inv.slotType).toBe("planner");
-    expect(inv.beadId).toBe("bd-30");
   });
 });
 
