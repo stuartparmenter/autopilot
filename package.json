@@ -2,13 +2,11 @@
   "name": "autopilot",
   "version": "0.2.0",
   "type": "module",
-  "description": "Fully autonomous AI development loop using Claude Code + Linear",
+  "description": "Fully autonomous AI development loop using Claude Code",
   "scripts": {
     "start": "bun run src/main.ts",
     "setup": "bun run src/setup-project.ts",
-    "explain": "bun run src/explain.ts",
     "validate": "bun run src/validate.ts",
-    "sync-templates": "bun run src/sync-templates.ts",
     "test": "bun test",
     "check": "bunx biome check ./src",
     "typecheck": "bunx tsc --noEmit",
@@ -17,7 +15,6 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.72",
-    "@linear/sdk": "^76.0.0",
     "hono": "^4.12.7",
     "octokit": "^5.0.5",
     "yaml": "^2.8.2",

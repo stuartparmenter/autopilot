@@ -1,22 +1,20 @@
 #!/usr/bin/env bun
 
 /**
- * validate.ts — Dry-run validation for config, credentials, and prompt templates.
+ * validate.ts — Dry-run validation for config, credentials, and connectivity.
  *
  * Usage: bun run validate <project-path>
  *
- * Runs read-only checks against config, environment variables, Linear, GitHub,
- * and prompt templates without spawning agents or modifying any state.
+ * Runs read-only checks against config, environment variables, GitHub,
+ * and Dolt connectivity without spawning agents or modifying any state.
  */
 
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AutopilotConfig } from "./lib/config";
 import { loadConfig, resolveProjectPath } from "./lib/config";
 import { detectRepo, getGitHubClient } from "./lib/github";
-import { resolveLinearIds } from "./lib/linear";
 import { error, header, info, ok, warn } from "./lib/logger";
-import { AUTOPILOT_ROOT, loadPrompt } from "./lib/prompt";
 import { withRetry } from "./lib/retry";
 
 // --- Exported check functions (used by validate CLI and tests) ---
@@ -27,31 +25,21 @@ import { withRetry } from "./lib/retry";
  */
 export async function checkConfig(projectPath: string): Promise<string> {
   const config = loadConfig(projectPath);
-  return `Loaded — team: ${config.linear.team || "(not set)"}`;
+  return `Loaded — dolt port: ${config.beads.dolt_port}`;
 }
 
 /**
  * Check 2: Verify required environment variables are present.
- * LINEAR_API_KEY or OAuth must be configured, GITHUB_TOKEN is required.
- * Note: ANTHROPIC_API_KEY is checked separately by checkAnthropicAuth()
- * because the Agent SDK can inherit auth from a Claude Code subscription,
- * making it a soft warning rather than a hard requirement.
+ * GITHUB_TOKEN is required. ANTHROPIC_API_KEY is checked separately.
  */
-export async function checkEnvVars(opts?: {
-  hasOAuth?: boolean;
-}): Promise<string> {
+export async function checkEnvVars(): Promise<string> {
   const missing: string[] = [];
-  if (!process.env.LINEAR_API_KEY && !opts?.hasOAuth)
-    missing.push("LINEAR_API_KEY (or configure OAuth)");
   if (!process.env.GITHUB_TOKEN) missing.push("GITHUB_TOKEN");
 
   if (missing.length > 0) {
     throw new Error(`Missing environment variables: ${missing.join(", ")}`);
   }
-  const linearAuth = process.env.LINEAR_API_KEY
-    ? "LINEAR_API_KEY"
-    : "Linear OAuth";
-  return `${linearAuth}, GITHUB_TOKEN — all set`;
+  return "GITHUB_TOKEN — set";
 }
 
 /**
@@ -90,21 +78,6 @@ export async function checkCloneDir(projectPath: string): Promise<string> {
 }
 
 /**
- * Check 4: Test the Linear connection by resolving all configured IDs.
- * Confirms the team exists and all workflow states can be found.
- * Uses withRetry() to avoid false negatives from transient errors.
- */
-export async function checkLinear(config: AutopilotConfig): Promise<string> {
-  if (!config.linear.team) throw new Error("linear.team is not set in config");
-  const linearIds = await resolveLinearIds(config.linear);
-  const stateCount = Object.keys(linearIds.states).length;
-  const initiativePart = linearIds.initiativeName
-    ? `, initiative: ${linearIds.initiativeName}`
-    : "";
-  return `Connected — team ${config.linear.team}, ${stateCount} states resolved${initiativePart}`;
-}
-
-/**
  * Check 5: Test the GitHub connection by authenticating and detecting the repo.
  * Uses withRetry() to avoid false negatives from transient errors.
  */
@@ -122,47 +95,6 @@ export async function checkGitHub(
     "validateGitHub",
   );
   return `Connected as ${user.login} — repo ${owner}/${repo}`;
-}
-
-/**
- * Check 6: Load all bundled prompt templates and verify they render without
- * leaving unsubstituted {{VARIABLE}} placeholders.
- * Also checks for any project-local overrides at <projectPath>/.autopilot/prompts/.
- */
-export async function checkPromptTemplates(
-  projectPath: string,
-): Promise<string> {
-  const promptsDir = resolve(AUTOPILOT_ROOT, "prompts");
-  const files = readdirSync(promptsDir).filter((f) => f.endsWith(".md"));
-
-  const issues: string[] = [];
-  for (const file of files) {
-    const name = file.replace(/\.md$/, "");
-    const template = loadPrompt(name, projectPath);
-
-    // Auto-extract all {{VARIABLE}} patterns and fill with dummy values
-    const vars: Record<string, string> = {};
-    for (const match of template.matchAll(/\{\{([A-Z_]+)\}\}/g)) {
-      vars[match[1]] = "SAMPLE";
-    }
-
-    // Render and verify no patterns remain
-    let rendered = template;
-    for (const [key, value] of Object.entries(vars)) {
-      rendered = rendered.replaceAll(`{{${key}}}`, value);
-    }
-    const remaining = rendered.match(/\{\{[A-Z_]+\}\}/g);
-    if (remaining) {
-      issues.push(`${file}: unsubstituted: ${remaining.join(", ")}`);
-    }
-  }
-
-  if (issues.length > 0) {
-    throw new Error(issues.join("; "));
-  }
-
-  const names = files.map((f) => f.replace(/\.md$/, "")).join(", ");
-  return `${files.length} template(s) OK — ${names}`;
 }
 
 /**
@@ -241,12 +173,10 @@ export async function runPreflight(
   results: CheckResult[];
   warnings: CheckResult[];
 }> {
-  const hasOAuth = !!config.linear.oauth;
   const checks: Array<[string, () => Promise<string>]> = [
-    ["Environment variables", () => checkEnvVars({ hasOAuth })],
+    ["Environment variables", () => checkEnvVars()],
     ["Git remote", () => checkGitRemote(projectPath, config)],
     ["Clone directory", () => checkCloneDir(projectPath)],
-    ["Linear connection", () => checkLinear(config)],
     ["GitHub connection", () => checkGitHub(projectPath, config)],
   ];
 
@@ -282,10 +212,8 @@ if (import.meta.main) {
   if (!projectArg) {
     console.log("Usage: bun run validate <project-path>");
     console.log();
-    console.log(
-      "Validates config, credentials, Linear connection, GitHub connection,",
-    );
-    console.log("and prompt templates without modifying any state.");
+    console.log("Validates config, credentials, GitHub connection,");
+    console.log("and Dolt connectivity without modifying any state.");
     process.exit(1);
   }
 
@@ -295,7 +223,7 @@ if (import.meta.main) {
   info(`Project: ${projectPath}`);
   console.log();
 
-  // Load config once for checks that need it (Linear, GitHub)
+  // Load config once for checks that need it (GitHub)
   let config: AutopilotConfig | null = null;
   try {
     config = loadConfig(projectPath);
@@ -303,18 +231,10 @@ if (import.meta.main) {
     // Config failure is captured in the checkConfig result below
   }
 
-  const hasOAuth = !!config?.linear.oauth;
   const checks: Array<[string, () => Promise<string>]> = [
     ["Config", () => checkConfig(projectPath)],
-    ["Environment variables", () => checkEnvVars({ hasOAuth })],
+    ["Environment variables", () => checkEnvVars()],
     ["Clone directory", () => checkCloneDir(projectPath)],
-    [
-      "Linear connection",
-      () => {
-        if (!config) throw new Error("Skipped — config failed to load");
-        return checkLinear(config);
-      },
-    ],
     [
       "GitHub connection",
       () => {
@@ -322,7 +242,6 @@ if (import.meta.main) {
         return checkGitHub(projectPath, config);
       },
     ],
-    ["Prompt templates", () => checkPromptTemplates(projectPath)],
   ];
 
   // Non-blocking checks — failures are warnings, not errors

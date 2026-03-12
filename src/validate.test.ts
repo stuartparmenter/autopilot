@@ -10,7 +10,6 @@ import {
   checkConfig,
   checkEnvVars,
   checkGitRemote,
-  checkPromptTemplates,
   runPreflight,
 } from "./validate";
 
@@ -31,10 +30,10 @@ afterEach(() => {
 });
 
 describe("checkConfig", () => {
-  test("passes with valid config and returns team name", async () => {
+  test("passes with valid config", async () => {
     writeConfig("linear:\n  team: ENG\n");
     const result = await checkConfig(tmpDir);
-    expect(result).toContain("ENG");
+    expect(result).toContain("Loaded");
   });
 
   test("throws actionable error when config file is missing", async () => {
@@ -60,7 +59,7 @@ describe("checkConfig", () => {
 });
 
 describe("checkEnvVars", () => {
-  const envKeys = ["LINEAR_API_KEY", "GITHUB_TOKEN"] as const;
+  const envKeys = ["GITHUB_TOKEN"] as const;
   const savedEnv: Partial<Record<(typeof envKeys)[number], string>> = {};
 
   beforeEach(() => {
@@ -79,53 +78,15 @@ describe("checkEnvVars", () => {
     }
   });
 
-  test("passes when all required variables are set", async () => {
-    process.env.LINEAR_API_KEY = "lin_api_test";
+  test("passes when GITHUB_TOKEN is set", async () => {
     process.env.GITHUB_TOKEN = "ghp_test";
     const result = await checkEnvVars();
-    expect(result).toContain("all set");
-  });
-
-  test("throws with clear message when LINEAR_API_KEY is missing", async () => {
-    delete process.env.LINEAR_API_KEY;
-    process.env.GITHUB_TOKEN = "ghp_test";
-    await expect(checkEnvVars()).rejects.toThrow("LINEAR_API_KEY");
+    expect(result).toContain("GITHUB_TOKEN");
   });
 
   test("throws with clear message when GITHUB_TOKEN is missing", async () => {
-    process.env.LINEAR_API_KEY = "lin_api_test";
     delete process.env.GITHUB_TOKEN;
     await expect(checkEnvVars()).rejects.toThrow("GITHUB_TOKEN");
-  });
-
-  test("does not check Anthropic keys (handled by checkAnthropicAuth)", async () => {
-    process.env.LINEAR_API_KEY = "lin_api_test";
-    process.env.GITHUB_TOKEN = "ghp_test";
-    // No Anthropic keys set — checkEnvVars should still pass
-    const result = await checkEnvVars();
-    expect(result).toContain("all set");
-  });
-
-  test("error message names all missing variables", async () => {
-    delete process.env.LINEAR_API_KEY;
-    delete process.env.GITHUB_TOKEN;
-    await expect(checkEnvVars()).rejects.toThrow("LINEAR_API_KEY");
-    await expect(checkEnvVars()).rejects.toThrow("GITHUB_TOKEN");
-  });
-
-  test("passes when LINEAR_API_KEY is missing but hasOAuth is true", async () => {
-    delete process.env.LINEAR_API_KEY;
-    process.env.GITHUB_TOKEN = "ghp_test";
-    const result = await checkEnvVars({ hasOAuth: true });
-    expect(result).toContain("all set");
-  });
-
-  test("still requires GITHUB_TOKEN even when hasOAuth is true", async () => {
-    delete process.env.LINEAR_API_KEY;
-    delete process.env.GITHUB_TOKEN;
-    await expect(checkEnvVars({ hasOAuth: true })).rejects.toThrow(
-      "GITHUB_TOKEN",
-    );
   });
 });
 
@@ -217,18 +178,6 @@ describe("checkCloneDir", () => {
   });
 });
 
-describe("checkPromptTemplates", () => {
-  test("returns OK for all bundled templates", async () => {
-    const result = await checkPromptTemplates(tmpDir);
-    expect(result).toContain("OK");
-  });
-
-  test("result includes count and template names", async () => {
-    const result = await checkPromptTemplates(tmpDir);
-    expect(result).toMatch(/\d+ template\(s\) OK/);
-  });
-});
-
 describe("checkGitRemote", () => {
   test("passes when git remote origin is configured", async () => {
     Bun.spawnSync(["git", "init", tmpDir]);
@@ -264,14 +213,8 @@ describe("checkGitRemote", () => {
   });
 });
 
-// checkGitHubPermissions tests are skipped because mocking the Octokit singleton
-// in this test file would require module-level mocking that conflicts with the
-// existing singleton-based test patterns. The function is covered by the
-// integration test in the CI environment via `bun run validate`.
-
 describe("runPreflight", () => {
   const envKeys = [
-    "LINEAR_API_KEY",
     "GITHUB_TOKEN",
     "ANTHROPIC_API_KEY",
     "CLAUDE_API_KEY",
@@ -306,7 +249,6 @@ describe("runPreflight", () => {
 
   test("returns passed: false with details when env var checks fail", async () => {
     writeMinimalConfig();
-    delete process.env.LINEAR_API_KEY;
     delete process.env.GITHUB_TOKEN;
 
     const { loadConfig } = await import("./lib/config");
@@ -321,15 +263,14 @@ describe("runPreflight", () => {
 
   test("continues checking after first failure — all checks have results", async () => {
     writeMinimalConfig();
-    delete process.env.LINEAR_API_KEY;
     delete process.env.GITHUB_TOKEN;
 
     const { loadConfig } = await import("./lib/config");
     const config = loadConfig(tmpDir);
     const result = await runPreflight(tmpDir, config);
 
-    // runPreflight runs 5 blocking checks: env vars, git remote, clone dir, linear, github
-    expect(result.results).toHaveLength(5);
+    // runPreflight runs 4 blocking checks: env vars, git remote, clone dir, github
+    expect(result.results).toHaveLength(4);
     expect(result.results.every((r) => typeof r.name === "string")).toBe(true);
     expect(result.results.every((r) => typeof r.pass === "boolean")).toBe(true);
     expect(result.results.every((r) => typeof r.detail === "string")).toBe(
@@ -339,7 +280,6 @@ describe("runPreflight", () => {
 
   test("missing Anthropic key is a warning, not a blocking failure", async () => {
     writeMinimalConfig();
-    process.env.LINEAR_API_KEY = "lin_api_test";
     process.env.GITHUB_TOKEN = "ghp_test";
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.CLAUDE_API_KEY;
