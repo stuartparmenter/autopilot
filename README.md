@@ -1,60 +1,49 @@
 # autopilot
 
-A fully autonomous AI development loop using **Claude Code** + **Linear**.
+A fully autonomous AI development loop using **Claude Code** + **Beads**.
 
-Plans new features, implements them, opens PRs, and fixes CI failures — no human in the loop. A planning team with a Product Manager thinks about what the product should do next, not just what's broken. Four automated loops keep your project moving forward:
+Plans new features, implements them, opens PRs, and fixes CI failures — no human in the loop. A knowledge graph provides institutional memory across agent runs. A condition-based orchestrator dispatches persona+skill pairs to keep your project moving forward:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                 │
-│  Linear (Ready) ──→ Claude Code ──→ Tests ──→ PR ──→ Linear    │
-│       ↑              (worktree)      pass?     ✓    (In Review) │
-│       │                               │                         │
-│       │                               ✗                         │
-│       │                               ↓                         │
-│       │                          Linear (Blocked)               │
+│  Orchestrator (condition monitor)                               │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ Poll SystemState:                                        │   │
+│  │   Ready queue has items?  → Engineer + implement-bead    │   │
+│  │   Backlog below threshold?→ CTO + planning-cycle         │   │
+│  │   PR CI failed?           → Engineer + fix-pr            │   │
+│  │   PR needs review?        → Staff Engineer + review-batch│   │
+│  │   Project has triage?     → Director + own-project       │   │
+│  │   Batch complete?         → CTO + post-flight            │   │
+│  └──────────────────────────────────────────────────────────┘   │
 │       │                                                         │
-│       │                        EXECUTOR LOOP                    │
+│       ▼                                                         │
+│  SlotManager                                                    │
+│  ┌────────────────────┬─────────────────────┐                   │
+│  │  Builder slots (5) │  Planner slots (3)  │                   │
+│  │  Engineers          │  CTO, Director,     │                   │
+│  │  (implement, fix)   │  Staff Eng, P. Eng  │                   │
+│  └────────────────────┴─────────────────────┘                   │
 │       │                                                         │
-│  ─────┼─────────────────────────────────────────────────────    │
-│       │                                                         │
-│  Project Owner ──→ accepts & decomposes ──→ Ready               │
-│       ↑                                                         │
-│       │                                                         │
-│  Linear (Triage) ←── Claude Code ←── Codebase scan             │
-│                       (CTO Agent Team)                          │
-│                       ├─ Product Manager                        │
-│                       ├─ Scout                                  │
-│                       ├─ Security Analyst                       │
-│                       ├─ Quality Engineer                       │
-│                       └─ Architect                              │
+│       ▼                                                         │
+│  Beads (Dolt-backed work items)                                 │
+│  Ready → In Progress → In Review → Done                        │
 │                                                                 │
-│                  PLANNING + PROJECTS LOOPS                      │
-│                                                                 │
-│  ───────────────────────────────────────────────────────────    │
-│                                                                 │
-│  Linear (In Review) ──→ Check PR ──→ CI failed? ──→ Fixer      │
-│                                      Conflict?       (worktree) │
-│                                         │               │       │
-│                                         ✗               ↓       │
-│                                        skip       Push fix to   │
-│                                                   existing PR   │
-│                          ↓                                      │
-│                     CI passes ──→ Auto-merge ──→ Done           │
-│                                                                 │
-│                        MONITOR LOOP                             │
+│  Knowledge Graph (gk MCP server)                                │
+│  Decisions, components, patterns — persistent across sessions   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Executor**: Pulls unblocked "Ready" issues from Linear, spawns Claude Code agents in isolated git worktrees, implements the change, runs tests, pushes a PR (with auto-merge enabled), and updates Linear. Runs multiple agents in parallel.
+**Orchestrator**: A single poll loop evaluates conditions against system state (bead queue, GitHub PRs, knowledge graph health) and dispatches agents deterministically. Same conditions produce the same actions — no agent decides its own adventure.
 
-**Monitor**: Watches issues in "In Review" state. Checks their linked GitHub PRs for CI failures, merge conflicts, and review feedback. Spawns fixer agents to repair CI/conflicts automatically, and review-responder agents to address requested changes. If a fix can't be applied after max attempts, moves the issue to "Blocked".
+**Personas + Skills**: Nine personas (CEO, CTO, Director, Staff Engineer, Principal Engineer, Engineer, Security, Product, QA) defined as Claude Code agent `.md` files. Each is paired with composable skills (implement-bead, fix-pr, planning-cycle, etc.) at dispatch time. New skills can be added without modifying personas.
 
-**Planning**: When the backlog runs low, a CTO agent leads a team of specialists — Scout, Security Analyst, Quality Engineer, Architect, and a **Product Manager** — to investigate the codebase. The PM maintains a living Product Brief, tracks strategic continuity across sessions, and identifies opportunities for new features and capabilities alongside technical improvements. Findings are filed as well-planned issues to "Triage" via Issue Planner subagents.
+**Knowledge Graph**: The gk MCP server provides institutional memory — architectural decisions, component models, pattern records — that outlives any individual agent session. Engineers write observations during work; the CTO curates at post-flight.
 
-**Projects**: Polls active projects for triage issues. Spawns project-owner agents that accept or defer issues, spawn technical planners to decompose accepted issues into Ready sub-issues, and track project health.
+**Beads**: Dolt-backed work items replace Linear as the source of truth. Local-first, hash-based IDs, dependency graphs, clean state machine (`bd ready` / `bd claim` / `bd close`). No API keys needed for task management.
 
-**Dashboard**: A web UI shows live agent activity, execution history, and queue status.
+**Dashboard**: A web UI shows live agent activity, bead queue state, and knowledge graph health.
 
 ## Security Notice
 
@@ -70,13 +59,15 @@ If bubblewrap/socat are not installed on Linux, the SDK may silently fall back t
 - Run in a **container or VM** for defense in depth, even with sandboxing enabled
 - Use **git worktrees** (the default) so agents work on branches, not main
 - Review PRs before merging, or use `github.automerge: true` with branch protection rules so CI gates the merge
-- Enable `sandbox.network_restricted: true` to limit agents to only GitHub and Linear APIs
+- Enable `sandbox.network_restricted: true` to limit agents to only GitHub and Dolt APIs
 - Start with `executor.parallel: 1` and watch the dashboard closely before scaling up
 
 ## Prerequisites
 
 - [Bun](https://bun.sh) runtime
-- [Linear](https://linear.app) account with API key
+- [Dolt](https://www.dolthub.com/blog/getting-started/) — MySQL-compatible version-controlled database
+- Beads CLI (`bd`) — work item management on Dolt
+- [gk](https://github.com/stuartparmenter/gk) — knowledge graph MCP server
 - [GitHub](https://github.com/settings/tokens) personal access token (scope: `repo`)
 - Claude Code authenticated (the Agent SDK handles the rest)
 - Git
@@ -98,12 +89,17 @@ bun run setup /path/to/your/project
 #    - /path/to/your/project/.autopilot.yml  (config)
 
 # 4. Set your API keys
-export LINEAR_API_KEY=lin_api_...
 export GITHUB_TOKEN=ghp_...
 
-# 5. Start the loop
+# 5. Start Dolt (beads needs a running Dolt server)
+#    See beads docs for setup
+
+# 6. Start the loop
 bun run start /path/to/your/project
 # Dashboard at http://localhost:7890
+
+# Or: launch the CEO agent for interactive use
+bun run ceo /path/to/your/project
 ```
 
 ## Project Structure
@@ -111,52 +107,77 @@ bun run start /path/to/your/project
 ```
 autopilot/
 ├── README.md
-├── LICENSE                                # MIT
-├── package.json                           # Bun project, dependencies
+├── LICENSE                                    # MIT
+├── package.json                               # Bun project, dependencies
 ├── .claude/
-│   ├── settings.json                      # Agent Teams flag
-│   └── CLAUDE.md                          # Context for this repo
-├── prompts/
-│   ├── executor.md                        # Prompt for issue execution agents
-│   ├── fixer.md                           # Prompt for PR fixer agents
-│   ├── cto.md                             # CTO planning agent prompt
-│   ├── briefing-agent.md                  # Briefing agent prompt
-│   ├── scout.md                           # Scout specialist prompt
-│   ├── security-analyst.md                # Security analyst prompt
-│   ├── quality-engineer.md                # Quality engineer prompt
-│   ├── architect.md                       # Architect prompt
-│   └── issue-planner.md                   # Issue planner subagent prompt
+│   ├── settings.json                          # Agent Teams flag
+│   └── CLAUDE.md                              # Context for this repo
 ├── plugins/
-│   └── planning-skills/                   # Domain knowledge skills for planning
+│   ├── autopilot-core/                        # ALL agents get this
+│   │   ├── agents/                            # All 9 personas
+│   │   │   ├── ceo.md                         # Interactive human interface
+│   │   │   ├── cto.md                         # Strategy, KG ownership
+│   │   │   ├── director.md                    # Project ownership
+│   │   │   ├── staff-engineer.md              # Decomposition, review pipeline
+│   │   │   ├── principal-engineer.md          # Cross-project coherence
+│   │   │   ├── engineer.md                    # Implementation, CI fixes
+│   │   │   ├── security.md                    # Threat modeling + code audit
+│   │   │   ├── product.md                     # Strategy + UX review
+│   │   │   └── qa.md                          # Coverage gaps + test review
+│   │   ├── skills/                            # Shared skills
+│   │   │   ├── kg-conventions/                # KG query/write conventions
+│   │   │   ├── investigate/                   # Codebase investigation
+│   │   │   └── review-pr/                     # PR review with verdict
+│   │   └── hooks/                             # PreToolUse safety, worktree setup
+│   ├── autopilot-leadership/                  # CTO, Director, CEO
+│   │   └── skills/
+│   │       ├── planning-cycle/                # CTO: dispatch specialists, file epics
+│   │       ├── pre-flight/                    # CTO: architectural contracts
+│   │       ├── post-flight/                   # CTO: KG curation
+│   │       ├── own-project/                   # Director: groom, status, health
+│   │       └── approve-external-issues/       # CEO: review inbox
+│   ├── autopilot-engineering/                 # Engineer, Staff Eng, Principal Eng
+│   │   └── skills/
+│   │       ├── implement-bead/                # Engineer: implement a bead
+│   │       ├── fix-pr/                        # Engineer: diagnose CI, fix, push
+│   │       ├── respond-review/                # Engineer: address PR feedback
+│   │       ├── decompose-epic/                # Staff Eng: break epic into beads
+│   │       ├── review-batch/                  # Staff Eng: decide review legs
+│   │       ├── cross-check-batch/             # Principal Eng: conflict detection
+│   │       └── seed-kg/                       # Principal Eng: first-run KG population
+│   ├── autopilot-security/                    # Security specialist
+│   │   └── skills/
+│   │       └── owasp-top-10/                  # OWASP security patterns
+│   └── autopilot-product/                     # Product specialist
+│       └── skills/
+│           └── product-strategy/              # Product strategy patterns
 ├── src/
 │   ├── lib/
-│   │   ├── config.ts                      # YAML config loading with types
-│   │   ├── linear.ts                      # Linear SDK wrapper
-│   │   ├── github.ts                      # GitHub/Octokit wrapper (PR status)
-│   │   ├── claude.ts                      # Agent SDK wrapper with activity streaming
-│   │   ├── prompt.ts                      # Template loading and rendering
-│   │   └── logger.ts                      # Colored console output
-│   ├── main.ts                            # Entry point — loop + dashboard
-│   ├── executor.ts                        # Executor module (parallel slots)
-│   ├── monitor.ts                         # Monitor module (PR status + fixers)
-│   ├── planner.ts                         # Planning module (threshold + scan)
-│   ├── server.ts                          # Hono dashboard (htmx partials)
-│   ├── state.ts                           # In-memory app state
-│   └── setup-project.ts                   # Onboard a new project
+│   │   ├── config.ts                          # YAML config loading with types
+│   │   ├── beads.ts                           # Beads/Dolt integration
+│   │   ├── dolt.ts                            # Dolt database operations
+│   │   ├── github.ts                          # GitHub/Octokit wrapper
+│   │   ├── agent-runner.ts                    # Agent SDK wrapper
+│   │   ├── slots.ts                           # Functional slot allocation
+│   │   └── logger.ts                          # Colored console output
+│   ├── main.ts                                # Entry point — loop + dashboard
+│   ├── conditions.ts                          # Condition evaluator + dispatch
+│   ├── server.ts                              # Hono dashboard (htmx partials)
+│   ├── state.ts                               # In-memory app state
+│   └── setup-project.ts                       # Onboard a new project
 ├── templates/
-│   ├── CLAUDE.md.template                 # Project context template
-│   ├── autopilot.yml.template      # Per-project config template
-│   └── linear-labels.json                 # Standard label definitions
+│   ├── CLAUDE.md.template                     # Project context template
+│   └── autopilot.yml.template                 # Per-project config template
 └── docs/
-    ├── architecture.md                    # System design
-    ├── adding-a-project.md                # Onboarding guide
-    └── tuning.md                          # Parallelism, costs, debugging
+    ├── v2-architecture.md                     # System design
+    ├── adding-a-project.md                    # Onboarding guide
+    └── tuning.md                              # Parallelism, costs, debugging
 ```
 
 ## Usage
 
 ```bash
-# Start the loop (executor + planning + dashboard)
+# Start the loop (orchestrator + dashboard)
 bun run start /path/to/project
 
 # Custom dashboard port
@@ -165,16 +186,19 @@ bun run start /path/to/project --port 3000
 # Expose dashboard to the network (WARNING: no authentication)
 bun run start /path/to/project --host 0.0.0.0
 
+# Interactive CEO agent
+bun run ceo /path/to/project
+
 # Onboard a new project
 bun run setup /path/to/project
 ```
 
 The single `bun run start` command:
-1. Connects to Linear and resolves team/state IDs
+1. Connects to the Dolt server and validates beads access
 2. Starts a Hono web dashboard on port 7890, bound to `127.0.0.1` by default (configurable with `--port` and `--host`)
 3. Enters the main loop:
-   - Fills executor slots (up to `executor.parallel` agents)
-   - Checks if the planning loop should run (backlog threshold)
+   - Evaluates conditions against system state (bead queue, GitHub PRs, KG health)
+   - Dispatches persona+skill pairs into available slots
    - Waits for any agent to finish or 5-minute poll interval
 
 ## Configuration
@@ -183,40 +207,39 @@ The `.autopilot.yml` file in your project controls everything. Key settings:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `linear.team` | Linear team key (e.g., "ENG") | *required* |
-| `linear.states.ready` | State name for ready issues | `"Todo"` |
-| `github.repo` | GitHub repo override ("owner/repo") | auto-detect |
 | `project.name` | Project name | *required* |
 | `project.test_command` | Command to run tests | `""` |
 | `project.lint_command` | Command to run linter | `""` |
-| `executor.parallel` | Max concurrent agents | `3` |
-| `executor.timeout_minutes` | Max time per issue | `30` |
-| `executor.model` | Model for executor agents | `"sonnet"` |
-| `planning.model` | Model for planning agents | `"opus"` |
-| `projects.model` | Model for project owner agents | `"opus"` |
-| `planning.max_issues_per_run` | Max issues the planning loop files | `5` |
-| `planning.min_ready_threshold` | Plan when fewer Ready issues than this | `5` |
-| `planning.timeout_minutes` | Max time for planning run | `90` |
-| `projects.enabled` | Enable the projects loop | `true` |
-| `projects.max_active_projects` | Cap on concurrent project owner agents | `5` |
+| `beads.dolt_port` | Port for the local Dolt SQL server | `3307` |
+| `beads.dolt_data_dir` | Dolt data directory | `.beads/dolt/` |
+| `knowledge_graph.provider` | KG backend (`sqlite` or `dolt`) | `"dolt"` |
+| `knowledge_graph.db_path` | KG database path (sqlite mode) | `".gk/knowledge.db"` |
+| `github.repo` | GitHub repo override ("owner/repo") | auto-detect |
 | `github.automerge` | Enable auto-merge on PRs (requires branch protection) | `false` |
-| `monitor.respond_to_reviews` | Spawn agents to address PR review feedback | `false` |
+| `executor.parallel` | Max concurrent agents (total) | `8` |
+| `executor.builder_slots` | Max concurrent builder agents (Engineers) | `5` |
+| `executor.planner_slots` | Max concurrent planner agents (CTO, Director, etc.) | `3` |
+| `executor.timeout_minutes` | Max time per agent | `30` |
+| `executor.model` | Model for builder agents | `"sonnet"` |
+| `planning.model` | Model for planner agents | `"opus"` |
+| `planning.min_ready_threshold` | Plan when fewer ready beads than this | `5` |
+| `planning.timeout_minutes` | Max time for planning run | `90` |
 | `sandbox.enabled` | OS-level sandbox for agent bash commands | `true` |
-| `sandbox.network_restricted` | Restrict network to GitHub + Linear only | `false` |
+| `sandbox.network_restricted` | Restrict network to GitHub + Dolt only | `false` |
 | `sandbox.extra_allowed_domains` | Additional domains when network is restricted | `[]` |
 
 See [templates/autopilot.yml.template](templates/autopilot.yml.template) for the full config reference.
 
 ## How It Works
 
-1. **Linear is the source of truth.** Issue states drive the entire system. The executor reads from Ready, writes to In Review/Blocked. The monitor watches In Review. The planning loop writes to Triage. Project owners triage into Ready.
-2. **Prompts are the product.** The TypeScript scripts are just plumbing. The prompts in `prompts/` and agent definitions in `plugins/` define what Claude actually does — they're the highest-leverage thing to customize.
-3. **Fully autonomous by default.** The planning loop files to Triage — not just tech debt and bug fixes, but new features, capability extensions, and product improvements identified by the PM agent. Project owners triage and decompose into Ready sub-issues. The executor implements and opens PRs with auto-merge. The monitor fixes CI failures, resolves merge conflicts, and responds to review feedback. No human intervention required — but you can still review PRs and triage issues if you want oversight.
-4. **Git worktrees provide isolation.** Each executor and fixer instance works in its own worktree, so parallel execution doesn't cause conflicts.
-5. **Agent SDK for execution.** Claude Code agents are spawned via the `@anthropic-ai/claude-agent-sdk` with activity streaming for live dashboard updates.
-6. **PR monitoring is automatic.** The monitor checks GitHub PRs linked to In Review issues. CI failures, merge conflicts, and review feedback are handled automatically; unfixable issues move to Blocked.
+1. **Beads are the source of truth.** Bead states drive the entire system. The orchestrator monitors conditions (ready queue depth, PR status, project health) and dispatches agents when thresholds are met. Beads move through states: Ready, In Progress, In Review, Done.
+2. **Personas + skills are the product.** The TypeScript scripts are just plumbing. The persona definitions in `plugins/*/agents/` and skill prompts in `plugins/*/skills/` define what Claude actually does — they're the highest-leverage thing to customize.
+3. **Fully autonomous by default.** The CTO spawns specialist subagents (Principal Engineer, Security, Product, QA) to investigate the codebase and synthesize findings into project epics. Directors groom and decompose via Staff Engineers. Engineers implement and open PRs with auto-merge. The Staff Engineer reviews PRs with conditional specialist legs. No human intervention required — but you can launch `bun run ceo` for interactive oversight.
+4. **Knowledge graph provides memory.** The gk MCP server stores architectural decisions, component models, and patterns that persist across agent sessions. Engineers write observations during work; the CTO curates at post-flight. Knowledge that nobody queries fades in ranking (Ebbinghaus decay); frequently accessed knowledge strengthens (Hebbian reinforcement).
+5. **Condition-based dispatch.** The orchestrator is deterministic: it checks 11 conditions each poll cycle and spawns the right persona+skill pair. No agent reads an inbox and decides what to do — the condition table IS the decision engine.
+6. **Git worktrees provide isolation.** Each agent works in its own worktree via Claude Code's built-in `EnterWorktree` tool, so parallel execution doesn't cause conflicts. Engineers rebase before pushing as an end-of-session step.
 
-See [docs/architecture.md](docs/architecture.md) for the full system design.
+See [docs/v2-architecture.md](docs/v2-architecture.md) for the full system design.
 
 ## Cost
 
