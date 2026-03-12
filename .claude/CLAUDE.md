@@ -4,18 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repo Is
 
-A fully autonomous AI development loop using Claude Code + Linear. Users clone this repo and point it at their own project repos. The toolkit provides:
-- **Prompts** (`prompts/`) — the core product, defining what Claude Code agents do
+A fully autonomous AI development loop using Claude Code + Beads (Dolt-backed). Users clone this repo and point it at their own project repos. The toolkit provides:
+- **Plugins** (`plugins/autopilot-{core,leadership,engineering,security,product}/`) — personas and skills that define what agents do
 - **TypeScript scripts** (Bun runtime) — orchestration plumbing
 - **A web dashboard** (Hono + htmx) — live monitoring
-- **Templates** (`templates/`) — for onboarding new projects
 
 ## Commands
 
 ```bash
 bun install                  # Install dependencies
-bun run start <project-path> # Start executor + monitor + planning + dashboard
+bun run start <project-path> # Start condition-based orchestrator + dashboard
 bun run setup <project-path> # Onboard a new project
+bun run ceo                  # Launch interactive Claude session with CEO persona
 
 bun test                     # Run all tests (Bun test runner)
 bun test src/lib/config.test.ts  # Run a single test file
@@ -29,64 +29,52 @@ CI runs `typecheck`, `check`, and `bun test` on all PRs (`.github/workflows/lint
 
 ## Architecture
 
-### Four Loops, One Entry Point
+### Condition-Based Orchestrator
 
-`bun run start` (`src/main.ts`) runs a single event loop that drives four subsystems:
+`bun run start` (`src/main.ts`) runs a single poll loop that:
+1. Snapshots `SystemState` (bead queue depths, slot availability, PR statuses, knowledge graph state)
+2. Evaluates conditions defined in `src/conditions.ts` against the snapshot
+3. Dispatches persona+skill agent pairs via `SlotManager` when conditions fire
 
-1. **Executor** (`src/executor.ts`) — Pulls "Ready" leaf issues from Linear (team-wide, skipping parents with children), spawns Claude Code agents in isolated git clones. Each agent implements the issue, runs tests, pushes a PR, and updates Linear to "In Review". Runs up to `executor.parallel` agents concurrently.
+Conditions (11 total, in `src/conditions.ts`): `ready-queue`, `backlog-low`, `pr-ci-failed`, `pr-needs-review`, `project-triage`, `kg-empty`, etc. Each condition is a pure function: `(state: SystemState) => DispatchDecision | null`.
 
-2. **Monitor** (`src/monitor.ts`) — Checks "In Review" issues for CI failures or merge conflicts on their linked GitHub PRs. Spawns fixer agents to repair problems. Fixers check out the existing PR branch in a clone and push fixes.
+Agents are persona+skill pairs dispatched via Agent SDK `query()` with plugins. `SlotManager` (`src/lib/slots.ts`) manages builder vs planner slot allocation.
 
-3. **Planning** (`src/planner.ts`) — When the backlog drops below `min_ready_threshold`, a CTO agent leads a team of specialists (PM, Scout, Security Analyst, Quality Engineer, Architect) to investigate the codebase. Groups findings into projects under the initiative, then spawns Issue Planner agents to file improvement issues to Linear. Posts initiative-level status updates.
+### Beads Are the Source of Truth
 
-4. **Projects** (`src/projects.ts`) — Polls active projects under the initiative for triage issues. Spawns project-owner agents that triage issues, spawn technical planners to decompose into sub-issues, monitor project health, and complete projects when all work is done.
-
-### Linear Is the Source of Truth
-
-Issue state transitions drive the system:
-```
-Planning → Triage → (Project Owner accepts) → Technical Planner → Ready (sub-issues)
-                                                                      ↓
-Ready → In Progress → In Review → Done
-             ↓              ↓
-          Blocked       (fixer loop)
-```
-The planning system writes to Triage. Project owners accept triage issues and spawn technical planners that decompose into Ready sub-issues. The executor reads Ready leaf issues (team-wide), moves to In Progress immediately (preventing double-pickup), then to In Review or Blocked. The monitor watches In Review.
+Bead state transitions (managed via the `bd` CLI) drive the system. Beads flow through states tracked in a Dolt database. The orchestrator reads bead states to evaluate conditions and dispatch agents.
 
 ### Key Modules
 
-- **`src/projects.ts`** — Projects loop. `checkProjects()` queries active projects under the initiative for triage issues, spawns project-owner agents.
-- **`src/lib/claude.ts`** — Wraps `@anthropic-ai/claude-agent-sdk` `query()`. Handles clone creation/cleanup, timeout/inactivity watchdogs, activity streaming to `AppState`, and a **spawn gate** (sequential agent init to avoid `~/.claude.json` race conditions).
+- **`src/conditions.ts`** — Condition evaluator. Pure functions mapping `SystemState` to dispatch decisions.
+- **`src/lib/agent-runner.ts`** — Wraps Agent SDK `query()`. Plugin-aware, maps personas to team plugins via `getPluginsForPersona()`.
+- **`src/lib/beads.ts`** — `bd` CLI wrapper for bead state management (create, transition, query).
+- **`src/lib/slots.ts`** — `SlotManager` for builder/planner slot budgets and allocation.
+- **`src/lib/dolt.ts`** — Dolt connection via Bun native SQL.
 - **`src/lib/config.ts`** — Loads `.autopilot.yml` from the target project, deep-merges with `DEFAULTS`, validates string fields against injection.
-- **`src/lib/linear.ts`** — Linear SDK wrapper. All calls use `withRetry()` for transient error resilience.
 - **`src/lib/github.ts`** — Octokit wrapper. `detectRepo()` auto-detects owner/repo from git remote. `getPRStatus()` combines Checks API results.
-- **`src/lib/prompt.ts`** — Loads `prompts/*.md` templates and substitutes `{{VARIABLE}}` placeholders with sanitized values.
-- **`src/lib/sandbox-clone.ts`** — Creates/removes isolated git clones at `.claude/clones/<name>` via `git clone --shared`. Each clone has its own `.git/` (no lock contention) while reusing the parent's object store. Handles stale cleanup with retry logic.
-- **`src/lib/retry.ts`** — `withRetry()` with exponential backoff + jitter, respects `Retry-After` headers.
-- **`src/state.ts`** — In-memory `AppState` class tracking running agents, activity feeds, history, queue info, planning status.
+- **`src/state.ts`** — In-memory `AppState` class tracking running agents, activity feeds, history, queue info.
 - **`src/server.ts`** — Hono app serving the dashboard HTML shell and htmx partials. JSON API at `/api/status` and `/api/pause`.
 
 ### Agent Execution Flow
 
-`runClaude()` in `src/lib/claude.ts` is the central agent runner:
-1. Acquires spawn slot (serial init to avoid config race)
-2. Creates isolated clone (executor: fresh branch from HEAD; fixer: existing PR branch)
-3. Calls Agent SDK `query()` with `bypassPermissions` mode and Linear+GitHub MCP servers
-4. Streams activity events to `AppState` for dashboard display
-5. On completion/timeout/error: cleans up clone, releases spawn slot
+`runAgent()` in `src/lib/agent-runner.ts` is the central agent runner:
+1. Resolves persona to team plugins via `getPluginsForPersona()`
+2. Calls Agent SDK `query()` with `bypassPermissions`, plugins, and MCP servers
+3. Streams activity events to `AppState` for dashboard display
+4. On completion/timeout/error: releases slot, reports result
 
 ## Conventions
 
-- **Template variables** use `{{VARIABLE}}` mustache syntax, substituted by `src/lib/prompt.ts`
+- **Personas** are agent `.md` files in plugins/, **skills** are `SKILL.md` files
+- **Plugins** live at `plugins/autopilot-{core,leadership,engineering,security,product}/`
 - **Config** is YAML (`.autopilot.yml`) with typed defaults in `src/lib/config.ts`
-- **All external API calls** (Linear, GitHub) use `withRetry()` from `src/lib/retry.ts`
-- **MCP servers** (Linear + GitHub) are injected into agents via `buildMcpServers()` in `src/lib/claude.ts`
+- **Beads CLI** (`bd`) wraps all bead operations (create, transition, query)
 - **Tests** use Bun's built-in test runner, colocated as `*.test.ts` alongside source files
 - **Formatting**: Biome with 2-space indent, double quotes, organized imports
-- **Clones** live at `<project>/.claude/clones/<name>`; executor branches are `autopilot-<issue-id>` (or legacy `worktree-<issue-id>`), fixer branches are the PR branch itself
 
 ## Development Guidance
 
-- **Prompt changes are the highest leverage.** The prompts in `prompts/` define what agents do — they're the real product. Scripts are plumbing.
-- **Keep scripts simple.** Complex logic belongs in prompts, not TypeScript.
-- **Linear SDK for deterministic work.** Querying, filtering, updating status — do this in TypeScript. Claude handles the creative parts.
+- **Skills and personas are the highest leverage.** The plugin `.md` files define what agents do — they're the real product. Scripts are plumbing.
+- **Keep scripts simple.** Complex logic belongs in skills (`SKILL.md` files), not TypeScript.
+- **Beads CLI for deterministic work.** Querying, filtering, transitioning bead state — do this in TypeScript. Claude handles the creative parts.
