@@ -124,3 +124,13 @@ export async function listOpenGates(): Promise<Gate[]> {
   const result = await _runner.exec(["bd", "gate", "list", "--json"]);
   return JSON.parse(result);
 }
+
+/**
+ * Auto-close epics whose children are all done.
+ * Returns the number of epics closed.
+ */
+export async function closeEligibleEpics(): Promise<number> {
+  const result = await _runner.exec(["bd", "epic", "close-eligible", "--json"]);
+  const parsed = JSON.parse(result);
+  return parsed.closed ?? 0;
+}

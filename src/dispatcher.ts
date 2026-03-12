@@ -184,23 +184,6 @@ export function wireDispatcher(opts: DispatcherOpts): () => void {
     }),
   );
 
-  // --- projectAllDone: Director closes the project ---
-  unsubs.push(
-    bus.on("projectAllDone", async (e) => {
-      await dispatchAgent(
-        {
-          agentId: makeId(),
-          persona: "director",
-          skill: "own-project",
-          prompt: `Invoke /own-project. All beads under project "${e.title}" (${e.beadId}) are closed — write final status and close the project.`,
-          beadId: e.beadId,
-          slotType: "planner",
-        },
-        opts,
-      );
-    }),
-  );
-
   // --- beadNeedsReview: Staff Engineer runs review batch ---
   unsubs.push(
     bus.on("beadNeedsReview", async (e) => {

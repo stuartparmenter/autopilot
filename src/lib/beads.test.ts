@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   _runner,
   type Bead,
+  closeEligibleEpics,
   createBead,
   getBead,
   getBeadsByProject,
@@ -168,5 +169,25 @@ describe("getBlockedBeads", () => {
     mockExec.mockResolvedValue("[]");
     const beads = await getBlockedBeads();
     expect(beads).toHaveLength(0);
+  });
+});
+
+describe("closeEligibleEpics", () => {
+  test("calls bd epic close-eligible and returns count", async () => {
+    mockExec.mockResolvedValue(JSON.stringify({ closed: 3 }));
+    const count = await closeEligibleEpics();
+    expect(count).toBe(3);
+    expect(mockExec).toHaveBeenCalledWith([
+      "bd",
+      "epic",
+      "close-eligible",
+      "--json",
+    ]);
+  });
+
+  test("returns 0 when no epics eligible", async () => {
+    mockExec.mockResolvedValue(JSON.stringify({}));
+    const count = await closeEligibleEpics();
+    expect(count).toBe(0);
   });
 });

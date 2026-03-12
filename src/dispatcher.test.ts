@@ -298,23 +298,6 @@ describe("wireDispatcher — planning events", () => {
     expect(inv.slotType).toBe("planner");
   });
 
-  test("projectAllDone → director/own-project for closure (planner slot)", async () => {
-    const opts = makeOpts();
-    wireDispatcher(opts);
-
-    opts.bus.emit("projectAllDone", {
-      beadId: "bd-epic-2",
-      title: "Logging Overhaul",
-    });
-    await flush();
-
-    const inv = mockRunAgent.mock.calls[0][0];
-    expect(inv.persona).toBe("director");
-    expect(inv.skill).toBe("own-project");
-    expect(inv.slotType).toBe("planner");
-    expect(inv.prompt).toContain("close the project");
-  });
-
   test("beadNeedsReview → staff-engineer/review-batch (planner slot)", async () => {
     const opts = makeOpts();
     wireDispatcher(opts);

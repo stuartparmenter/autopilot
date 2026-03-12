@@ -13,7 +13,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { wireDispatcher } from "./dispatcher";
 import { closeAllAgents } from "./lib/agent-runner";
-import { checkGates, getReadyBeads } from "./lib/beads";
+import { checkGates, closeEligibleEpics, getReadyBeads } from "./lib/beads";
 import { loadConfig, resolveProjectPath } from "./lib/config";
 import { closeDolt, getDolt } from "./lib/dolt";
 import { ensureOperationalTables } from "./lib/dolt-schema";
@@ -227,6 +227,8 @@ const MAX_CONSECUTIVE_FAILURES = 5;
 
 let consecutiveFailures = 0;
 let prevBuildersActive = 0;
+let pollCount = 0;
+const EPIC_CLEANUP_EVERY_N_POLLS = 6; // ~30min at 5min poll interval
 
 info("Starting main loop (Ctrl+C to stop)...");
 console.log();
@@ -316,6 +318,20 @@ while (!shuttingDown) {
       bus.emit("batchComplete", undefined);
     }
     prevBuildersActive = buildersActive;
+
+    // 6. Epic cleanup — auto-close epics whose children are all done
+    pollCount++;
+    if (pollCount % EPIC_CLEANUP_EVERY_N_POLLS === 0) {
+      try {
+        const closed = await closeEligibleEpics();
+        if (closed > 0) {
+          info(`Auto-closed ${closed} completed epic(s)`);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        warn(`Epic cleanup error (non-fatal): ${sanitizeMessage(msg)}`);
+      }
+    }
 
     // Reset failure counter after a successful iteration
     consecutiveFailures = 0;

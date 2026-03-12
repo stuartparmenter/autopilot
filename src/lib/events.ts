@@ -45,10 +45,6 @@ export interface AutopilotEvents {
   };
   kgEmpty: undefined;
   batchComplete: undefined;
-  projectAllDone: {
-    beadId: string;
-    title: string;
-  };
   beadNeedsReview: {
     beadId: string;
     title: string;
