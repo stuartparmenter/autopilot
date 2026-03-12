@@ -16,7 +16,7 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fatal, header, info, ok, warn } from "./lib/logger";
-import { checkEnvVars, checkGitRemote } from "./validate";
+import { checkGitRemote } from "./validate";
 
 const AUTOPILOT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -55,6 +55,29 @@ if (gitCheck.exitCode !== 0) {
   );
 }
 ok(`${PROJECT_PATH} is a git repository`);
+
+// Check v2 dependencies (warnings, not hard failures)
+const v2Tools: Array<{ name: string; cmd: string[]; label: string }> = [
+  {
+    name: "dolt",
+    cmd: ["dolt", "version"],
+    label: "Dolt (versioned database)",
+  },
+  { name: "bd", cmd: ["bd", "--version"], label: "Beads CLI (messaging)" },
+  { name: "gk", cmd: ["gk", "--version"], label: "gk (knowledge graph)" },
+];
+
+for (const tool of v2Tools) {
+  const check = Bun.spawnSync(tool.cmd, { stdout: "pipe", stderr: "pipe" });
+  if (check.exitCode === 0) {
+    const version = check.stdout.toString().trim().split("\n")[0];
+    ok(`${tool.label}: ${version}`);
+  } else {
+    warn(
+      `${tool.label}: '${tool.name}' not found on PATH. Install it before running 'bun run start'.`,
+    );
+  }
+}
 
 // --- Copy CLAUDE.md template ---
 
@@ -107,13 +130,6 @@ if (existsSync(settingsPath)) {
     );
   }
 
-  if (existing.includes("mcp.linear.app")) {
-    ok("Linear MCP already configured");
-  } else {
-    warn("Linear MCP not found -you may need to add it manually");
-    warn("See .claude/settings.json in the autopilot repo for the config");
-  }
-
   if (existing.includes("githubcopilot.com/mcp")) {
     ok("GitHub MCP already configured");
   } else {
@@ -126,17 +142,6 @@ if (existsSync(settingsPath)) {
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
     },
     mcpServers: {
-      linear: {
-        command: "npx",
-        args: [
-          "-y",
-          "mcp-remote",
-          "https://mcp.linear.app/mcp",
-          "--header",
-          // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional literal for JSON output
-          "Authorization: Bearer ${LINEAR_API_KEY}",
-        ],
-      },
       github: {
         command: "npx",
         args: [
@@ -151,9 +156,7 @@ if (existsSync(settingsPath)) {
     },
   };
   writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
-  ok(
-    "Created .claude/settings.json with Linear MCP, GitHub MCP, and Agent Teams",
-  );
+  ok("Created .claude/settings.json with GitHub MCP and Agent Teams");
 }
 
 // --- Add to .gitignore ---
@@ -178,7 +181,6 @@ if (existsSync(gitignorePath)) {
 header("Checking prerequisites...");
 
 const checks: Array<[string, () => Promise<string>]> = [
-  ["Environment variables", () => checkEnvVars()],
   ["Git remote", () => checkGitRemote(PROJECT_PATH)],
 ];
 
@@ -199,21 +201,20 @@ console.log("Next steps:");
 console.log();
 console.log("  1. Fill in your project details in CLAUDE.md");
 console.log(
-  "     This is the most important file -it tells Claude about your project.",
+  "     This is the most important file — it tells Claude about your project.",
 );
 console.log(`     ${claudeMdPath}`);
 console.log();
 console.log("  2. Configure .autopilot.yml");
-console.log("     Set your Linear team, project, commands, and preferences.");
+console.log(
+  "     Set your beads, knowledge graph, executor slots, and preferences.",
+);
 console.log(`     ${configPath}`);
 console.log();
-console.log("  3. Authenticate with Linear (choose one option):");
-console.log("     Option A: Set a personal API key");
-console.log("       export LINEAR_API_KEY=lin_api_...");
-console.log("       Get one at: https://linear.app/settings/api");
-console.log("     Option B: Configure OAuth in .claude-autopilot.yml");
-console.log("       Add linear.oauth.client_id and linear.oauth.client_secret");
-console.log("       Then complete OAuth at http://localhost:7890/auth/linear");
+console.log("  3. Install v2 dependencies (if not already installed):");
+console.log("     - dolt:  https://docs.dolthub.com/introduction/installation");
+console.log("     - bd:    Beads CLI (see project docs)");
+console.log("     - gk:    Knowledge graph CLI (see project docs)");
 console.log();
 console.log("  4. Set your GitHub token");
 console.log("     export GITHUB_TOKEN=ghp_...");
