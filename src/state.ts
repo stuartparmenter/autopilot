@@ -1,40 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { type CircuitState, defaultRegistry } from "./lib/circuit-breaker";
 import { type AutopilotConfig, DEFAULTS } from "./lib/config";
-import type {
-  AnalyticsResult,
-  CostByStatusEntry,
-  DailyCostEntry,
-  DailyCostRow,
-  FailureByTypeEntry,
-  FailureTrendEntry,
-  PerIssueCostRow,
-  RepeatFailureEntry,
-  TodayAnalyticsResult,
-  WeeklyCostEntry,
-} from "./lib/db";
-import {
-  getActivityLogs,
-  getAnalytics,
-  getCostByStatus,
-  getDailyCosts,
-  getDailyCostTrend,
-  getFailuresByType,
-  getFailureTrend,
-  getIssueFailureCounts,
-  getPerIssueCosts,
-  getRecentPlanningSessions,
-  getRecentRuns,
-  getRepeatFailures,
-  getSpendLogEntries,
-  getTodayAnalytics,
-  getWeeklyCostTrend,
-  insertActivityLogs,
-  insertAgentRun,
-  insertConversationLog,
-  insertPlanningSession,
-  insertStateTransition,
-} from "./lib/db";
 import { sanitizeMessage } from "./lib/sanitize";
 
 export interface ActivityEntry {
@@ -139,6 +104,30 @@ export interface AppStateSnapshot {
   apiHealth: ApiHealthStatus;
 }
 
+export interface AnalyticsSummary {
+  successRate: number;
+  avgDurationMs: number;
+  totalCostUsd: number;
+  totalRuns: number;
+}
+
+export interface CostTrends {
+  daily: Array<{ totalCost: number; date: string }>;
+  byStatus: Array<{ status: string; totalCost: number }>;
+  weekly: Array<{ totalCost: number }>;
+}
+
+export interface FailureAnalysis {
+  byType: Array<{ status: string; count: number }>;
+  trend: Array<{ failureRate: number; date: string }>;
+  repeatFailures: Array<{
+    issueId: string;
+    issueTitle: string;
+    lastError: string;
+    failureCount: number;
+  }>;
+}
+
 const MAX_HISTORY = 50;
 const MAX_ACTIVITIES_PER_AGENT = 200;
 const MAX_FAILURE_ENTRIES = 1000;
@@ -157,25 +146,12 @@ export class AppState {
   private reviewer: ReviewerStatus = { running: false };
   private paused = false;
   private issueFailureCount = new Map<string, number>();
-  private db: Database | null = null;
   private spendLog: Array<{ timestampMs: number; costUsd: number }> = [];
   private maxParallel: number;
   readonly startedAt = Date.now();
 
   constructor(maxParallel = DEFAULTS.executor.parallel) {
     this.maxParallel = maxParallel;
-  }
-
-  setDb(db: Database): void {
-    this.db = db;
-    this.history = getRecentRuns(db, MAX_HISTORY);
-    this.planningHistory = getRecentPlanningSessions(db, 20);
-    const counts = getIssueFailureCounts(db, MAX_FAILURE_ENTRIES);
-    for (const [issueId, count] of counts) {
-      this.issueFailureCount.set(issueId, count);
-    }
-    const cutoffMs = Date.now() - 32 * 24 * 60 * 60 * 1000;
-    this.spendLog = getSpendLogEntries(db, cutoffMs);
   }
 
   addAgent(
@@ -262,18 +238,7 @@ export class AppState {
     this.controllers.delete(agentId);
     this.agents.delete(agentId);
 
-    // Persist to database with retry logic (async, after in-memory updates).
-    if (this.db) {
-      await insertAgentRun(this.db, result);
-      await insertActivityLogs(this.db, result.id, agent.activities);
-      if (rawMessages && rawMessages.length > 0) {
-        await insertConversationLog(
-          this.db,
-          result.id,
-          sanitizeMessage(JSON.stringify(rawMessages)),
-        );
-      }
-    }
+    // TODO(v2): Persist to Dolt when operational tables are wired.
   }
 
   registerAgentController(agentId: string, controller: AbortController): void {
@@ -316,55 +281,38 @@ export class AppState {
     return this.history;
   }
 
-  getAnalytics(): AnalyticsResult | null {
-    if (!this.db) return null;
-    return getAnalytics(this.db);
+  // TODO(v2): Wire analytics queries to Dolt operational tables.
+
+  getAnalytics(): AnalyticsSummary | null {
+    return null;
   }
 
-  getTodayAnalytics(): TodayAnalyticsResult | null {
-    if (!this.db) return null;
-    return getTodayAnalytics(this.db);
+  getTodayAnalytics(): AnalyticsSummary | null {
+    return null;
   }
 
-  getCostTrends(): {
-    daily: DailyCostEntry[];
-    weekly: WeeklyCostEntry[];
-    byStatus: CostByStatusEntry[];
-  } | null {
-    if (!this.db) return null;
-    return {
-      daily: getDailyCostTrend(this.db),
-      weekly: getWeeklyCostTrend(this.db),
-      byStatus: getCostByStatus(this.db),
-    };
+  getCostTrends(): CostTrends | null {
+    return null;
   }
 
-  getFailureAnalysis(): {
-    byType: FailureByTypeEntry[];
-    trend: FailureTrendEntry[];
-    repeatFailures: RepeatFailureEntry[];
-  } | null {
-    if (!this.db) return null;
-    return {
-      byType: getFailuresByType(this.db),
-      trend: getFailureTrend(this.db),
-      repeatFailures: getRepeatFailures(this.db),
-    };
+  getFailureAnalysis(): FailureAnalysis | null {
+    return null;
   }
 
-  getActivityLogsForRun(agentRunId: string): ActivityEntry[] {
-    if (!this.db) return [];
-    return getActivityLogs(this.db, agentRunId);
+  getActivityLogsForRun(_agentRunId: string): ActivityEntry[] {
+    return [];
   }
 
-  getDailyCosts(days?: number): DailyCostRow[] {
-    if (!this.db) return [];
-    return getDailyCosts(this.db, days);
+  getDailyCosts(
+    _days?: number,
+  ): { date: string; totalCostUsd: number; runCount: number }[] {
+    return [];
   }
 
-  getPerIssueCosts(limit?: number): PerIssueCostRow[] {
-    if (!this.db) return [];
-    return getPerIssueCosts(this.db, limit);
+  getPerIssueCosts(
+    _limit?: number,
+  ): { issueId: string; totalCostUsd: number; runCount: number }[] {
+    return [];
   }
 
   getPlanningStatus(): PlanningStatus {
@@ -380,15 +328,11 @@ export class AppState {
     if (this.planningHistory.length > 20) {
       this.planningHistory = this.planningHistory.slice(0, 20);
     }
-    if (this.db) {
-      void insertPlanningSession(this.db, session);
-    }
+    // TODO(v2): Persist to Dolt.
   }
 
-  logStateTransition(transition: StateTransition): void {
-    if (this.db) {
-      void insertStateTransition(this.db, transition);
-    }
+  logStateTransition(_transition: StateTransition): void {
+    // TODO(v2): Persist to Dolt.
   }
 
   updateReviewer(status: Partial<ReviewerStatus>): void {
@@ -397,10 +341,6 @@ export class AppState {
 
   getReviewerStatus(): ReviewerStatus {
     return this.reviewer;
-  }
-
-  getDb(): Database | null {
-    return this.db;
   }
 
   isPaused(): boolean {

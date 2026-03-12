@@ -1,24 +1,9 @@
-import type { Database } from "bun:sqlite";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html, raw } from "hono/html";
 import { DASHBOARD_CSS } from "./dashboard-styles";
 import type { AutopilotConfig } from "./lib/config";
-import { deleteOAuthToken, saveOAuthToken } from "./lib/db";
-import { resetClient } from "./lib/linear";
-import {
-  buildOAuthUrl,
-  exchangeCodeForToken,
-  saveStoredToken,
-} from "./lib/linear-oauth";
-import {
-  parseGitHubEventType,
-  parseLinearEventType,
-  verifyGitHubSignature,
-  verifyLinearSignature,
-  type WebhookTrigger,
-} from "./lib/webhooks";
 import type { AppState } from "./state";
 
 const ACTIVITY_SAYINGS = [
@@ -38,13 +23,6 @@ function randomSaying(): string {
   return ACTIVITY_SAYINGS[Math.floor(Math.random() * ACTIVITY_SAYINGS.length)];
 }
 
-export interface WebhookOptions {
-  trigger: WebhookTrigger;
-  linearSecret: string;
-  githubSecret: string;
-  readyStateName: string;
-}
-
 export interface DashboardOptions {
   authToken?: string;
   secureCookie?: boolean;
@@ -56,8 +34,6 @@ export interface DashboardOptions {
   >;
   approveTriageIssue?: (issueId: string) => Promise<void>;
   rejectTriageIssue?: (issueId: string) => Promise<void>;
-  /** DB instance used to persist OAuth tokens from the callback route. */
-  db?: Database;
 }
 
 export function safeCompare(a: string, b: string): boolean {
@@ -251,11 +227,7 @@ export function computeHealth(
   };
 }
 
-export function createApp(
-  state: AppState,
-  options?: DashboardOptions,
-  webhooks?: WebhookOptions,
-): Hono {
+export function createApp(state: AppState, options?: DashboardOptions): Hono {
   const app = new Hono();
 
   app.onError((e, c) => {
@@ -320,109 +292,6 @@ export function createApp(
       return c.redirect("/");
     });
   }
-
-  // --- Linear OAuth routes ---
-
-  app.get("/auth/linear", (c) => {
-    const clientId = process.env.LINEAR_CLIENT_ID;
-    if (!clientId) {
-      return c.html(
-        "<p>Error: LINEAR_CLIENT_ID environment variable is not set.</p>",
-        400,
-      );
-    }
-    const state = randomBytes(16).toString("hex");
-    setCookie(c, "oauth_state", state, {
-      httpOnly: true,
-      sameSite: "Lax",
-      path: "/",
-      maxAge: 600, // 10 minutes
-      secure: options?.secureCookie,
-    });
-    const redirectUri = new URL("/auth/linear/callback", c.req.url).toString();
-    const url = buildOAuthUrl(clientId, redirectUri, state);
-    return c.redirect(url);
-  });
-
-  app.get("/auth/linear/callback", async (c) => {
-    const code = c.req.query("code");
-    const stateParam = c.req.query("state");
-    const error = c.req.query("error");
-    const storedState = getCookie(c, "oauth_state");
-
-    // Clear the state cookie regardless of outcome
-    deleteCookie(c, "oauth_state", { path: "/" });
-
-    if (error) {
-      return c.html(
-        `<p>Linear OAuth error: ${escapeHtml(error)}</p><p><a href="/">Back to dashboard</a></p>`,
-        400,
-      );
-    }
-
-    // Verify state to prevent CSRF attacks
-    if (!storedState || !stateParam || !safeCompare(stateParam, storedState)) {
-      return c.html(
-        "<p>Error: OAuth state mismatch. Please try again.</p>",
-        400,
-      );
-    }
-
-    if (!code) {
-      return c.html("<p>Error: No authorization code received.</p>", 400);
-    }
-
-    const clientId = process.env.LINEAR_CLIENT_ID;
-    const clientSecret = process.env.LINEAR_CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
-      return c.html(
-        "<p>Error: LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET must be set.</p>",
-        400,
-      );
-    }
-
-    try {
-      const redirectUri = new URL(
-        "/auth/linear/callback",
-        c.req.url,
-      ).toString();
-      const token = await exchangeCodeForToken(
-        clientId,
-        clientSecret,
-        code,
-        redirectUri,
-      );
-      if (options?.db) {
-        // Write to legacy table to update in-memory cache for getCurrentLinearToken()
-        saveStoredToken(options.db, token);
-        // Also write to oauth_tokens table for ENG-107 auto-refresh client
-        saveOAuthToken(options.db, "linear", {
-          accessToken: token.accessToken,
-          refreshToken: token.refreshToken ?? "",
-          expiresAt: token.expiresAt,
-          tokenType: "Bearer",
-          scope: "read,write,issues:create,comments:create",
-          actor: "application",
-        });
-      }
-      // Force the Linear client to re-initialize with the new token
-      resetClient();
-      return c.redirect("/");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return c.html(
-        `<p>Error: ${escapeHtml(msg)}</p><p><a href="/">Back to dashboard</a></p>`,
-        500,
-      );
-    }
-  });
-
-  app.post("/auth/linear/disconnect", (c) => {
-    if (options?.db) {
-      deleteOAuthToken(options.db, "linear");
-    }
-    return c.redirect("/");
-  });
 
   // --- HTML Shell ---
   app.get("/", (c) => {
@@ -1045,86 +914,6 @@ export function createApp(
       </div>
     `);
   });
-
-  // --- Webhook endpoints ---
-
-  if (webhooks) {
-    const { trigger, linearSecret, githubSecret, readyStateName } = webhooks;
-    // Track delivery IDs to deduplicate retried webhook deliveries
-    const processedDeliveries = new Set<string>();
-
-    app.post("/webhooks/linear", async (c) => {
-      const rawBody = await c.req.text();
-      const signature = c.req.header("x-linear-signature") ?? "";
-      if (!verifyLinearSignature(linearSecret, rawBody, signature)) {
-        return c.json({ error: "Invalid signature" }, 401);
-      }
-
-      const deliveryId =
-        c.req.header("x-linear-delivery") ?? crypto.randomUUID();
-      if (processedDeliveries.has(deliveryId)) {
-        return c.json({ ok: true });
-      }
-      processedDeliveries.add(deliveryId);
-
-      let body: unknown;
-      try {
-        body = JSON.parse(rawBody);
-      } catch {
-        return c.json({ error: "Invalid JSON" }, 400);
-      }
-
-      const eventType = parseLinearEventType(
-        { event: c.req.header("x-linear-event") },
-        body,
-        readyStateName,
-      );
-      if (eventType === "issue_ready") {
-        trigger.fire();
-      }
-
-      return c.json({ ok: true });
-    });
-
-    app.post("/webhooks/github", async (c) => {
-      const rawBody = await c.req.text();
-      const signature = c.req.header("x-hub-signature-256") ?? "";
-      if (!verifyGitHubSignature(githubSecret, rawBody, signature)) {
-        return c.json({ error: "Invalid signature" }, 401);
-      }
-
-      const deliveryId =
-        c.req.header("x-github-delivery") ?? crypto.randomUUID();
-      if (processedDeliveries.has(deliveryId)) {
-        return c.json({ ok: true });
-      }
-      processedDeliveries.add(deliveryId);
-
-      let body: unknown;
-      try {
-        body = JSON.parse(rawBody);
-      } catch {
-        return c.json({ error: "Invalid JSON" }, 400);
-      }
-
-      const eventType = parseGitHubEventType(
-        { event: c.req.header("x-github-event") },
-        body,
-      );
-      if (eventType === "ci_failure") {
-        trigger.fire();
-      }
-
-      return c.json({ ok: true });
-    });
-  } else {
-    app.post("/webhooks/linear", (c) =>
-      c.json({ error: "Webhooks not configured" }, 404),
-    );
-    app.post("/webhooks/github", (c) =>
-      c.json({ error: "Webhooks not configured" }, 404),
-    );
-  }
 
   app.get("/partials/budget", (c) => {
     if (!options?.config) {
