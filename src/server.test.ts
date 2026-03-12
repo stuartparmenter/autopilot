@@ -1173,7 +1173,7 @@ describe("POST /api/triage/:issueId/approve", () => {
   test("returns 500 with error when approveTriageIssue throws", async () => {
     const state = new AppState();
     const approveTriageIssue = mock(async (_id: string) => {
-      throw new Error("Linear API error");
+      throw new Error("Approve failed");
     });
     const app = createApp(state, { approveTriageIssue });
     const res = await app.request("/api/triage/uuid-1/approve", {
@@ -1181,7 +1181,7 @@ describe("POST /api/triage/:issueId/approve", () => {
     });
     expect(res.status).toBe(500);
     const json = (await res.json()) as { error: string };
-    expect(json.error).toBe("Approve failed: Linear API error");
+    expect(json.error).toBe("Approve failed: Approve failed");
   });
 });
 
