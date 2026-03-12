@@ -42,17 +42,6 @@ planning:
   # min_interval_minutes: 60      # Minimum minutes between planning runs (0-1440, default: 60)
   model: "opus"                   # Model for the CTO planning agent
 
-# ─── Projects Loop ───────────────────────────────────────────────────────────
-# The projects loop manages project-level ownership: triaging tasks, spawning
-# technical planners, and completing projects when all work is done.
-
-# projects:
-#   enabled: true                 # Enable the projects loop (default: true)
-#   poll_interval_minutes: 10     # How often to check projects for triage tasks
-#   max_active_projects: 5        # Cap on concurrent project owner agents
-#   timeout_minutes: 60           # Kill project owner agent after this long
-#   model: "opus"                 # Model for project owner agents
-
 # ─── GitHub ───────────────────────────────────────────────────────────────────
 # GitHub integration for PR monitoring, CI checks, and the fixer agent.
 

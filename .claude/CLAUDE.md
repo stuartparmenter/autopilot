@@ -13,7 +13,7 @@ A fully autonomous AI development loop using Claude Code + Beads (Dolt-backed). 
 
 ```bash
 bun install                  # Install dependencies
-bun run start <project-path> # Start condition-based orchestrator + dashboard
+bun run start <project-path> # Start event-driven orchestrator + dashboard
 bun run setup <project-path> # Onboard a new project
 bun run ceo                  # Launch interactive Claude session with CEO persona
 
@@ -29,14 +29,14 @@ CI runs `typecheck`, `check`, and `bun test` on all PRs (`.github/workflows/lint
 
 ## Architecture
 
-### Condition-Based Orchestrator
+### Event-Driven Orchestrator
 
 `bun run start` (`src/main.ts`) runs a single poll loop that:
-1. Snapshots `SystemState` (bead queue depths, slot availability, PR statuses, knowledge graph state)
-2. Evaluates conditions defined in `src/conditions.ts` against the snapshot
-3. Dispatches persona+skill agent pairs via `SlotManager` when conditions fire
+1. Polls bead queue (`bd ready`), checks gates (`bd gate check`), monitors KG health
+2. Emits typed events onto the bus (`beadReady`, `prFailed`, `backlogLow`, `kgEmpty`, `batchComplete`)
+3. The dispatcher (`src/dispatcher.ts`) routes events to persona+skill agent pairs via `SlotManager`
 
-Conditions (11 total, in `src/conditions.ts`): `ready-queue`, `backlog-low`, `pr-ci-failed`, `pr-needs-review`, `project-triage`, `kg-empty`, etc. Each condition is a pure function: `(state: SystemState) => DispatchDecision | null`.
+Event routing: `beadReady` routes by bead type (initiative → Director, epic → Staff Engineer, task/bug/feature/chore → Engineer). `prFailed` dispatches Engineer/fix-pr. `backlogLow` dispatches CTO/planning-cycle.
 
 Agents are persona+skill pairs dispatched via Agent SDK `query()` with plugins. `SlotManager` (`src/lib/slots.ts`) manages builder vs planner slot allocation.
 
@@ -46,7 +46,8 @@ Bead state transitions (managed via the `bd` CLI) drive the system. Beads flow t
 
 ### Key Modules
 
-- **`src/conditions.ts`** — Condition evaluator. Pure functions mapping `SystemState` to dispatch decisions.
+- **`src/dispatcher.ts`** — Event-driven dispatcher. Subscribes to bus events and spawns persona+skill agents.
+- **`src/lib/events.ts`** — Typed event bus (`createBus()`). Events: `beadReady`, `prFailed`, `agentDone`, `backlogLow`, `kgEmpty`, `batchComplete`.
 - **`src/lib/agent-runner.ts`** — Wraps Agent SDK `query()`. Plugin-aware, maps personas to team plugins via `getPluginsForPersona()`.
 - **`src/lib/beads.ts`** — `bd` CLI wrapper for bead state management (create, transition, query).
 - **`src/lib/slots.ts`** — `SlotManager` for builder/planner slot budgets and allocation.

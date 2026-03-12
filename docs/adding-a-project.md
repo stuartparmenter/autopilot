@@ -1,6 +1,6 @@
 # Adding a Project
 
-This guide walks you through onboarding a new project repository for autopilot. By the end, the executor will be able to pick up Linear issues, implement them, and open PRs against your project.
+This guide walks you through onboarding a new project repository for autopilot. By the end, the orchestrator will be able to pick up beads, implement them, and open PRs against your project.
 
 ---
 
@@ -10,8 +10,7 @@ Before starting, make sure you have:
 
 - **Bun** installed (https://bun.sh)
 - **A git repository** for the project you want to onboard
-- **A Linear account** with a team set up for the project
-- **A Linear API key** (create one at https://linear.app/settings/api)
+- **Dolt** installed and running (the beads backend)
 - **Claude Code authenticated** (the Agent SDK uses your existing auth)
 
 ---
@@ -29,22 +28,8 @@ This script does the following:
 1. Verifies that the target path is a git repository
 2. Copies `CLAUDE.md` from the template into your project (if it does not already exist)
 3. Copies `.autopilot.yml` config into your project (if it does not already exist)
-4. Creates `.claude/settings.json` with Agent Teams enabled and Linear MCP configured
+4. Creates `.claude/settings.json` with Agent Teams enabled
 5. Adds `.autopilot.yml` to `.gitignore` (it contains local config and should not be committed)
-
-### What to expect
-
-```
-[INFO] Checking prerequisites...
-[OK]   /path/to/your/project is a git repository
-[INFO] Setting up project files...
-[OK]   Created CLAUDE.md — fill this in with your project details
-[OK]   Created .autopilot.yml — fill this in with your project config
-[OK]   Created .claude/settings.json with Linear MCP and Agent Teams
-[OK]   Added .autopilot.yml to .gitignore
-
-=== Project onboarded successfully! ===
-```
 
 ### Troubleshooting
 
@@ -66,7 +51,7 @@ Open `CLAUDE.md` in your project and fill in every section. The template has pla
 
 **Architecture section.** The executor needs to understand where things live. List your services, components, databases, and how they connect. If you have a monorepo, explain the package structure.
 
-**Development Commands section.** The executor will run your test and lint commands. If these are wrong, every issue will fail validation. Be precise:
+**Development Commands section.** The executor will run your test and lint commands. If these are wrong, every bead will fail validation. Be precise:
 
 ```bash
 # Good: exact command the executor should run
@@ -98,12 +83,9 @@ This is the configuration file that controls how autopilot interacts with your p
 
 ### Required fields
 
-These fields must be set. The executor will refuse to run without them:
+These fields must be set:
 
 ```yaml
-linear:
-  team: "ENG"          # Your Linear team key (visible in team settings URL)
-
 project:
   name: "my-project"   # Human-readable project name
 ```
@@ -120,43 +102,23 @@ project:
   tech_stack: "TypeScript, Next.js, PostgreSQL, Prisma"  # Included in prompts
 ```
 
-**test_command and lint_command are the most important settings after `linear.team`.** The executor runs these commands to validate its implementation. If they are wrong, the executor will either skip validation (no command configured) or get stuck in a loop trying to fix unrelated failures.
+**test_command and lint_command are the most important settings.** The executor runs these commands to validate its implementation. If they are wrong, the executor will either skip validation (no command configured) or get stuck in a loop trying to fix unrelated failures.
 
 Requirements for these commands:
 - Must run non-interactively (no prompts, no watch mode)
 - Must exit with code 0 on success and non-zero on failure
 - Must be runnable from the project root directory
 
-### Linear state mapping
-
-The autopilot requires the **Triage** issue status to be enabled in Linear. It is off by default on new teams. Enable it under Settings → [Your Team] → Issue statuses & automations → Triage.
-
-Map the state names to match your Linear workflow:
-
-```yaml
-linear:
-  team: "ENG"
-  project: "my-project"
-  states:
-    triage: "Triage"           # Where planning loop files new issues (enable this in Linear)
-    ready: "Todo"              # Where executor picks up issues
-    in_progress: "In Progress" # Set by executor while working
-    done: "Done"               # Set by executor on success
-    blocked: "Backlog"         # Set by executor on failure/timeout
-```
-
-The state names must match your Linear workflow exactly (case-sensitive).
-
 ### Executor settings
 
 ```yaml
 executor:
-  parallel: 3                           # Max concurrent executor agents
+  parallel: 8                           # Total max concurrent agents
+  builder_slots: 5                      # Slots reserved for builder agents
+  planner_slots: 3                      # Slots reserved for planner agents
   timeout_minutes: 30                   # Kill executor after this long
+  poll_interval_minutes: 5              # How often to poll for work
   model: "sonnet"                       # Model for executor agents
-  auto_approve_labels: []               # Labels that skip human PR review (Phase 3)
-  branch_pattern: "autopilot/{{id}}"    # Git branch naming pattern
-  commit_pattern: "{{id}}: {{title}}"   # Commit message pattern
 ```
 
 ### Planning settings
@@ -165,8 +127,16 @@ executor:
 planning:
   schedule: "when_idle"         # when_idle | daily | manual
   min_ready_threshold: 5        # Only plan if Ready count < this
-  max_issues_per_run: 5         # Cap on issues filed per planning run
+  max_issues_per_run: 5         # Cap on beads filed per planning run
   model: "opus"                 # Model for the CTO planning agent
+```
+
+### Beads settings
+
+```yaml
+beads:
+  dolt_port: 3307               # Port for the Dolt SQL server
+  dolt_data_dir: ".beads/dolt"  # Dolt data directory
 ```
 
 ### Protected paths
@@ -184,23 +154,16 @@ project:
 ### Full example
 
 ```yaml
-linear:
-  team: "ENG"
-  project: "acme-api"
-  states:
-    triage: "Triage"
-    ready: "Todo"
-    in_progress: "In Progress"
-    done: "Done"
-    blocked: "Backlog"
+beads:
+  dolt_port: 3307
+  dolt_data_dir: ".beads/dolt"
 
 executor:
   parallel: 3
+  builder_slots: 2
+  planner_slots: 1
   timeout_minutes: 30
   model: "sonnet"
-  auto_approve_labels: []
-  branch_pattern: "autopilot/{{id}}"
-  commit_pattern: "{{id}}: {{title}}"
 
 planning:
   schedule: "when_idle"
@@ -208,63 +171,50 @@ planning:
   min_ready_threshold: 5
   max_issues_per_run: 5
 
+github:
+  repo: ""
+  automerge: false
+
 project:
   name: "acme-api"
   tech_stack: "TypeScript, Express, PostgreSQL, Prisma, Jest"
   test_command: "npm test -- --watchAll=false --forceExit"
   lint_command: "npm run lint"
   build_command: "npm run build"
-  key_directories:
-    - "src/api"
-    - "src/services"
-    - "src/models"
   protected_paths:
     - ".env"
     - ".env.local"
     - ".autopilot.yml"
     - "CLAUDE.md"
     - ".github/workflows"
-
-notifications:
-  slack_webhook: "https://hooks.slack.com/services/T.../B.../..."
-  notify_on:
-    - executor_complete
-    - executor_blocked
-    - planning_complete
-    - error
 ```
 
 ---
 
-## Step 4: Set LINEAR_API_KEY
+## Step 4: Set GITHUB_TOKEN
 
-The `LINEAR_API_KEY` is used by both the orchestrator scripts (via `@linear/sdk`) and the Claude Code agents (via the Linear MCP server). A single API key handles both.
-
-1. Go to https://linear.app/settings/api
-2. Create a new personal API key (or a workspace-level key for shared use)
-3. Set the environment variable:
+The `GITHUB_TOKEN` is used by the orchestrator for PR operations and CI monitoring.
 
 ```bash
-export LINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 For persistent use, add this to your shell profile (`~/.bashrc`, `~/.zshrc`) or use a secrets manager.
 
-The setup script configures the Linear MCP server in `.claude/settings.json` to pass this key automatically via the `Authorization: Bearer` header — no separate OAuth flow is needed.
+---
 
-### Troubleshooting
+## Step 5: Start Dolt
 
-| Problem | Solution |
-|---------|----------|
-| "LINEAR_API_KEY environment variable is not set" | Make sure the variable is exported in the shell session running the script |
-| "Linear connection failed" | Verify the key is valid and not expired |
-| "Team 'XYZ' not found in Linear" | The `linear.team` value in config must be the team **key** (e.g., "ENG"), not the team name (e.g., "Engineering"). Find it in your Linear team settings URL |
-| "State 'Todo' not found for team" | The state names in `linear.states` must exactly match your Linear workflow state names. Check Linear team settings for the exact names |
-| Agent can't file Linear issues | Verify `LINEAR_API_KEY` is exported in the shell where you run `bun run start`. The MCP server inherits it from the environment |
+Beads requires a running Dolt SQL server. See the beads documentation for setup instructions.
+
+```bash
+# Start Dolt (example — see beads docs for full setup)
+dolt sql-server --port 3307
+```
 
 ---
 
-## Step 5: Start the Loop
+## Step 6: Start the Loop
 
 Once configuration is complete, start the loop:
 
@@ -273,9 +223,9 @@ bun run start /path/to/your/project
 ```
 
 This will:
-1. Connect to Linear and resolve team/state IDs
+1. Connect to the Dolt server and validate beads access
 2. Start the web dashboard at http://localhost:7890
-3. Begin polling for Ready issues and filling executor slots
+3. Begin polling for ready beads and filling executor slots
 4. Run the planning loop when the backlog drops below threshold
 
 Open the dashboard in your browser to watch agents work in real time.
@@ -300,7 +250,8 @@ Use this checklist to verify your setup:
 
 - [ ] `bun run setup /path/to/project` completed successfully
 - [ ] `CLAUDE.md` filled in with project details (architecture, commands, conventions)
-- [ ] `.autopilot.yml` configured (team key, project name at minimum)
-- [ ] `LINEAR_API_KEY` environment variable set
+- [ ] `.autopilot.yml` configured (project name at minimum)
+- [ ] `GITHUB_TOKEN` environment variable set
+- [ ] Dolt SQL server running on the configured port
 - [ ] `bun run start /path/to/project` starts successfully and shows dashboard
 - [ ] Dashboard accessible at http://localhost:7890

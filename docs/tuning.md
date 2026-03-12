@@ -41,7 +41,7 @@ Each subsystem has its own `model` field, and sub-agents can override via their 
 |---------|---------|---------|
 | `executor.model` | `"sonnet"` | Executor agents (issue implementation) and fixer agents |
 | `planning.model` | `"opus"` | CTO planning agent |
-| `projects.model` | `"opus"` | Project owner agents |
+| `planning.model` | `"opus"` | Planning agents (CTO, Director, etc.) |
 
 Sub-agents spawned by the CTO or project owners can set their own `model:` in their agent frontmatter (e.g., Scout uses `haiku` for fast, cheap recon).
 
@@ -78,8 +78,8 @@ The `planning.schedule` setting controls when the planning loop runs.
 The `min_ready_threshold` controls the trigger point:
 
 ```
-Ready issues in Linear >= min_ready_threshold  -->  planning skips
-Ready issues in Linear <  min_ready_threshold  -->  planning runs
+Ready beads >= min_ready_threshold  -->  planning skips
+Ready beads <  min_ready_threshold  -->  planning runs
 ```
 
 Tuning guidance:
@@ -113,29 +113,6 @@ The single most impactful tuning lever for executor success rate is issue granul
 4. **Decompose large issues.** If an issue touches more than 3-5 files, break it into sub-issues with dependency relations. The executor will process them in order.
 
 5. **Specify constraints explicitly.** If the executor should use a specific library, follow a specific pattern, or avoid a specific approach, say so in the issue description.
-
----
-
-## Auto-Approval
-
-The `executor.auto_approve_labels` setting lists issue labels that are safe for automated promotion from Triage to Ready (Phase 3). When a planning-filed issue has one of these labels, it can bypass human review.
-
-### Safe labels to start with
-
-| Label | Risk level | Why it is safe |
-|-------|-----------|---------------|
-| `documentation` | Very low | Changes to docs and comments. Cannot break functionality |
-| `test-coverage` | Low | Adds tests for existing behavior. Should not change production code |
-| `dependency-update` | Low-medium | Updates dependencies. Tests catch regressions |
-
-### Labels to keep manual
-
-| Label | Risk level | Why it needs review |
-|-------|-----------|-------------------|
-| `security` | High | Security changes need human judgment about threat model |
-| `performance` | Medium | Performance changes can have subtle side effects |
-| `error-handling` | Medium | Changing error handling can alter user-facing behavior |
-| `code-quality` | Medium | Refactoring can introduce subtle bugs |
 
 ---
 
@@ -241,7 +218,7 @@ After modifying a prompt, start the loop and watch the dashboard:
 bun run start /path/to/project
 ```
 
-Review the agent activity in real time. Check Linear for the issues filed. Iterate.
+Review the agent activity in real time. Check the dashboard for beads filed. Iterate.
 
 ---
 

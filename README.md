@@ -2,20 +2,20 @@
 
 A fully autonomous AI development loop using **Claude Code** + **Beads**.
 
-Plans new features, implements them, opens PRs, and fixes CI failures — no human in the loop. A knowledge graph provides institutional memory across agent runs. A condition-based orchestrator dispatches persona+skill pairs to keep your project moving forward:
+Plans new features, implements them, opens PRs, and fixes CI failures — no human in the loop. A knowledge graph provides institutional memory across agent runs. An event-driven orchestrator dispatches persona+skill pairs to keep your project moving forward:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                 │
-│  Orchestrator (condition monitor)                               │
+│  Orchestrator (event-driven poll loop)                          │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │ Poll SystemState:                                        │   │
-│  │   Ready queue has items?  → Engineer + implement-bead    │   │
-│  │   Backlog below threshold?→ CTO + planning-cycle         │   │
-│  │   PR CI failed?           → Engineer + fix-pr            │   │
-│  │   PR needs review?        → Staff Engineer + review-batch│   │
-│  │   Project has triage?     → Director + own-project       │   │
-│  │   Batch complete?         → CTO + post-flight            │   │
+│  │ Poll → Emit Events → Dispatcher Routes:                  │   │
+│  │   beadReady (task)   → Engineer + implement-bead         │   │
+│  │   beadReady (epic)   → Staff Engineer + decompose-epic   │   │
+│  │   beadReady (init)   → Director + own-project            │   │
+│  │   backlogLow         → CTO + planning-cycle              │   │
+│  │   prFailed            → Engineer + fix-pr                │   │
+│  │   batchComplete       → CTO + post-flight                │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │       │                                                         │
 │       ▼                                                         │
@@ -35,7 +35,7 @@ Plans new features, implements them, opens PRs, and fixes CI failures — no hum
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Orchestrator**: A single poll loop evaluates conditions against system state (bead queue, GitHub PRs, knowledge graph health) and dispatches agents deterministically. Same conditions produce the same actions — no agent decides its own adventure.
+**Orchestrator**: A single poll loop emits typed events (beadReady, prFailed, backlogLow, etc.) onto a bus. The dispatcher routes each event to the right persona+skill pair deterministically. Same events produce the same actions — no agent decides its own adventure.
 
 **Personas + Skills**: Nine personas (CEO, CTO, Director, Staff Engineer, Principal Engineer, Engineer, Security, Product, QA) defined as Claude Code agent `.md` files. Each is paired with composable skills (implement-bead, fix-pr, planning-cycle, etc.) at dispatch time. New skills can be added without modifying personas.
 
@@ -161,7 +161,7 @@ autopilot/
 │   │   ├── slots.ts                           # Functional slot allocation
 │   │   └── logger.ts                          # Colored console output
 │   ├── main.ts                                # Entry point — loop + dashboard
-│   ├── conditions.ts                          # Condition evaluator + dispatch
+│   ├── dispatcher.ts                          # Event-driven agent dispatch
 │   ├── server.ts                              # Hono dashboard (htmx partials)
 │   ├── state.ts                               # In-memory app state
 │   └── setup-project.ts                       # Onboard a new project
@@ -197,9 +197,9 @@ The single `bun run start` command:
 1. Connects to the Dolt server and validates beads access
 2. Starts a Hono web dashboard on port 7890, bound to `127.0.0.1` by default (configurable with `--port` and `--host`)
 3. Enters the main loop:
-   - Evaluates conditions against system state (bead queue, GitHub PRs, KG health)
-   - Dispatches persona+skill pairs into available slots
-   - Waits for any agent to finish or 5-minute poll interval
+   - Emits events (beadReady, prFailed, backlogLow, etc.) onto the bus
+   - Dispatcher routes events to persona+skill pairs via available slots
+   - Waits for poll interval (default 5 minutes)
 
 ## Configuration
 
@@ -236,7 +236,7 @@ See [templates/autopilot.yml.template](templates/autopilot.yml.template) for the
 2. **Personas + skills are the product.** The TypeScript scripts are just plumbing. The persona definitions in `plugins/*/agents/` and skill prompts in `plugins/*/skills/` define what Claude actually does — they're the highest-leverage thing to customize.
 3. **Fully autonomous by default.** The CTO spawns specialist subagents (Principal Engineer, Security, Product, QA) to investigate the codebase and synthesize findings into project epics. Directors groom and decompose via Staff Engineers. Engineers implement and open PRs with auto-merge. The Staff Engineer reviews PRs with conditional specialist legs. No human intervention required — but you can launch `bun run ceo` for interactive oversight.
 4. **Knowledge graph provides memory.** The gk MCP server stores architectural decisions, component models, and patterns that persist across agent sessions. Engineers write observations during work; the CTO curates at post-flight. Knowledge that nobody queries fades in ranking (Ebbinghaus decay); frequently accessed knowledge strengthens (Hebbian reinforcement).
-5. **Condition-based dispatch.** The orchestrator is deterministic: it checks 11 conditions each poll cycle and spawns the right persona+skill pair. No agent reads an inbox and decides what to do — the condition table IS the decision engine.
+5. **Event-driven dispatch.** The orchestrator is deterministic: the poll loop emits typed events, and the dispatcher routes each to the right persona+skill pair. No agent reads an inbox and decides what to do — the event routing IS the decision engine.
 6. **Git worktrees provide isolation.** Each agent works in its own worktree via Claude Code's built-in `EnterWorktree` tool, so parallel execution doesn't cause conflicts. Engineers rebase before pushing as an end-of-session step.
 
 See [docs/v2-architecture.md](docs/v2-architecture.md) for the full system design.

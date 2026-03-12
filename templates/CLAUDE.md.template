@@ -152,11 +152,9 @@ Data flow: [Describe the primary data flow, e.g., "Client -> API Gateway -> Serv
 
 This project is managed by [autopilot](https://github.com/your-org/autopilot). The automation agents interact with this project as follows:
 
-- **Executor agent** picks up issues in the **Ready** (Todo) state in Linear, creates a branch, implements the change, and opens a PR.
-- **Planning agent** scans the codebase for improvements and files new issues to **Triage** in Linear for human review.
-- **Protected files** listed in `autopilot.yml` (including this file, `.env`, and the config itself) must **never** be modified by the executor. Changes to these files require human intervention.
-
-<!-- TODO: Update the link above and adjust terminology to match your Linear workflow states. -->
+- **Engineer agents** pick up ready beads, create a branch, implement the change, and open a PR.
+- **Planning agents** (CTO, Director, Staff Engineer) scan the codebase for improvements and file new beads for implementation.
+- **Protected files** listed in `.autopilot.yml` (including this file, `.env`, and the config itself) must **never** be modified by agents. Changes to these files require human intervention.
 
 ### Customizing Agent Prompts
 
@@ -166,7 +164,7 @@ You can override or augment the built-in agent prompts without forking autopilot
 .autopilot/prompts/<agent-name>.md
 ```
 
-Where `<agent-name>` is one of: `executor`, `fixer`, `auditor`, `planner`, `verifier`, `security-reviewer`, `product-manager`.
+Where `<agent-name>` is one of: `ceo`, `cto`, `director`, `staff-engineer`, `principal-engineer`, `engineer`, `security`, `product`, `qa`.
 
 **Full override** — replace the entire bundled prompt:
 

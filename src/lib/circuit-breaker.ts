@@ -1,6 +1,6 @@
 import { warn } from "./logger";
 
-export type ServiceName = "linear" | "github";
+export type ServiceName = "github";
 export type CircuitState = "closed" | "open" | "half-open";
 
 export interface BreakerConfig {
@@ -120,14 +120,13 @@ class ServiceCircuitBreaker {
 }
 
 /**
- * Per-service circuit breaker registry. Tracks Linear and GitHub independently.
+ * Per-service circuit breaker registry. Tracks GitHub API health.
  */
 export class CircuitBreakerRegistry {
   private readonly breakers: Record<ServiceName, ServiceCircuitBreaker>;
 
   constructor(config: BreakerConfig = DEFAULT_BREAKER_CONFIG) {
     this.breakers = {
-      linear: new ServiceCircuitBreaker(config),
       github: new ServiceCircuitBreaker(config),
     };
   }
@@ -150,7 +149,6 @@ export class CircuitBreakerRegistry {
 
   getAllStates(): Record<ServiceName, CircuitState> {
     return {
-      linear: this.getState("linear"),
       github: this.getState("github"),
     };
   }
@@ -170,33 +168,9 @@ export class CircuitBreakerRegistry {
 export const defaultRegistry = new CircuitBreakerRegistry();
 
 /**
- * Label prefixes that identify GitHub API calls.
- * All other withRetry() callers are treated as Linear.
- */
-const GITHUB_LABEL_PREFIXES = [
-  "getPR",
-  "getChecks",
-  "getRepo",
-  "enableAutoMerge",
-  "listReviews",
-  "listReviewComments",
-  "validateGitHub",
-];
-
-/**
  * Derive the service name from a withRetry() label.
- * Returns "github" for known GitHub call patterns; "linear" otherwise.
+ * Currently all retried calls are GitHub API calls.
  */
-export function inferService(label: string): ServiceName {
-  for (const prefix of GITHUB_LABEL_PREFIXES) {
-    if (
-      label === prefix ||
-      label.startsWith(`${prefix} `) ||
-      label.startsWith(`${prefix}#`) ||
-      label.startsWith(`${prefix}/`)
-    ) {
-      return "github";
-    }
-  }
-  return "linear";
+export function inferService(_label: string): ServiceName {
+  return "github";
 }

@@ -1,23 +1,23 @@
 ---
 name: post-flight
-description: This skill should be used when a batch of work completes and the CTO needs to curate the knowledge graph. Validates engineer observations, elevates confirmed patterns, prunes noise, adjusts confidence, handles escalations, and updates roadmap entities.
+description: This skill should be used when a cycle of work completes and the CTO needs to curate the knowledge graph. Validates engineer observations, elevates confirmed patterns, prunes noise, adjusts confidence, handles escalations, and updates roadmap entities.
 user-invocable: true
 ---
 
 # Post-Flight Curation
 
-You run after a batch of engineer beads completes. Your job is to curate the knowledge graph: validate what engineers wrote, elevate what was confirmed, prune what turned out to be wrong, resolve architectural escalations, and update the roadmap. The KG degrades without curation — observations accumulate, confidence values drift stale, and future engineers inherit noise alongside signal.
+You run after a cycle of engineer work completes (builders went idle with no ready beads). Your job is to curate the knowledge graph: validate what engineers wrote, elevate what was confirmed, prune what turned out to be wrong, resolve architectural escalations, and update the roadmap. The KG degrades without curation — observations accumulate, confidence values drift stale, and future engineers inherit noise alongside signal.
 
 Post-flight is the counterpart to pre-flight. Pre-flight writes constraints before work begins. Post-flight validates them after work completes and updates the record.
 
 ---
 
-## Phase 1: Read the Completed Batch
+## Phase 1: Read Recently Completed Beads
 
-List beads in this batch and their final states:
+List recently completed beads:
 
 ```
-bd list --label batch:<batch-id>
+bd list --status done --json
 ```
 
 For each bead, check its status:
@@ -32,7 +32,7 @@ To find recent engineer observations:
 get_timeline
 ```
 
-Filter to the batch timeframe. Read each observation and note which entity it is attached to.
+Read each observation and note which entity it is attached to.
 
 ---
 
@@ -58,7 +58,7 @@ Mark each observation as: elevate, prune, rework, or leave as-is.
 
 ## Phase 3: Elevate Confirmed Patterns
 
-When multiple engineers across the same or different batches have independently observed the same pattern, it is confirmed. Elevate its confidence:
+When multiple engineers have independently observed the same pattern, it is confirmed. Elevate its confidence:
 
 ```
 bulk_update_confidence([
@@ -73,7 +73,7 @@ Confidence thresholds:
 - `0.3-0.49`: Questionable — contradicted by some evidence, consider pruning
 - `< 0.3`: Prune — no longer believed to be true
 
-Also elevate architectural decisions that proved correct in this batch:
+Also elevate architectural decisions that proved correct in this cycle:
 - A constraint that engineers followed and that produced clean results should be elevated
 - A pattern that worked well across multiple beads should be noted
 
@@ -91,7 +91,7 @@ Remove or downgrade observations that the batch disproved:
 ```
 add_observations([{
   entity: "<approach or module entity>",
-  content: "NEGATIVE RESULT: Attempted [approach description] in batch:<batch-id>. Abandoned because [specific reason]. Do not retry without addressing [root cause].",
+  content: "NEGATIVE RESULT: Attempted [approach description]. Abandoned because [specific reason]. Do not retry without addressing [root cause].",
   type: "negative-result",
   confidence: 0.9
 }])
@@ -106,13 +106,13 @@ prune_stale
 
 ---
 
-## Phase 5: Cross-Batch Pattern Analysis
+## Phase 5: Cross-Bead Pattern Analysis
 
-Look across the entire batch for emerging patterns that no single bead surfaced individually:
+Look across the completed beads for emerging patterns that no single bead surfaced individually:
 
 - Did multiple engineers hit the same unexpected obstacle? That obstacle is a systemic issue worth noting.
 - Did multiple beads make the same design decision independently? That suggests the design is correct — document it as a confirmed pattern.
-- Did any bead create a dependency that future beads should know about? Write an ordering constraint for the next batch.
+- Did any bead create a dependency that future beads should know about? Write an ordering constraint.
 - Did the batch's work reveal new modules or components that should be in the KG but are not? Add them.
 
 To check for entities that should exist but are missing:
@@ -126,10 +126,10 @@ validate_graph
 
 ## Phase 6: Handle Escalations
 
-Read all beads in this batch that were blocked and check for architectural escalations:
+Read all beads that are blocked and check for architectural escalations:
 
 ```
-bd list --label batch:<batch-id> --status blocked
+bd blocked --json
 ```
 
 For each blocked bead, read its escalation reason. Escalations fall into categories:
@@ -138,17 +138,17 @@ For each blocked bead, read its escalation reason. Escalations fall into categor
 ```
 add_observations([{
   entity: "<module entity>",
-  content: "CONSTRAINT AMENDMENT: [original constraint text] is amended as of batch:<batch-id>. [What changed and why]. New rule: [updated constraint].",
+  content: "CONSTRAINT AMENDMENT: [original constraint text] is amended. [What changed and why]. New rule: [updated constraint].",
   type: "constraint",
   confidence: 0.9
 }])
 ```
 
-**Deferred with reason**: the engineer encountered something real but out of scope for this batch. Create a new bead for the next planning cycle and document why:
+**Deferred with reason**: the engineer encountered something real but out of scope. Create a new bead for the next planning cycle and document why:
 ```
 add_observations([{
   entity: "<relevant entity>",
-  content: "DEFERRED: [issue description] surfaced during batch:<batch-id> but deferred because [reason]. Should be revisited in next planning cycle. Priority: [p1-p4].",
+  content: "DEFERRED: [issue description] deferred because [reason]. Should be revisited in next planning cycle. Priority: [p1-p4].",
   type: "deferred",
   confidence: 0.8
 }])
@@ -181,12 +181,12 @@ Check whether any completed work has changed the strategic landscape:
 
 ## Phase 8: Write the Post-Flight Report
 
-Write a summary observation on the batch entity:
+Write a summary observation on the project or epic entity:
 
 ```
 add_observations([{
-  entity: "<batch entity or epic entity>",
-  content: "POST-FLIGHT COMPLETE [batch:<batch-id>]: <N> beads done, <M> blocked, <K> abandoned. Observations elevated: <count>. Observations pruned: <count>. Escalations resolved: <list or 'none'>. Escalations deferred: <list or 'none'>. Roadmap updated: <yes/no>. Graph health: <validate_graph result summary>. Notes for next planning cycle: <key findings or deferred items>.",
+  entity: "<project or epic entity>",
+  content: "POST-FLIGHT COMPLETE: <N> beads done, <M> blocked, <K> abandoned. Observations elevated: <count>. Observations pruned: <count>. Escalations resolved: <list or 'none'>. Escalations deferred: <list or 'none'>. Roadmap updated: <yes/no>. Graph health: <validate_graph result summary>. Notes for next planning cycle: <key findings or deferred items>.",
   type: "post-flight",
   confidence: 1.0
 }])
@@ -197,7 +197,7 @@ add_observations([{
 ## Rules
 
 - **Curation is mandatory, not optional.** An uncurated KG is worse than no KG — it mixes signal with noise and future agents cannot tell them apart.
-- **Negative results are first-class knowledge.** An abandoned approach that is documented prevents the same mistake in the next batch.
+- **Negative results are first-class knowledge.** An abandoned approach that is documented prevents the same mistake in future work.
 - **Amend constraints that were wrong.** Constraints that blocked correct implementations without justification should be amended or removed. Dead constraints erode trust in the KG.
 - **Resolve every escalation.** A blocked bead with no resolution is lost work. Either the escalation is fixed, explicitly deferred with a note, or surfaced to the next planning cycle.
 - **Run validate_graph.** Every post-flight session must check graph integrity. Dangling references accumulate and create subtle navigation failures for future agents.
