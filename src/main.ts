@@ -9,7 +9,7 @@
  * with a single unified condition evaluator + slot manager.
  */
 
-import { type SystemState, evaluateConditions } from "./conditions";
+import { evaluateConditions, type SystemState } from "./conditions";
 import { closeAllAgents, runAgent } from "./lib/agent-runner";
 import {
   claimBead,

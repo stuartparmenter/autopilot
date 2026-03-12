@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { DEFAULTS } from "./lib/config";
-import type { ActivityEntry, PlanningSession } from "./state";
+import type { ActivityEntry } from "./state";
 import { AppState } from "./state";
 
 describe("AppState — agent lifecycle", () => {

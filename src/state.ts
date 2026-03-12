@@ -192,7 +192,7 @@ export class AppState {
       exitReason?: string;
       runType?: string;
     },
-    rawMessages?: unknown[],
+    _rawMessages?: unknown[],
   ): Promise<void> {
     const agent = this.agents.get(agentId);
     if (!agent) return;

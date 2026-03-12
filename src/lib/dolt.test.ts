@@ -1,17 +1,36 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { closeDolt, doltQuery, getDolt } from "./dolt";
+
+// All dolt tests require a running Dolt server — skip when unavailable.
+async function doltServerAvailable(): Promise<boolean> {
+  try {
+    const { doltQuery, closeDolt } = await import("./dolt");
+    await doltQuery`SELECT 1`;
+    await closeDolt();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const hasServer = await doltServerAvailable();
+const itDolt = hasServer ? it : it.skip;
 
 describe("dolt", () => {
   afterAll(async () => {
-    await closeDolt();
+    if (hasServer) {
+      const { closeDolt } = await import("./dolt");
+      await closeDolt();
+    }
   });
 
-  it("connects to Dolt server", async () => {
+  itDolt("connects to Dolt server", async () => {
+    const { doltQuery } = await import("./dolt");
     const rows = await doltQuery<{ val: number }>`SELECT 1 as val`;
     expect(rows[0].val).toBe(1);
   });
 
-  it("creates operational tables without error", async () => {
+  itDolt("creates operational tables without error", async () => {
+    const { doltQuery } = await import("./dolt");
     const { ensureOperationalTables } = await import("./dolt-schema");
     await ensureOperationalTables();
     const rows = await doltQuery<{ TABLE_NAME: string }>`
@@ -23,7 +42,8 @@ describe("dolt", () => {
     expect(rows.length).toBe(1);
   });
 
-  it("getDolt returns same instance on repeated calls", () => {
+  itDolt("getDolt returns same instance on repeated calls", async () => {
+    const { getDolt } = await import("./dolt");
     const a = getDolt();
     const b = getDolt();
     expect(a).toBe(b);

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { SlotManager } from "./slots";
 import type { SlotConfig } from "./slots";
+import { SlotManager } from "./slots";
 
 const defaultConfig: SlotConfig = {
   total: 5,

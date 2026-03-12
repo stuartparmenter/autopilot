@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { AutopilotConfig } from "./lib/config";
 import { DEFAULTS } from "./lib/config";
 import {

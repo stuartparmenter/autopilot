@@ -15,7 +15,7 @@
     "ceo": "claude --agent ceo --plugin-dir plugins/autopilot-core --plugin-dir plugins/autopilot-leadership"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.72",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.73",
     "hono": "^4.12.7",
     "octokit": "^5.0.5",
     "yaml": "^2.8.2",
