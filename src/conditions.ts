@@ -1,14 +1,9 @@
 // src/conditions.ts
 // Condition monitor — evaluates system state and returns agent invocations
 
-export interface AgentInvocation {
-  agentId: string;
-  persona: string;
-  skill: string;
-  prompt: string;
-  beadId?: string;
-  slotType: "builder" | "planner";
-}
+import type { AgentInvocation } from "./lib/agent-runner";
+
+export type { AgentInvocation };
 
 export interface ConditionCheckResult {
   condition: string;

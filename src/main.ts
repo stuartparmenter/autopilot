@@ -15,7 +15,6 @@ import {
   claimBead,
   closeBead,
   getReadyBeads,
-  getReadyCount,
   getStaleBeads,
   getTriageBeads,
 } from "./lib/beads";
@@ -218,16 +217,15 @@ process.on("uncaughtException", (err) => {
 // --- Gather SystemState ---
 
 async function gatherSystemState(cfg: AutopilotConfig): Promise<SystemState> {
-  const [readyBeads, readyCount, _triageBeads, staleBeads] = await Promise.all([
+  const [readyBeads, _triageBeads, staleBeads] = await Promise.all([
     getReadyBeads(),
-    getReadyCount(),
     getTriageBeads(),
     getStaleBeads(cfg.executor.stale_timeout_minutes),
   ]);
 
   return {
     readyBeads: readyBeads.map((b) => ({ id: b.id, title: b.title })),
-    readyCount,
+    readyCount: readyBeads.length,
     kgEmpty: false, // TODO: check via gk MCP — stub for now
     triageProjects: [], // TODO: wire to project beads
     completedProjects: [], // TODO: wire to project beads
@@ -385,18 +383,18 @@ while (!shuttingDown) {
     const msg = e instanceof Error ? e.message : String(e);
 
     consecutiveFailures++;
-    info(`Stack trace: ${stack}`);
+    info(`Stack trace: ${sanitizeMessage(stack)}`);
 
     const backoffMs = Math.min(
       BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1),
       MAX_BACKOFF_MS,
     );
     warn(
-      `Loop error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${msg}`,
+      `Loop error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${sanitizeMessage(msg)}`,
     );
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
       fatal(
-        `${MAX_CONSECUTIVE_FAILURES} consecutive failures — exiting. Last error: ${msg}`,
+        `${MAX_CONSECUTIVE_FAILURES} consecutive failures — exiting. Last error: ${sanitizeMessage(msg)}`,
       );
     }
     info(`Retrying in ${Math.round(backoffMs / 1000)}s...`);
