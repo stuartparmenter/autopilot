@@ -27,6 +27,8 @@ export interface BeadsConfig {
 export interface KnowledgeGraphConfig {
   provider: string;
   db_path: string;
+  gk_command: string; // command to run gk MCP server (e.g. "bun")
+  gk_args: string[]; // args for the command (e.g. ["run", "/path/to/gk/."])
 }
 
 export interface PlanningConfig {
@@ -146,6 +148,8 @@ export const DEFAULTS: AutopilotConfig = {
   knowledge_graph: {
     provider: "gk",
     db_path: ".beads/knowledge.db",
+    gk_command: "",
+    gk_args: [],
   },
 };
 

@@ -15,7 +15,7 @@ import { wireDispatcher } from "./dispatcher";
 import { closeAllAgents } from "./lib/agent-runner";
 import { checkGates, closeEligibleEpics, getReadyBeads } from "./lib/beads";
 import { loadConfig, resolveProjectPath } from "./lib/config";
-import { closeDolt, getDolt } from "./lib/dolt";
+import { closeDolt, detectDoltConnection, getDolt } from "./lib/dolt";
 import { ensureOperationalTables } from "./lib/dolt-schema";
 import { interruptibleSleep } from "./lib/errors";
 import { createBus, IMPLEMENTABLE_TYPES } from "./lib/events";
@@ -66,13 +66,14 @@ const config = loadConfig(projectPath);
 
 info("Checking Dolt database...");
 try {
-  getDolt(config.beads.dolt_port);
-  ok(`Dolt connected on port ${config.beads.dolt_port}`);
+  const doltConn = detectDoltConnection();
+  getDolt();
+  ok(`Dolt connected: ${doltConn.database}@${doltConn.host}:${doltConn.port}`);
 } catch (e) {
   const msg = e instanceof Error ? e.message : String(e);
   fatal(
-    `Cannot connect to Dolt on port ${config.beads.dolt_port}: ${msg}\n` +
-      "Ensure Dolt is running: dolt sql-server --port 3307",
+    `Cannot connect to Dolt: ${msg}\n` +
+      "Ensure Dolt is running (bd dolt start) or beads is initialized (bd init --stealth)",
   );
 }
 
@@ -228,6 +229,8 @@ const MAX_CONSECUTIVE_FAILURES = 5;
 let consecutiveFailures = 0;
 let prevBuildersActive = 0;
 let pollCount = 0;
+let kgSeeded = false;
+let kgSeedDispatched = false;
 const EPIC_CLEANUP_EVERY_N_POLLS = 6; // ~30min at 5min poll interval
 
 info("Starting main loop (Ctrl+C to stop)...");
@@ -242,6 +245,9 @@ while (!shuttingDown) {
 
     if (shuttingDown) break;
 
+    // 0. Re-detect Dolt connection (port may change on Dolt restart)
+    detectDoltConnection();
+
     // 1. Poll for ready beads and emit events
     const readyBeads = await getReadyBeads();
 
@@ -253,22 +259,57 @@ while (!shuttingDown) {
       bus.emit("beadReady", {
         id: bead.id,
         title: bead.title,
-        beadType: bead.type,
+        beadType: bead.issue_type,
       });
     }
 
-    // 2. Check backlog threshold (issue count only, not initiatives/epics)
+    // 2. Check KG health — must happen before backlog check so CTO
+    //    waits for seeding on first run.
+    let kgIsEmpty = false;
+    if (!kgSeeded) {
+      if (config.knowledge_graph.gk_command) {
+        // Dolt-backed KG: check if knowledge database has entities
+        try {
+          const rows = await getDolt().unsafe(
+            "SELECT COUNT(*) as cnt FROM knowledge.entities",
+          );
+          if ((rows[0]?.cnt ?? 0) > 0) {
+            kgSeeded = true;
+          } else {
+            kgIsEmpty = true;
+          }
+        } catch {
+          // Database or table doesn't exist yet
+          kgIsEmpty = true;
+        }
+      } else {
+        const kgPath = resolve(projectPath, config.knowledge_graph.db_path);
+        if (existsSync(kgPath)) {
+          kgSeeded = true;
+        } else {
+          kgIsEmpty = true;
+        }
+      }
+
+      if (kgIsEmpty && !kgSeedDispatched) {
+        kgSeedDispatched = true;
+        bus.emit("kgEmpty", undefined);
+      }
+    }
+
+    // 3. Check backlog threshold (issue count only, not initiatives/epics)
+    //    Suppressed while KG is empty — CTO needs KG context before planning.
     const issueCount = readyBeads.filter((b) =>
-      IMPLEMENTABLE_TYPES.includes(b.type ?? "task"),
+      IMPLEMENTABLE_TYPES.includes(b.issue_type ?? ""),
     ).length;
-    if (issueCount < config.planning.min_ready_threshold) {
+    if (issueCount < config.planning.min_ready_threshold && !kgIsEmpty) {
       bus.emit("backlogLow", {
         readyCount: issueCount,
         threshold: config.planning.min_ready_threshold,
       });
     }
 
-    // 3. Check gates — beads handles PR merge/CI status tracking natively.
+    // 4. Check gates — beads handles PR merge/CI status tracking natively.
     //    `bd gate check` auto-resolves gates whose conditions are met
     //    (PR merged, CI passed, timer expired) and reports failures.
     try {
@@ -289,12 +330,6 @@ while (!shuttingDown) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       warn(`Gate check error (non-fatal): ${sanitizeMessage(msg)}`);
-    }
-
-    // 4. Check KG health — emit kgEmpty if database doesn't exist
-    const kgPath = resolve(projectPath, config.knowledge_graph.db_path);
-    if (!existsSync(kgPath)) {
-      bus.emit("kgEmpty", undefined);
     }
 
     // 5. Batch complete detection — builders went from active to idle

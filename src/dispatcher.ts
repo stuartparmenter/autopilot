@@ -6,6 +6,7 @@
 
 import type { AgentInvocation, AgentResult } from "./lib/agent-runner";
 import { runAgent as defaultRunAgent } from "./lib/agent-runner";
+import { acquireMergeSlot, releaseMergeSlot } from "./lib/beads";
 
 import type { AutopilotConfig } from "./lib/config";
 import type { AutopilotBus } from "./lib/events";
@@ -27,6 +28,8 @@ export interface DispatcherOpts {
   shutdownSignal: AbortSignal;
   /** Injectable for testing. */
   runAgent?: typeof defaultRunAgent;
+  acquireMergeSlot?: typeof acquireMergeSlot;
+  releaseMergeSlot?: typeof releaseMergeSlot;
 }
 
 /**
@@ -39,7 +42,7 @@ export function wireDispatcher(opts: DispatcherOpts): () => void {
   // --- beadReady: route by bead type ---
   unsubs.push(
     bus.on("beadReady", async (e) => {
-      const beadType = e.beadType ?? "task";
+      const beadType = e.beadType;
 
       if (beadType === "initiative") {
         await dispatchAgent(
@@ -65,7 +68,7 @@ export function wireDispatcher(opts: DispatcherOpts): () => void {
           },
           opts,
         );
-      } else if (IMPLEMENTABLE_TYPES.includes(beadType)) {
+      } else if (beadType && IMPLEMENTABLE_TYPES.includes(beadType)) {
         await dispatchAgent(
           {
             agentId: makeId(),
@@ -83,17 +86,28 @@ export function wireDispatcher(opts: DispatcherOpts): () => void {
     }),
   );
 
-  // --- prFailed: engineer fixes CI ---
+  // --- prFailed: engineer fixes CI (serialized via merge-slot) ---
   unsubs.push(
     bus.on("prFailed", async (e) => {
+      const agentId = makeId();
+      const tryAcquire = opts.acquireMergeSlot ?? acquireMergeSlot;
+      const acquired = await tryAcquire(agentId);
+      if (!acquired) {
+        info(
+          `Merge slot held — skipping fix-pr for gate ${e.gateId} (will retry next poll)`,
+        );
+        return;
+      }
+
       await dispatchAgent(
         {
-          agentId: makeId(),
+          agentId,
           persona: "engineer",
           skill: "fix-pr",
           prompt: `Invoke /fix-pr. Gate "${e.gateTitle}" (${e.gateId}) reports CI failure. Diagnose and fix.`,
           beadId: e.beadId ?? e.gateId,
           slotType: "builder",
+          mergeSlotHolder: agentId,
         },
         opts,
       );
@@ -188,6 +202,7 @@ async function dispatchAgent(
       state.addActivity(invocation.agentId, entry);
     },
     shutdownSignal,
+    (ctrl) => state.registerAgentController(invocation.agentId, ctrl),
   )
     .then(async (result: AgentResult) => {
       const status = result.error
@@ -228,7 +243,16 @@ async function dispatchAgent(
       const msg = err instanceof Error ? err.message : String(err);
       warn(`Agent ${invocation.persona}/${invocation.skill} error: ${msg}`);
     })
-    .finally(() => {
+    .finally(async () => {
       slots.release(invocation.agentId);
+      if (invocation.mergeSlotHolder) {
+        const tryRelease = opts.releaseMergeSlot ?? releaseMergeSlot;
+        try {
+          await tryRelease(invocation.mergeSlotHolder);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          warn(`Failed to release merge slot: ${msg}`);
+        }
+      }
     });
 }

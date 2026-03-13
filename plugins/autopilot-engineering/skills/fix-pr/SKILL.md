@@ -26,16 +26,31 @@ If the slot is held by another agent, this will queue you. Wait for the slot bef
 
 ---
 
+## Phase 1.5: Enter Worktree
+
+Create an isolated worktree before touching any code:
+
+```
+EnterWorktree
+```
+
+A hook automatically fetches and resets the worktree to the latest default branch. You will check out the PR branch in the next phase.
+
+**All subsequent file operations must stay inside the worktree path.** Do not `cd ..` to the parent repo. Do not read or write files outside the worktree.
+
+---
+
 ## Phase 2: Sync to the PR Branch
 
-Sync your clone to the current remote state of the branch before any other operation:
+Fetch and check out the existing PR branch in your worktree:
 
 ```
 git fetch origin <branch>
+git checkout <branch>
 git reset --hard origin/<branch>
 ```
 
-This is the only permitted use of `git reset --hard` in this skill. It aligns your local state with the remote before you make any changes.
+This is the only permitted use of `git reset --hard` in this skill. It aligns your worktree with the remote branch state before you make any changes.
 
 ---
 
@@ -161,8 +176,9 @@ add_observations([{
 
 The bead stays open with its PR gate pending (CI will re-run automatically).
 
-**Release the merge slot:**
+**Exit worktree and release the merge slot:**
 ```
+ExitWorktree action: "remove"
 bd merge-slot release
 ```
 
@@ -175,8 +191,9 @@ Add a comment to the bead explaining:
 
 Update the bead to `blocked`. A blocked bead with a clear explanation is better than a destructive "fix."
 
-**Release the merge slot:**
+**Exit worktree and release the merge slot:**
 ```
+ExitWorktree action: "remove"
 bd merge-slot release
 ```
 

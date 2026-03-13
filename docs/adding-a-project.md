@@ -90,24 +90,17 @@ project:
   name: "my-project"   # Human-readable project name
 ```
 
-### Critical fields
+### Knowledge graph settings
 
-These fields are technically optional (they have defaults), but getting them right is critical for executor success:
+If you want agents to use a knowledge graph (gk) backed by the beads Dolt server, specify how to run the gk MCP server. If omitted, agents run without a knowledge graph.
 
 ```yaml
-project:
-  test_command: "npm test -- --watchAll=false"   # Must run non-interactively and exit
-  lint_command: "npm run lint"                    # Must run non-interactively and exit
-  build_command: "npm run build"                  # Optional, used for validation
-  tech_stack: "TypeScript, Next.js, PostgreSQL, Prisma"  # Included in prompts
+knowledge_graph:
+  gk_command: "bun"                              # Command to run gk
+  gk_args: ["run", "/path/to/gk/."]              # Args for the command
 ```
 
-**test_command and lint_command are the most important settings.** The executor runs these commands to validate its implementation. If they are wrong, the executor will either skip validation (no command configured) or get stuck in a loop trying to fix unrelated failures.
-
-Requirements for these commands:
-- Must run non-interactively (no prompts, no watch mode)
-- Must exit with code 0 on success and non-zero on failure
-- Must be runnable from the project root directory
+The orchestrator passes Dolt connection details (host, port, database) automatically based on your `beads` config.
 
 ### Executor settings
 
@@ -139,24 +132,16 @@ beads:
   dolt_data_dir: ".beads/dolt"  # Dolt data directory
 ```
 
-### Protected paths
-
-Files the executor must never modify:
-
-```yaml
-project:
-  protected_paths:
-    - ".env"
-    - ".autopilot.yml"
-    - "CLAUDE.md"
-```
-
 ### Full example
 
 ```yaml
 beads:
   dolt_port: 3307
   dolt_data_dir: ".beads/dolt"
+
+knowledge_graph:
+  gk_command: "bun"
+  gk_args: ["run", "/path/to/gk/."]
 
 executor:
   parallel: 3
@@ -177,16 +162,6 @@ github:
 
 project:
   name: "acme-api"
-  tech_stack: "TypeScript, Express, PostgreSQL, Prisma, Jest"
-  test_command: "npm test -- --watchAll=false --forceExit"
-  lint_command: "npm run lint"
-  build_command: "npm run build"
-  protected_paths:
-    - ".env"
-    - ".env.local"
-    - ".autopilot.yml"
-    - "CLAUDE.md"
-    - ".github/workflows"
 ```
 
 ---

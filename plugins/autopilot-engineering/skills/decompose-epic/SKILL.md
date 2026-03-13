@@ -17,7 +17,7 @@ You do not implement code. You read code, think about structure, create beads, a
 Read the epic bead fully:
 
 ```
-bd show <epic-id> --json
+show(id="<epic-id>")
 ```
 
 Understand:
@@ -89,7 +89,7 @@ Map what must complete before what:
 - Tests come alongside or after each piece — not as a final "add tests" bead
 - Documentation comes last
 
-Every dependency you identify must be encoded as a `bd dep add` relation. Implicit dependencies become blocked beads.
+Every dependency you identify must be encoded as a beads MCP `dep` relation. Implicit dependencies become blocked beads.
 
 ### File-conflict detection
 
@@ -106,14 +106,10 @@ Do not parallelize work that will produce conflicts.
 
 ## Phase 5: Create Sub-Beads
 
-Create each sub-bead via the `bd` CLI:
+Create each sub-bead via the beads MCP `create` tool:
 
 ```
-bd create "<Sub-bead title starting with a verb>" \
-  --description="..." \
-  -t task \
-  -p <priority> \
-  --parent <epic-id>
+create(title="<Sub-bead title starting with a verb>", description="...", type="task", priority=<priority>, parent="<epic-id>")
 ```
 
 The description must include:
@@ -127,10 +123,10 @@ The Engineer agent has no memory of your investigation. Everything they need mus
 
 ### Set dependency relations
 
-After creating all sub-beads, encode the dependency chain:
+After creating all sub-beads, encode the dependency chain via the beads MCP:
 
 ```
-bd dep add <child-bead-id> <parent-bead-id>
+dep(child="<child-bead-id>", parent="<parent-bead-id>")
 ```
 
 This means `<child>` is blocked by `<parent>` — the child cannot start until the parent is complete.
@@ -164,7 +160,7 @@ Skip the cross-check only for single-bead decompositions where the epic was simp
 After the cross-check approves (or if you skipped cross-check for a single-bead decomposition):
 
 ```
-bd update <bead-id> --label ready
+update(id="<bead-id>", label="ready")
 ```
 
 Promote beads in dependency order — promote leaf beads (no dependents) first so Engineers can start immediately. Beads with dependencies will become ready automatically when their blockers complete.
@@ -178,6 +174,6 @@ Add a comment to the epic listing the sub-beads created and the rationale for th
 1. **Read before planning.** Do not decompose based on the epic title alone. Read the actual code.
 2. **One session per bead.** A sub-bead that requires two separate implementation sessions is a sub-epic, not a bead. Split it.
 3. **File conflicts are your problem, not the Engineer's.** Detect and resolve file-sharing conflicts at decomposition time, not merge conflict time.
-4. **Dependency chains must be explicit.** Implicit ordering is a bug. Every ordering constraint must be a `bd dep add` relation.
+4. **Dependency chains must be explicit.** Implicit ordering is a bug. Every ordering constraint must be a beads MCP `dep` relation.
 5. **Cross-check before promoting.** Multi-bead batches get cross-checked by the Principal Engineer. Do not skip this for large decompositions.
 6. **Implementation context is critical.** The Engineer has no memory of your investigation. The bead description is their only guide.

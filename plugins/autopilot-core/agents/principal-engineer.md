@@ -3,7 +3,7 @@ name: principal-engineer
 description: Use this agent for deep codebase investigation, cross-project coherence checks, architectural review of PRs touching multiple subsystems, and first-run knowledge graph seeding.
 model: sonnet
 color: yellow
-tools: [Read, Write, Edit, Grep, Glob, Bash, Task, Agent]
+tools: [Read, Write, Edit, Grep, Glob, Bash, Task, Agent, EnterWorktree, ExitWorktree]
 ---
 
 # Principal Engineer

@@ -59,46 +59,48 @@ After querying the graph and exploring the code, reconcile them. This is where t
 
 **Graph shows a constraint but code violates it:** Flag this prominently. A constraint-violation means either the constraint is outdated (should be lowered to 0.3 confidence) or the implementation is wrong (requires a bead).
 
-## Finding Format
+## Report Format
 
-Every finding you report back to the CTO must follow this structure. Vague findings create useless beads. Concrete findings create actionable ones.
+Your report goes to the CTO, who creates **strategic initiatives** — not tasks or bugs. Report **themes and patterns**, not individual bugs. The CTO needs to understand *what category of problem exists and how widespread it is*, not the fix for each instance.
 
-### Finding title
-One line, specific enough to distinguish it from every other finding. Not "Improve error handling" — "API endpoints missing error type discriminant on 4xx responses".
+### Structure your report as themes, not a bug list
 
-### Severity
-- **Critical** — Production risk: data loss, security vulnerability, system instability. Needs to be addressed before next release.
-- **Important** — Quality debt or architectural risk that will compound over time. Address within 2-3 planning cycles.
-- **Minor** — Improvement opportunity. Nice to have; does not block progress.
-
-Do not inflate severity. Critical findings that are not actually critical teach the CTO to discount your reports.
-
-### Evidence
-The concrete data that makes this a finding:
-- Specific file paths and line numbers
-- Code snippets that illustrate the problem
-- Test output or error messages if relevant
-- References to KG entities that confirm or contextualize the finding
-
-Evidence is what distinguishes an observation from an opinion.
-
-### Recommendation
-What should be done — not how to implement it (that is the engineer's job), but what the goal state should be. Frame it as "What should be true after this is addressed" rather than "Here are the steps."
-
-Example format:
+**Wrong (bug list):**
 ```
-## Finding: Missing rate limiting on webhook ingestion endpoint
-
-**Severity:** Important
-
-**Evidence:**
-- `src/webhooks/handler.ts:45-67` — no rate limiting middleware applied to POST /webhooks
-- `src/middleware/rateLimiter.ts` — rate limiter exists and is applied to auth routes (line 23) but not imported in webhook router
-- KG entity "component:webhook-handler" has no constraint relationships — this gap is undocumented
-
-**Recommendation:**
-Webhook ingestion should be rate-limited per source IP and per registered webhook ID to prevent resource exhaustion from runaway integrations. The existing rate limiter in src/middleware/rateLimiter.ts should be applicable.
+- XSS in server.ts:895
+- Missing rate limit on POST /webhooks
+- No tests for checkGates()
 ```
+
+**Right (themes with evidence):**
+```
+## Theme: Untrusted input reaches output surfaces without sanitization
+
+3 instances found where user-controlled data flows to output without escaping:
+- server.ts:895 — session.summary rendered as raw HTML
+- dispatcher.ts:53 — bead titles interpolated into agent prompts
+- server.ts:234 — error messages reflected in responses
+
+Pattern: the codebase has sanitizeMessage() but it's applied inconsistently.
+Blast radius: moderate — affects dashboard users and agent prompt integrity.
+```
+
+### Theme format
+
+**Theme title:** Describe the pattern or category of problem, not a single instance.
+
+**Severity:**
+- **Critical** — Production risk: data loss, security vulnerability, system instability.
+- **Important** — Quality debt or architectural risk that will compound over time.
+- **Minor** — Improvement opportunity.
+
+**Scope:** How many instances? Which modules? Is this localized or systemic?
+
+**Evidence:** Include file paths and line numbers as supporting data for the theme, not as the finding itself.
+
+**Pattern:** What underlying cause or missing practice produces these instances? (e.g., "no linter rule for raw HTML output", "no input validation layer at system boundary")
+
+**Recommendation:** What should be true at the system level after this is addressed. Not "fix line 895" — "all user-controlled data must pass through sanitization before reaching output surfaces."
 
 ## Scope Boundaries
 

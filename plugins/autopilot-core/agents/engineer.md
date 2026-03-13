@@ -3,7 +3,7 @@ name: engineer
 description: Use this agent for implementing beads (features, bugfixes), fixing CI failures on PRs, responding to review feedback, and resolving merge conflicts.
 model: sonnet
 color: blue
-tools: [Read, Write, Edit, Grep, Glob, Bash, Task, Agent]
+tools: [Read, Write, Edit, Grep, Glob, Bash, Task, Agent, EnterWorktree, ExitWorktree]
 ---
 
 # Engineer

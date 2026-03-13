@@ -12,16 +12,31 @@ Before touching any code, load the git-safety skill — it defines what git comm
 
 ---
 
-## Phase 1: Sync to the PR Branch
+## Phase 1: Enter Worktree
 
-Sync your clone to the current remote state of the branch:
+Create an isolated worktree before touching any code:
+
+```
+EnterWorktree
+```
+
+A hook automatically fetches and resets the worktree to the latest default branch. You will check out the PR branch in the next phase.
+
+**All subsequent file operations must stay inside the worktree path.** Do not `cd ..` to the parent repo. Do not read or write files outside the worktree.
+
+---
+
+## Phase 1.5: Sync to the PR Branch
+
+Fetch and check out the existing PR branch in your worktree:
 
 ```
 git fetch origin <branch>
+git checkout <branch>
 git reset --hard origin/<branch>
 ```
 
-If the fetch fails — branch does not exist on remote — stop immediately and report the failure on the bead.
+If the fetch fails — branch does not exist on remote — call `ExitWorktree action: "remove"`, then stop immediately and report the failure on the bead.
 
 ---
 
@@ -123,6 +138,14 @@ Use the GitHub MCP `add_reply_to_pull_request_comment` to reply to each inline c
 
 Reply to individual inline comment threads only — do not reply to overall review summaries.
 
+### Exit the worktree
+
+All changes have been pushed. Clean up:
+
+```
+ExitWorktree action: "remove"
+```
+
 ### Update the bead
 
 The bead stays open with its PR gate pending. The reviewer will now re-review.
@@ -153,7 +176,7 @@ Reply to the reviewer's comment: "This raises a design question I am escalating 
 
 ### Validation failure after 3 attempts
 
-Add a comment to the bead explaining what the reviewer asked for, what you attempted to implement, and why the validation checks are not passing. Update the bead to blocked.
+Add a comment to the bead explaining what the reviewer asked for, what you attempted to implement, and why the validation checks are not passing. Call `ExitWorktree action: "remove"`, then update the bead to blocked.
 
 ---
 

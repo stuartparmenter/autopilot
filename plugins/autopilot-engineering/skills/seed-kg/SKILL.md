@@ -1,216 +1,206 @@
 ---
 name: seed-kg
-description: This skill should be used when the Principal Engineer seeds the knowledge graph for a new project. Performs broad-but-shallow codebase exploration to populate the graph with structural knowledge.
+description: This skill should be used when the Principal Engineer seeds the knowledge graph for a new project. Systematically explores the entire codebase and populates the graph with structural knowledge.
 user-invocable: true
 ---
 
 # Seed Knowledge Graph
 
-You are a Principal Engineer seeding the knowledge graph for a project that has not yet been explored. Your goal is broad-but-shallow: understand the structure, identify the major modules, find documented decisions, and write that structural knowledge to the KG so future agents have a foundation to build on.
+You are a Principal Engineer seeding the knowledge graph for a project that has not yet been explored. Your goal is systematic and thorough: explore every part of the project, understand its structure, and write that knowledge to the KG so future agents have a complete foundation.
 
-You are not auditing quality. You are not looking for bugs. You are mapping terrain.
-
----
-
-## Phase 1: Understand the Macro Structure
-
-Start with the files that describe intent before you read code.
-
-**Entry points to read first:**
-- `CLAUDE.md` or `claude.md` — project-specific conventions, architecture overview, commands
-- `README.md` — project description, setup, tech stack
-- Root config files: `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod` — dependencies and tech stack
-- CI config: `.github/workflows/`, `.gitlab-ci.yml` — what the project runs in CI
-- Any `docs/` directory, especially architecture docs, ADRs (Architecture Decision Records), or design docs
-
-Read these files before reading source code. They tell you what the project thinks it is. Source code tells you what it actually is — you will reconcile these perspectives later.
-
-**Map the directory structure:**
-- List top-level directories
-- For each directory, identify whether it is a source module, test directory, configuration, tooling, or documentation
-- Identify the module boundaries: what are the major units of functionality?
+You are mapping terrain, not auditing quality. You are not looking for bugs.
 
 ---
 
-## Phase 2: Explore Module Boundaries
+## Phase 1: Read Intent Documents
 
-For each major module or directory you identified:
+Read the files that describe intent before you read code:
 
-1. Read the module's entry point (usually `index.ts`, `mod.rs`, `__init__.py`, or whatever is imported by other modules)
-2. Scan for other modules this one imports — this reveals dependency structure
-3. Note the primary responsibility of this module in one sentence
+1. `CLAUDE.md` / `claude.md` — conventions, architecture, commands
+2. `README.md` — description, setup, tech stack
+3. Root config: `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`
+4. CI config: `.github/workflows/`, `.gitlab-ci.yml`
+5. `docs/` — architecture docs, ADRs, design docs
 
-You are looking for:
-- **What does this module own?** What data, what behavior, what state?
-- **What does it depend on?** Which other modules does it import?
-- **What depends on it?** (You will piece this together as you explore other modules)
-
-Do not read every file in every module. Read entry points and public interfaces. You are mapping, not auditing.
+**Extract pointers.** These docs tell you which directories matter most. A directory docs call "the real product" needs deeper exploration than a utility folder. Note every directory or module that docs highlight — you will explore each one.
 
 ---
 
-## Phase 3: Find Existing Architectural Decisions
+## Phase 2: Map Every Directory
 
-Architectural decisions live in unexpected places. Look for them in:
+List all top-level directories. Then `ls` **every single one** to understand what it contains. Do not skip directories because they are not named `src/` or `lib/`.
 
-- **CLAUDE.md / README** — explicit statements about what tech was chosen and why
-- **Code comments marked with `DECISION:`, `NOTE:`, `WHY:`, `REASON:`** — engineers sometimes mark important choices inline
-- **Git commit messages** — for large decisions, the commit that introduced them often explains the reasoning (scan recent significant commits via `git log --oneline -20`)
-- **ADR files** — if a `docs/adr/` or `docs/decisions/` directory exists, these are gold
-- **Config files** — the presence of specific tools (e.g., Zod for validation, a specific DB driver) is itself a decision
+For each directory, classify it:
+- Source module (code that runs)
+- Plugin / extension / agent / skill (definitions that shape behavior)
+- Configuration / schema / migration
+- Test directory
+- Documentation
+- Tooling / scripts
+- Static assets
 
-For each decision you find, note:
-- What was decided (the choice)
-- What was the alternative (if stated)
-- Why this choice was made (if stated)
+**Non-code directories are often as important as code.** Plugin directories, agent definitions, skill files, and schema directories define system behavior just as much as source code. Treat them as first-class modules.
 
----
-
-## Phase 4: Identify Key Patterns
-
-Patterns are recurring approaches the codebase uses consistently. Look for:
-
-- **Error handling**: How are errors created, propagated, and caught?
-- **Testing**: What test structure is used? How are mocks set up?
-- **Data validation**: Where does validation happen? What library is used?
-- **Async patterns**: How is async work handled? Callbacks, promises, async/await?
-- **Configuration**: How is config loaded and accessed?
-- **Logging**: How is logging done? What format?
-
-You do not need to find all patterns — find the ones that recur frequently enough that a new agent would need to know them to contribute correctly.
-
----
-
-## Phase 5: Write to the KG
-
-Write what you found in a single batched operation. Do not scatter writes across your session.
-
-### Component entities (one per major module)
+After mapping, write a project entity and component entities immediately — do not wait until the end:
 
 ```
 add_entities([
   {
-    name: "component:<module-name>",
+    name: "<project-name>",
+    type: "project",
+    staleness_tier: "overview",
+    observations: ["<Tech stack, purpose, scale — 2-3 sentences from README/CLAUDE.md>"]
+  },
+  // One entity per top-level directory/module you identified:
+  {
+    name: "<directory-name>",
     type: "component",
     staleness_tier: "summary",
-    description: "<one sentence: what this module owns and is responsible for>"
+    observations: ["<Directory at <path>. Contains: <what>. Classification: <type>. Purpose: <one sentence>.>"]
   },
   ...
 ])
 ```
 
-### Decision entities (one per architectural decision found)
+---
 
-```
-add_entities([
-  {
-    name: "decision:<decision-slug>",
-    type: "decision",
-    staleness_tier: "overview",
-    description: "<the decision: what was chosen>"
-  },
-  ...
-])
-```
+## Phase 3: Explore Each Module
 
-### Pattern entities (one per recurring pattern)
+Go through **every** component you created in Phase 2. For each:
 
-```
-add_entities([
-  {
-    name: "pattern:<pattern-slug>",
-    type: "pattern",
-    staleness_tier: "summary",
-    description: "<the pattern: how things are done>"
-  },
-  ...
-])
-```
+1. **Code modules**: Read the entry point (`index.ts`, `main.ts`, `mod.rs`, `__init__.py`). Note imports, exports, primary responsibility.
+2. **Plugin/agent/skill directories**: Read manifest files (`plugin.json`, frontmatter in `.md` files). List what agents/skills/commands exist and what each does.
+3. **Config/schema directories**: Read representative files. Note what they configure.
+4. **Test directories**: Count test files, note what modules they cover.
+5. **Docs directories**: Read architecture docs, ADRs. These contain decisions.
 
-### Constraint entities (for hard rules found in CLAUDE.md or equivalent)
-
-```
-add_entities([
-  {
-    name: "constraint:<constraint-slug>",
-    type: "constraint",
-    staleness_tier: "overview",
-    description: "<the rule: what agents must or must not do>"
-  },
-  ...
-])
-```
-
-### Observations on entities
-
-For each entity, add an observation with what you found and where:
+As you finish each module, write observations immediately:
 
 ```
 add_observations([
   {
-    entityId: "component:<module-name>",
-    content: "Module at <path>. Imports: <list>. Exports: <list>. Primary responsibility: <sentence>.",
-    confidence: 0.65,
-    staleness_tier: "summary",
-    source: "principal-engineer/seed-kg-<date>"
+    entity_names: ["<component-name>"],
+    content: "<What you found. Entry point: <file>. Key exports: <list>. Imports from: <list>. Contains N files. Responsibility: <sentence>.>",
+    confidence: 0.65
+  }
+])
+```
+
+Do not hold observations in memory. Write them as you go — the KG is your notebook.
+
+---
+
+## Phase 4: Investigation Categories
+
+After module exploration, investigate these categories across the codebase. For each, write what you **find** — not what you think should exist.
+
+### Tooling Inventory
+- Linter/formatter: which tool, CI integration?
+- Test runner: which tool, approximate test count and coverage distribution?
+- Type checking: which tool, strict or loose?
+- Dependency management: lock file, pinned versions?
+- Security scanning: automated vulnerability checks?
+
+### Architectural Decisions
+Look for decisions in:
+- CLAUDE.md / README — explicit tech choices
+- Code comments with `DECISION:`, `NOTE:`, `WHY:`, `REASON:`
+- ADR files in `docs/adr/` or `docs/decisions/`
+- Git history: `git log --oneline -20`
+- Config files — tool choices are decisions
+
+### Key Patterns
+Find recurring approaches:
+- Error handling: how are errors created, propagated, caught?
+- Testing: structure, mock setup, test utilities?
+- Data validation: where and with what library?
+- Configuration: how is config loaded?
+- Logging: format and approach?
+
+Write findings as entities + observations:
+
+```
+add_entities([
+  {
+    name: "decision:<slug>",
+    type: "decision",
+    staleness_tier: "overview",
+    observations: ["<What was decided. Why (if stated). Alternative (if stated).>"]
   },
-  ...
+  {
+    name: "pattern:<slug>",
+    type: "pattern",
+    staleness_tier: "summary",
+    observations: ["<The pattern. Where it recurs. Example files.>"]
+  },
+  {
+    name: "constraint:<slug>",
+    type: "constraint",
+    staleness_tier: "overview",
+    observations: ["<The rule from CLAUDE.md or equivalent. What it constrains.>"]
+  }
 ])
 ```
 
-Use confidence **0.6–0.7** for seeding. You have done a broad-but-shallow read. These observations are accurate enough to be useful but should be refined as agents do deeper work in each module. Use 0.7 when the evidence is clear (the CLAUDE.md says "use Zod for validation"); use 0.6 when you are inferring from code patterns.
+---
 
-### Relationships between components
+## Phase 5: Model Relationships
 
-For each dependency you identified between modules:
-
-```
-add_relationships([
-  {from: "component:<A>", to: "component:<B>", type: "depends_on"},
-  ...
-])
-```
-
-For decisions that constrain components:
+Now that entities exist in the KG, add relationships between them:
 
 ```
 add_relationships([
-  {from: "constraint:<C>", to: "component:<D>", type: "constrains"},
+  // Module dependencies (from import analysis)
+  {from_entity: "<component-A>", to_entity: "<component-B>", type: "depends_on"},
+
+  // Constraints that apply to components
+  {from_entity: "<constraint>", to_entity: "<component>", type: "constrains"},
+
+  // Decisions that affect components
+  {from_entity: "<decision>", to_entity: "<component>", type: "applies_to"},
+
+  // Patterns used by components
+  {from_entity: "<component>", to_entity: "<pattern>", type: "uses_pattern"},
+
+  // Components that belong to a parent (e.g. plugin contains agents)
+  {from_entity: "<child>", to_entity: "<parent>", type: "part_of"},
+
   ...
 ])
 ```
 
 ---
 
-## Phase 6: Write a Seeding Summary
+## Phase 6: Seeding Summary
 
-After writing to the KG, output a seeding summary for the Staff Engineer and CTO:
+Output a summary:
 
 ```
 ## KG Seeding Summary
 
 ### Scope explored
-[List of directories and files read]
+[Every directory explored, files read per directory]
 
 ### Entities created
 - Components: [count, list names]
 - Decisions: [count, list names]
 - Patterns: [count, list names]
 - Constraints: [count, list names]
+- Relationships: [count]
 
 ### Key findings
-[2-3 sentences about the most important structural insights — things future agents most need to know]
+[2-3 sentences about the most important structural insights]
 
 ### Gaps
-[Areas you could not map because they require deeper reading than seeding scope allows. Flag these for future investigation.]
+[Areas that need deeper investigation]
 ```
 
 ---
 
 ## Core Principles
 
-1. **Broad, not deep.** Read entry points and interfaces, not every implementation file. Seeding is terrain mapping, not code review.
-2. **Structure before behavior.** Module boundaries and dependency relationships matter more at seeding time than what any specific function does.
-3. **Low confidence is correct confidence.** You have done a shallow read. 0.65 is honest. Do not inflate confidence — future agents will refine these observations.
-4. **Write in one batch.** Scatter-writes leave the graph in partial states. Batch all entities, observations, and relationships together.
-5. **Decisions and constraints are the highest priority.** They directly constrain future implementation. Get these right before worrying about pattern completeness.
+1. **Explore everything.** Every top-level directory gets explored. Every component gets an entity. If you skipped a directory, your seeding is incomplete.
+2. **Write as you go.** The KG is your notebook. Write entities and observations after each module, not at the end. This prevents context overload and ensures partial progress is captured.
+3. **Low confidence is honest.** Use 0.6–0.7 for seeding observations. You did a shallow read. Future agents will refine.
+4. **Concrete over vague.** "5 agent .md files defining CTO, engineer, director, scout, qa personas" beats "contains agent definitions."
+5. **Non-code matters.** Plugins, skills, agents, configs, schemas — these define system behavior. Skip them and you've mapped half the terrain.

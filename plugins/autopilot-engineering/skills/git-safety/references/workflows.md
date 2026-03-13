@@ -1,5 +1,23 @@
 # Git Workflows for Agent Types
 
+## Worktree Lifecycle
+
+Every agent that modifies code must operate inside a worktree. This provides git isolation — each agent gets its own working directory and branch.
+
+### Entering a worktree
+
+Call `EnterWorktree` at the start of your session, before any code changes. This creates a new worktree. A PostToolUse hook automatically fetches and resets the worktree to the latest default branch (main/master) from origin — you always start from a clean, up-to-date state regardless of what HEAD was pointing at. All subsequent file operations must stay within the worktree path returned by the tool.
+
+### Exiting a worktree
+
+Call `ExitWorktree` when done:
+- `action: "remove"` — after you have pushed all work to the remote. The worktree and branch are deleted.
+- `action: "keep"` — if work needs to persist locally (rare).
+
+**CRITICAL: Never leave the worktree directory.** Do not `cd ..` to the parent repo, do not read or write files outside the worktree path. The worktree is your sandbox.
+
+---
+
 ## Common Anti-Patterns — Do NOT Do These
 
 Real agents have been observed doing all of the following when git operations fail. Every one of these is wrong and wastes turns. **If a standard git command fails, escalate — do not debug git internals.**
@@ -28,19 +46,27 @@ Do not use `github/push_files`, `github/create_branch`, or `github/create_or_upd
 
 Do not spawn a Task sub-agent to "push files to GitHub" or "debug git". Git operations should be straightforward. If they aren't, escalate the issue.
 
+### Never leave the worktree
+
+Do not `cd ..`, `cd /path/to/parent-repo`, or access files outside your worktree path. All operations must stay inside the worktree. If you need to read files from the main repo, they are already visible in the worktree.
+
 **The rule is simple**: Use `git add`, `git commit`, `git push`, `git fetch`, `git merge`, `git status`, `git log`, `git diff`. If one of these fails, try once more. If it fails again, report the error and escalate. Do not spend more than 2 turns on git problems.
 
 ---
 
 ## Executor Workflow
 
-The executor creates new work on a fresh branch. This is the simplest git workflow.
+The executor creates new work on a fresh branch inside a worktree.
 
-### Step 1: Implement
+### Step 1: Enter worktree
 
-Write code, run tests, lint, format. Standard development work.
+Call `EnterWorktree`. You will receive a worktree path and branch name. All work happens inside this worktree.
 
-### Step 2: Stage specific files
+### Step 2: Implement
+
+Write code, run tests, lint, format. Standard development work. All file paths are relative to the worktree root.
+
+### Step 3: Stage specific files
 
 ```bash
 git add src/file1.ts src/file2.ts src/tests/file1.test.ts
@@ -48,7 +74,7 @@ git add src/file1.ts src/file2.ts src/tests/file1.test.ts
 
 Never use `git add -A` or `git add .`. Always list files explicitly.
 
-### Step 3: Rebase on latest main (before first push only)
+### Step 4: Rebase on latest main (before first push only)
 
 ```bash
 git fetch origin main && git rebase origin/main
@@ -56,7 +82,7 @@ git fetch origin main && git rebase origin/main
 
 This is safe because the branch has never been pushed. If conflicts arise during rebase, resolve them, then re-run validation.
 
-### Step 4: Commit
+### Step 5: Commit
 
 ```bash
 git commit -m "ISSUE-ID: concise description"
@@ -72,7 +98,7 @@ The host environment may have commit signing enabled globally (e.g. 1Password SS
 
 For any other commit failure, try once more without investigating internals. If it fails twice, report the error and block the issue.
 
-### Step 5: Push
+### Step 6: Push
 
 ```bash
 git push -u origin <branch-name>
@@ -80,23 +106,35 @@ git push -u origin <branch-name>
 
 The branch name is provided in the prompt template. Use it exactly.
 
-### Step 6: Create PR
+### Step 7: Create PR
 
 Use the GitHub MCP `create_pull_request` tool. Never use `gh` CLI.
+
+### Step 8: Exit worktree
+
+Call `ExitWorktree` with `action: "remove"`. The work has been pushed — the local worktree is no longer needed.
 
 ---
 
 ## Fixer Workflow
 
-The fixer repairs a failing PR on an existing branch. This involves more complex git operations.
+The fixer repairs a failing PR on an existing branch inside a worktree.
 
-### Step 1: Sync to remote state
+### Step 1: Enter worktree
+
+Call `EnterWorktree`. You will receive a worktree path and branch name.
+
+### Step 2: Sync to PR branch
+
+Fetch and check out the existing PR branch:
 
 ```bash
-git fetch origin <branch> && git reset --hard origin/<branch>
+git fetch origin <branch>
+git checkout <branch>
+git reset --hard origin/<branch>
 ```
 
-This is the **only** time `git reset --hard` is acceptable. It ensures the clone matches the remote branch exactly before starting work.
+This is the **only** time `git reset --hard` is acceptable. It ensures the worktree matches the remote branch exactly before starting work.
 
 ### Step 2: For CI failures
 
@@ -131,7 +169,7 @@ If conflicts arise:
 - Never delete upstream code to make the branch "win"
 - If a conflict is too complex (both sides rewrote the same function), escalate
 
-### Step 4: Push the fix
+### Step 5: Push the fix
 
 ```bash
 git add <specific files>
@@ -149,11 +187,15 @@ git push origin HEAD:<branch>
 
 If the pull --rebase also fails, escalate. Do not force-push.
 
+### Step 6: Exit worktree
+
+Call `ExitWorktree` with `action: "remove"`. The fix has been pushed — the local worktree is no longer needed.
+
 ---
 
 ## Review-Responder Workflow
 
-Nearly identical to the fixer workflow. The setup phase is the same (fetch + reset --hard). The push phase is the same. The only difference is the middle — addressing review comments instead of fixing CI failures.
+Same lifecycle as the fixer workflow: `EnterWorktree` → fetch + checkout PR branch → `reset --hard origin/<branch>` → address review comments → push → `ExitWorktree` with `action: "remove"`. The only difference is the middle — addressing review comments instead of fixing CI failures.
 
 ---
 
@@ -167,4 +209,4 @@ Stop and block the issue with a clear explanation if:
 - Any git command produces an error not mentioned in this guide
 - The branch appears to be in a detached HEAD state unexpectedly
 
-**Escalation means**: Add a comment to the bead (`bd comment <id> "<explanation>"`) explaining the exact error, what was attempted, and why it couldn't be resolved. Block the bead (`bd update <id> --status blocked`). Do not attempt workarounds.
+**Escalation means**: Add a comment to the bead via the beads MCP `update(id="<id>", comment="<explanation>")` explaining the exact error, what was attempted, and why it couldn't be resolved. Block the bead via `update(id="<id>", status="blocked")`. Do not attempt workarounds.

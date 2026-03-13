@@ -36,9 +36,13 @@ export class SlotManager {
     return true;
   }
 
-  /** Reserve a planner slot. Returns false if no slots available. */
+  /** Reserve a planner slot. Returns false if no slots available or skill already running. */
   acquirePlanner(agentId: string, skill: string): boolean {
     if (!this.canSpawnPlanner()) return false;
+    // Deduplicate: only one planner per skill at a time
+    for (const activeSkill of this.activePlanners.values()) {
+      if (activeSkill === skill) return false;
+    }
     this.activePlanners.set(agentId, skill);
     return true;
   }

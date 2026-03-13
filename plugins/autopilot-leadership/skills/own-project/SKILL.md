@@ -19,7 +19,7 @@ The work hierarchy is: **initiative** (CTO creates) → **epic** (you create) �
 You are dispatched when an initiative bead reaches Ready state. Start by reading it:
 
 ```
-bd show <initiative-id>
+show(id="<initiative-id>")
 ```
 
 Then read the initiative's KG context:
@@ -33,7 +33,7 @@ Understand:
 - **Strategic intent**: what outcome is the CTO driving toward? Read the initiative description and any planning-session observations attached to it.
 - **Scope boundary**: what is included and — just as important — what is explicitly excluded?
 - **Constraints**: what architectural contracts from the KG apply? The CTO writes constraints during the planning cycle; read them before creating epics.
-- **Existing work**: are there already epics or beads that overlap with this initiative? Check `bd list --type epic` and the KG to avoid duplication.
+- **Existing work**: are there already epics or beads that overlap with this initiative? Check `list(type="epic")` via the beads MCP and the KG to avoid duplication.
 
 If the initiative description is too vague to decompose into epics, write a clarifying observation on the initiative entity and flag it for the CTO. Do not invent scope that the CTO did not intend.
 
@@ -52,11 +52,7 @@ Break the initiative into 3-7 scoped epics. Each epic should represent a coheren
 **Create each epic as a child of the initiative:**
 
 ```
-bd create "<Epic Title>" \
-  --type epic \
-  --parent <initiative-id> \
-  --description "<2-3 sentence description: what problem this solves, what modules it touches, what done looks like>" \
-  -p <priority>
+create(title="<Epic Title>", type="epic", parent="<initiative-id>", description="<2-3 sentence description: what problem this solves, what modules it touches, what done looks like>", priority=<priority>)
 ```
 
 **Priority mapping:**
@@ -89,7 +85,7 @@ add_observations([{
 Before triaging or handing off, review each epic you created in context:
 
 ```
-bd list --type epic --parent <initiative-id>
+list(type="epic", parent="<initiative-id>")
 ```
 
 For each epic, verify:
@@ -107,7 +103,7 @@ If an epic does not have clear acceptance criteria, write them before handing of
 List beads in Triage state under this initiative's epics:
 
 ```
-bd list --parent <initiative-id> --status triage
+list(parent="<initiative-id>", status="triage")
 ```
 
 For each bead, make one of three decisions:
@@ -216,7 +212,7 @@ Assess the initiative's current state across all child epics:
 **Stalled beads**: list beads that have been In Progress for more than 7 days with no updates:
 
 ```
-bd list --parent <initiative-id> --status in-progress
+list(parent="<initiative-id>", status="in_progress")
 ```
 
 For stalled beads:
@@ -232,13 +228,13 @@ For stalled beads:
 **Epic completion check**: for each epic, check whether all child issues are Done or Abandoned with no Triage or Ready issues remaining. Close completed epics:
 
 ```
-bd update <epic-id> --status done
+close(id="<epic-id>")
 ```
 
 **Initiative completion check**: if ALL child epics are in Done or Abandoned state, close the initiative:
 
 ```
-bd update <initiative-id> --status done
+close(id="<initiative-id>")
 add_observations([{
   entity: "<initiative entity>",
   content: "INITIATIVE CLOSED: All <N> child epics completed as of [date]. Definition of done verified: [list each criterion and how it was verified].",

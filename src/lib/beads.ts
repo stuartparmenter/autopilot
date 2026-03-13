@@ -5,12 +5,21 @@ import { $ } from "bun";
 export interface Bead {
   id: string;
   title: string;
+  description?: string;
   status: string;
-  type?: string;
-  priority?: string;
-  parent?: string;
+  issue_type?: string;
+  priority?: number;
+  assignee?: string;
+  owner?: string;
+  created_by?: string;
   external_ref?: string;
-  labels: Record<string, string>;
+  created_at?: string;
+  updated_at?: string;
+  closed_at?: string;
+  close_reason?: string;
+  dependency_count?: number;
+  dependent_count?: number;
+  comment_count?: number;
 }
 
 export interface Gate {
@@ -114,7 +123,12 @@ export async function getBlockedBeads(): Promise<Bead[]> {
  */
 export async function checkGates(): Promise<GateCheckResult> {
   const result = await _runner.exec(["bd", "gate", "check", "--json"]);
-  return JSON.parse(result);
+  try {
+    return JSON.parse(result);
+  } catch {
+    // bd gate check returns plain text (e.g. "No open gates found.") when there are none
+    return { checked: 0, resolved: [], failed: [], pending: [] };
+  }
 }
 
 /**
@@ -133,4 +147,37 @@ export async function closeEligibleEpics(): Promise<number> {
   const result = await _runner.exec(["bd", "epic", "close-eligible", "--json"]);
   const parsed = JSON.parse(result);
   return parsed.closed ?? 0;
+}
+
+/**
+ * Try to acquire the merge slot. Returns true if acquired, false if held.
+ */
+export async function acquireMergeSlot(holder: string): Promise<boolean> {
+  try {
+    await _runner.exec([
+      "bd",
+      "merge-slot",
+      "acquire",
+      "--holder",
+      holder,
+      "--json",
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Release the merge slot.
+ */
+export async function releaseMergeSlot(holder: string): Promise<void> {
+  await _runner.exec([
+    "bd",
+    "merge-slot",
+    "release",
+    "--holder",
+    holder,
+    "--json",
+  ]);
 }

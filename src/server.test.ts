@@ -539,6 +539,8 @@ describe("GET /api/budget", () => {
       knowledge_graph: {
         provider: "gk",
         db_path: ".beads/knowledge.db",
+        gk_command: "gk",
+        gk_args: [],
       },
     };
     const app = createApp(state, { config });
@@ -566,6 +568,8 @@ describe("GET /api/budget", () => {
       knowledge_graph: {
         provider: "gk",
         db_path: ".beads/knowledge.db",
+        gk_command: "gk",
+        gk_args: [],
       },
     };
     const app = createApp(state, { config });
@@ -601,6 +605,8 @@ describe("GET /api/budget", () => {
       knowledge_graph: {
         provider: "gk",
         db_path: ".beads/knowledge.db",
+        gk_command: "gk",
+        gk_args: [],
       },
     };
     const app = createApp(state, { config });
@@ -637,6 +643,8 @@ describe("GET /partials/budget", () => {
       knowledge_graph: {
         provider: "gk",
         db_path: ".beads/knowledge.db",
+        gk_command: "gk",
+        gk_args: [],
       },
     };
     const app = createApp(state, { config });
@@ -662,6 +670,8 @@ describe("GET /partials/budget", () => {
       knowledge_graph: {
         provider: "gk",
         db_path: ".beads/knowledge.db",
+        gk_command: "gk",
+        gk_args: [],
       },
     };
     const app = createApp(state, { config });
@@ -688,6 +698,8 @@ describe("GET /partials/budget", () => {
       knowledge_graph: {
         provider: "gk",
         db_path: ".beads/knowledge.db",
+        gk_command: "gk",
+        gk_args: [],
       },
     };
     const app = createApp(state, { config });
@@ -716,6 +728,8 @@ describe("GET /partials/budget", () => {
       knowledge_graph: {
         provider: "gk",
         db_path: ".beads/knowledge.db",
+        gk_command: "gk",
+        gk_args: [],
       },
     };
     const app = createApp(state, { config });
@@ -742,6 +756,8 @@ describe("GET /partials/budget", () => {
       knowledge_graph: {
         provider: "gk",
         db_path: ".beads/knowledge.db",
+        gk_command: "gk",
+        gk_args: [],
       },
     };
     const app = createApp(state, { config });

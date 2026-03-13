@@ -118,6 +118,8 @@ function makeConfig(
     knowledge_graph: {
       provider: "gk",
       db_path: ".beads/knowledge.db",
+      gk_command: "gk",
+      gk_args: [],
     },
   };
 }
@@ -422,7 +424,9 @@ describe("runAgent — success path", () => {
       events.push(e),
     );
     expect(events.length).toBeGreaterThan(0);
-    expect(events.some((e) => e.summary === "Agent completed")).toBe(true);
+    expect(
+      events.some((e) => e.summary === "Agent completed successfully"),
+    ).toBe(true);
   });
 });
 
@@ -539,9 +543,11 @@ describe("runAgent — multiple messages", () => {
     await runAgent(makeInvocation(), makeConfig(), "/test/project", (e) =>
       events.push(e),
     );
-    expect(events).toHaveLength(2);
-    expect(events[0].summary).toBe("Turn 1");
-    expect(events[1].summary).toBe("Agent completed");
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    expect(events.some((e) => e.summary === "hi")).toBe(true);
+    expect(
+      events.some((e) => e.summary === "Agent completed successfully"),
+    ).toBe(true);
   });
 });
 

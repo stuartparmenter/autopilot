@@ -815,6 +815,8 @@ beads:
     expect(config.knowledge_graph).toEqual({
       provider: "gk",
       db_path: ".beads/knowledge.db",
+      gk_command: "",
+      gk_args: [],
     });
   });
 

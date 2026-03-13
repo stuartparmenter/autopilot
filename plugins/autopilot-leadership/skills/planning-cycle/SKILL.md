@@ -12,21 +12,33 @@ You run a full planning cycle for the project. This is the CTO's primary strateg
 
 ## Phase 1: Orient — Read the Knowledge Graph
 
-Before deciding what to investigate, understand what is already known.
+Before deciding what to investigate, understand what is already known. **This is the most important phase.** Specialists cannot do focused work if you send them in without context.
 
-Query the KG to establish current context:
+Query the KG in two layers — structural first, then strategic:
 
-1. **Active projects and initiatives**: `search_keyword("status:active")` and `list_entities` filtered to type `project` and `initiative`. Note what work is already planned or in flight — do not duplicate it.
+### Layer 1: Understand the System
 
-2. **Architectural constraints**: `search_entities` for entities with type `constraint`. Read each constraint — these are the boundaries engineers must not cross. They inform what new work is safe to propose.
+1. **Project overview**: `get_entity` on the project entity. Read its observations to understand tech stack, purpose, and scale.
 
-3. **Recent decisions**: `get_timeline` to see what observations have been added in the last 2-4 weeks. Patterns in recent additions signal what the team has been learning.
+2. **All components**: `list_entities` filtered to type `component`. For each component, use `get_entity` to read its observations — what it does, what it depends on, how it fits. You must understand the system's structure before you can reason about its gaps.
 
-4. **Known problem areas**: `search_keyword("risk OR blocker OR debt OR fragile")` to surface entities the team has flagged as concerns.
+3. **Patterns and decisions**: `list_entities` filtered to types `pattern` and `decision`. Read each one. These tell you how the system was built and why. Patterns reveal consistency (or inconsistency). Decisions reveal constraints.
 
-5. **Roadmap entities**: `search_entities` filtered to type `roadmap` or `goal`. Understand what the strategic targets are before deciding what gaps to fill.
+4. **Relationships**: For key components, use `get_neighbors` to understand how they connect. The dependency graph tells you where changes have high blast radius.
 
-After reading the KG, form a mental model: what does the team know, what is uncertain, what is planned, and where are the gaps?
+**Stop and summarize.** Before moving to Layer 2, write down (in your response, not the KG) a 5-10 sentence summary of what the system is, how it's structured, and what patterns it uses. If you cannot write this summary, you have not read enough.
+
+### Layer 2: Understand Strategic State
+
+5. **Active initiatives**: `list_entities` filtered to type `initiative`. Note what work is already planned or in flight — do not duplicate it.
+
+6. **Constraints**: `list_entities` filtered to type `constraint`. Read each one — these are boundaries engineers must not cross.
+
+7. **Known problem areas**: `search_keyword("risk OR blocker OR debt OR fragile")` to surface flagged concerns.
+
+8. **Recent activity**: `get_timeline` to see what observations have been added recently. Patterns in recent additions signal what the team has been learning.
+
+After both layers, form a mental model: what does the team know, what is uncertain, what is planned, and where are the gaps?
 
 ---
 
@@ -52,22 +64,22 @@ Spawn four specialists in parallel using Task(). Each specialist invokes their o
 ```
 Task("Investigate security posture: [specific area]", {
   agent: "security",
-  prompt: "Invoke /investigate. Focus area: [specific area, e.g., 'authentication flow in src/auth/ and token handling in src/lib/oauth.ts']. KG context: [paste relevant KG entities and observations]. Report concrete findings with file paths."
+  prompt: "Invoke /investigate. Focus area: [specific area, e.g., 'authentication flow in src/auth/ and token handling in src/lib/oauth.ts']. KG context: [paste relevant KG entities and observations]. Report themes and patterns — I need to understand categories of risk and their scope, not individual bug fixes."
 })
 
 Task("Investigate engineering health: [specific area]", {
   agent: "principal-engineer",
-  prompt: "Invoke /investigate. Focus area: [specific area, e.g., 'retry logic and error classification in src/lib/ — assess whether current patterns are consistent and safe']. KG context: [paste relevant KG entities]. Report concrete findings."
+  prompt: "Invoke /investigate. Focus area: [specific area, e.g., 'retry logic and error classification in src/lib/ — assess whether current patterns are consistent and safe']. KG context: [paste relevant KG entities]. Report themes and patterns — I need to understand categories of architectural concern and their scope, not individual code issues."
 })
 
 Task("Investigate product gaps: [specific area]", {
   agent: "product",
-  prompt: "Invoke /investigate. Focus area: [specific area, e.g., 'onboarding flow and multi-project support limitations']. KG context: [paste relevant strategic goals and roadmap entities]. Report concrete opportunities with evidence."
+  prompt: "Invoke /investigate. Focus area: [specific area, e.g., 'onboarding flow and multi-project support limitations']. KG context: [paste relevant strategic goals and roadmap entities]. Report themes and patterns — I need to understand categories of product gaps and their scope, not individual feature requests."
 })
 
 Task("Investigate test coverage and reliability: [specific area]", {
   agent: "qa",
-  prompt: "Invoke /investigate. Focus area: [specific area, e.g., 'test coverage in executor.ts and monitor.ts — what failure modes are untested?']. KG context: [paste relevant coverage observations]. Report concrete gaps with file paths."
+  prompt: "Invoke /investigate. Focus area: [specific area, e.g., 'test coverage in executor.ts and monitor.ts — what failure modes are untested?']. KG context: [paste relevant coverage observations]. Report themes and patterns — I need to understand categories of quality gaps and their scope, not individual missing tests."
 })
 ```
 
@@ -138,11 +150,34 @@ add_observations([{
 
 For each prioritized theme, create an initiative bead. Initiatives represent high-level strategic direction — Directors will claim them and decompose them into epics.
 
+### Abstraction test — apply before creating every initiative
+
+An initiative is NOT a bug, task, feature, or epic. Before creating each initiative, ask:
+
+1. **Could a single engineer implement this in one PR?** → It's a task, not an initiative.
+2. **Does it reference specific files, functions, or line numbers?** → It's a task or bug.
+3. **Could it be a child of a broader strategic goal?** → It's an epic, not an initiative.
+4. **Does it require a Director to decide HOW to break it down?** → It's an initiative.
+5. **Would it produce 3-8 epics when decomposed?** → It's an initiative.
+
+**The pipeline:** Initiative → Director decomposes into epics → Staff Engineer decomposes epics into tasks/features/bugs → Engineers implement. If you skip levels, the downstream roles have nothing to do and the work lacks structure.
+
+**Examples:**
+
+| Initiative (correct) | NOT an initiative (too tactical) |
+|---|---|
+| "Establish trust boundaries for untrusted project repos" | "Validate gk_command against an allowlist" |
+| "Harden the orchestrator for unattended multi-day operation" | "Fix stale bead recovery in poll loop" |
+| "Build the autonomous code review pipeline" | "Wire respond-review dispatcher handler" |
+| "Eliminate class of input sanitization gaps across all surfaces" | "Fix XSS in server.ts:895" |
+
+### Creating initiatives
+
+Use the beads MCP `create` tool:
+
 ```
-bd create "<Initiative Title>" \
-  --description="<2-3 sentence description of strategic intent and desired outcome>" \
-  -t initiative \
-  -p <priority>
+create(title="<Initiative Title>", type="initiative", priority=<1-4>,
+       description="<2-3 sentence description of strategic intent and desired outcome>")
 ```
 
 **Priority mapping:**
@@ -152,17 +187,14 @@ bd create "<Initiative Title>" \
 - `p4` — Developer experience, documentation, nice-to-have features
 
 **Initiative title format:** Start with a verb. State the strategic outcome, not the tactical task.
-- Good: "Eliminate retry gaps across all external API integrations"
-- Good: "Establish end-to-end test coverage for state transition lifecycle"
-- Bad: "Retry improvements" (too vague)
-- Bad: "Fix stuff in monitor.ts" (too tactical for an initiative)
 
 **Initiative description format:**
 - Sentence 1: What strategic problem this addresses and why it matters now
 - Sentence 2: What areas of the system are affected
 - Sentence 3: What success looks like (the outcome Directors should drive toward)
+- Do NOT include file paths, function names, or implementation details — those belong in epics and tasks
 
-Limit to 3-5 initiatives per planning cycle. Quality over quantity — a well-framed initiative that Directors can operationalize into concrete epics is more valuable than ten vague ones that sit untouched.
+Limit to 2-4 initiatives per planning cycle. Quality over quantity — a well-framed initiative that Directors can operationalize into concrete epics is more valuable than ten vague ones that sit untouched.
 
 ---
 
@@ -225,5 +257,5 @@ Update the KG with what this planning cycle learned strategically — decisions 
 - **Target specialists precisely.** A focused investigation produces actionable findings. Broad mandates produce generic advice.
 - **Synthesize, don't relay.** The value of the planning cycle is identifying themes across specialists — not just concatenating their reports.
 - **Write constraints for engineers, not yourself.** Constraints must be specific enough that an engineer who has never spoken to you can follow them.
-- **3-5 initiatives maximum.** A planning cycle that produces 10 initiatives has not prioritized — it has delegated the prioritization problem downstream.
+- **2-4 initiatives maximum.** A planning cycle that produces 10 initiatives has not prioritized — it has delegated the prioritization problem downstream.
 - **Defer honestly.** When something real is found but not acted on, document why. The next planning cycle should build on your reasoning, not re-discover the same issue.

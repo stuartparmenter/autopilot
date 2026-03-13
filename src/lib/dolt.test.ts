@@ -30,13 +30,14 @@ describe("dolt", () => {
   });
 
   itDolt("creates operational tables without error", async () => {
-    const { doltQuery } = await import("./dolt");
+    const { doltQuery, detectDoltConnection } = await import("./dolt");
     const { ensureOperationalTables } = await import("./dolt-schema");
+    const conn = detectDoltConnection();
     await ensureOperationalTables();
     const rows = await doltQuery<{ TABLE_NAME: string }>`
       SELECT TABLE_NAME
       FROM information_schema.TABLES
-      WHERE TABLE_SCHEMA = 'autopilot'
+      WHERE TABLE_SCHEMA = ${conn.database}
         AND TABLE_NAME = 'agent_runs'
     `;
     expect(rows.length).toBe(1);

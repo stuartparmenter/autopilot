@@ -2,13 +2,17 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   _runner,
   type Bead,
+  checkGates,
   closeEligibleEpics,
   createBead,
+  type Gate,
+  type GateCheckResult,
   getBead,
   getBeadsByProject,
   getBlockedBeads,
   getReadyBeads,
   getStaleBeads,
+  listOpenGates,
 } from "./beads";
 
 const mockExec = mock<(cmd: string[]) => Promise<string>>(() =>
@@ -25,7 +29,6 @@ const sampleBead: Bead = {
   id: "bd-1",
   title: "Fix auth",
   status: "ready",
-  labels: { workflow: "ready" },
 };
 
 describe("getReadyBeads", () => {
@@ -133,16 +136,16 @@ describe("getBead", () => {
   test("returns bead details", async () => {
     const detailed: Bead = {
       ...sampleBead,
-      type: "feature",
-      priority: "medium",
-      parent: "bd-parent-1",
+      issue_type: "feature",
+      priority: 2,
+      external_ref: "gh-42",
     };
     mockExec.mockResolvedValue(JSON.stringify(detailed));
     const bead = await getBead("bd-1");
     expect(bead.id).toBe("bd-1");
-    expect(bead.type).toBe("feature");
-    expect(bead.priority).toBe("medium");
-    expect(bead.parent).toBe("bd-parent-1");
+    expect(bead.issue_type).toBe("feature");
+    expect(bead.priority).toBe(2);
+    expect(bead.external_ref).toBe("gh-42");
     expect(mockExec).toHaveBeenCalledWith(["bd", "show", "bd-1", "--json"]);
   });
 
@@ -189,5 +192,92 @@ describe("closeEligibleEpics", () => {
     mockExec.mockResolvedValue(JSON.stringify({}));
     const count = await closeEligibleEpics();
     expect(count).toBe(0);
+  });
+});
+
+const sampleGate: Gate = {
+  id: "gate-1",
+  title: "Wait for PR #42",
+  status: "open",
+  await_type: "gh:pr",
+  await_id: "42",
+  parent: "bd-1",
+};
+
+describe("checkGates", () => {
+  test("parses gate check result with resolved gates", async () => {
+    const result: GateCheckResult = {
+      checked: 3,
+      resolved: [{ ...sampleGate, id: "gate-1", status: "resolved" }],
+      failed: [],
+      pending: [{ ...sampleGate, id: "gate-2" }],
+    };
+    mockExec.mockResolvedValue(JSON.stringify(result));
+    const check = await checkGates();
+    expect(check.checked).toBe(3);
+    expect(check.resolved).toHaveLength(1);
+    expect(check.resolved[0].id).toBe("gate-1");
+    expect(check.failed).toHaveLength(0);
+    expect(check.pending).toHaveLength(1);
+    expect(mockExec).toHaveBeenCalledWith(["bd", "gate", "check", "--json"]);
+  });
+
+  test("parses gate check result with failed gates", async () => {
+    const result: GateCheckResult = {
+      checked: 1,
+      resolved: [],
+      failed: [{ ...sampleGate, id: "gate-3", status: "failed" }],
+      pending: [],
+    };
+    mockExec.mockResolvedValue(JSON.stringify(result));
+    const check = await checkGates();
+    expect(check.failed).toHaveLength(1);
+    expect(check.failed[0].id).toBe("gate-3");
+  });
+
+  test("returns empty arrays when no gates exist", async () => {
+    const result: GateCheckResult = {
+      checked: 0,
+      resolved: [],
+      failed: [],
+      pending: [],
+    };
+    mockExec.mockResolvedValue(JSON.stringify(result));
+    const check = await checkGates();
+    expect(check.checked).toBe(0);
+    expect(check.resolved).toHaveLength(0);
+    expect(check.failed).toHaveLength(0);
+    expect(check.pending).toHaveLength(0);
+  });
+
+  test("propagates errors from bd gate check", async () => {
+    mockExec.mockRejectedValue(new Error("gate check failed"));
+    await expect(checkGates()).rejects.toThrow("gate check failed");
+  });
+});
+
+describe("listOpenGates", () => {
+  test("returns open gates", async () => {
+    const gates = [
+      sampleGate,
+      { ...sampleGate, id: "gate-2", await_type: "gh:run", await_id: "999" },
+    ];
+    mockExec.mockResolvedValue(JSON.stringify(gates));
+    const result = await listOpenGates();
+    expect(result).toHaveLength(2);
+    expect(result[0].await_type).toBe("gh:pr");
+    expect(result[1].await_type).toBe("gh:run");
+    expect(mockExec).toHaveBeenCalledWith(["bd", "gate", "list", "--json"]);
+  });
+
+  test("returns empty array when no open gates", async () => {
+    mockExec.mockResolvedValue("[]");
+    const result = await listOpenGates();
+    expect(result).toHaveLength(0);
+  });
+
+  test("propagates errors from bd gate list", async () => {
+    mockExec.mockRejectedValue(new Error("connection refused"));
+    await expect(listOpenGates()).rejects.toThrow("connection refused");
   });
 });

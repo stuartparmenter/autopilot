@@ -17,7 +17,7 @@ Pre-flight is not a rubber stamp. It is the last checkpoint before expensive eng
 List the beads that are ready for implementation:
 
 ```
-bd ready --json
+ready()
 ```
 
 For each bead, read its description and note:
@@ -151,7 +151,7 @@ add_observations([{
 }])
 ```
 
-If conflicts were found that require restructuring, flag them clearly so the Director can act before engineers start. Beads with unresolved structural conflicts should be deferred (`bd defer`).
+If conflicts were found that require restructuring, flag them clearly so the Director can act before engineers start. Beads with unresolved structural conflicts should be deferred using the beads MCP `update` tool to set their status accordingly.
 
 ---
 

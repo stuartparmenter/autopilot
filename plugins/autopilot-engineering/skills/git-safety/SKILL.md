@@ -4,16 +4,17 @@ description: This skill should be used when an agent needs to perform git operat
 user-invocable: false
 ---
 
-# Git Safety for Isolated Clones
+# Git Safety for Worktrees
 
-This skill defines safe git practices for agents working in isolated `git clone --shared` directories. Each agent runs in its own clone with a private `.git/` — there is no shared lock contention, but **the work on the branch is irreplaceable once committed**. Losing commits through destructive commands means lost implementation work.
+This skill defines safe git practices for agents working in git worktrees created via the `EnterWorktree` tool. Each agent gets its own worktree with an isolated working directory and branch — there is no shared lock contention, but **the work on the branch is irreplaceable once committed**. Losing commits through destructive commands means lost implementation work.
 
 ## Environment
 
-- Each agent operates in an isolated git clone (not a worktree)
-- The clone has its own `.git/` directory — branch operations are safe
+- Each agent operates in a git worktree created by calling `EnterWorktree`
+- The worktree has its own working directory and branch — branch operations are safe
 - `origin` points to the real GitHub remote
-- The working directory is the root of the clone — never leave it (`cd ..` is forbidden)
+- **CRITICAL: Never leave the worktree directory.** Do not `cd ..`, do not `cd /` to the parent repo, do not read or write files outside the worktree path. The worktree is your sandbox — all file operations must stay within it.
+- When done, call `ExitWorktree` with `action: "remove"` (after pushing) or `action: "keep"` (if work needs to persist)
 
 ## Command Safety Classification
 

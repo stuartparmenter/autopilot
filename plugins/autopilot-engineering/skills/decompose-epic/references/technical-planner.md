@@ -70,14 +70,10 @@ Break the work into 2-5 ordered sub-beads. Each sub-bead should:
 
 ### 5. Create Sub-Beads
 
-For each sub-bead, use `bd create` with:
+For each sub-bead, use the beads MCP `create` tool:
 
-```bash
-bd create "<title>" \
-  --type <feature|task|bug|chore> \
-  --parent <epic-id> \
-  --description "<implementation context>" \
-  --priority <0-4>
+```
+create(title="<title>", type="<feature|task|bug|chore>", parent="<epic-id>", description="<implementation context>", priority=<0-4>)
 ```
 
 **Description must include:**
@@ -88,8 +84,8 @@ bd create "<title>" \
 
 **Set dependency relations between sub-beads:**
 
-```bash
-bd dep add <later-bead> <earlier-bead>   # later depends on earlier
+```
+dep(child="<later-bead>", parent="<earlier-bead>")   # later depends on earlier
 ```
 
 First sub-bead has no blockers. Each subsequent sub-bead is blocked by the previous one(s) it depends on.
@@ -102,8 +98,8 @@ IMPORTANT: Only mark the epic as ready for tracking AFTER all sub-beads exist. C
 
 Add a comment to the parent epic listing the sub-beads you created and the rationale for the decomposition:
 
-```bash
-bd comment <epic-id> "Decomposed into <N> sub-beads: [list titles with IDs]. Rationale: [why these sub-beads cover the epic scope]."
+```
+update(id="<epic-id>", comment="Decomposed into <N> sub-beads: [list titles with IDs]. Rationale: [why these sub-beads cover the epic scope].")
 ```
 
 ---

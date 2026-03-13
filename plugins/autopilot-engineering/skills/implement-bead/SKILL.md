@@ -6,7 +6,7 @@ user-invocable: true
 
 # Implement Bead
 
-You are an Engineer implementing a bead (a unit of work tracked in the `bd` CLI). This skill walks you through the full lifecycle: claim, gather context, implement, validate, run end-of-session cleanup, create the PR, and update the bead state.
+You are an Engineer implementing a bead (a unit of work tracked via the beads MCP tools). This skill walks you through the full lifecycle: claim, gather context, implement, validate, run end-of-session cleanup, create the PR, and update the bead state.
 
 ---
 
@@ -15,12 +15,26 @@ You are an Engineer implementing a bead (a unit of work tracked in the `bd` CLI)
 Before reading anything or writing any code, claim the bead atomically:
 
 ```
-bd update <id> --claim
+claim(id="<id>")
 ```
 
 The claim is atomic — if another agent already claimed it, this command fails. If it fails, **stop immediately**. Do not proceed. The bead belongs to another agent.
 
 If the claim succeeds, you now own this bead. No other agent will pick it up.
+
+---
+
+## Phase 1.5: Enter Worktree
+
+Create an isolated worktree for your implementation work:
+
+```
+EnterWorktree
+```
+
+A hook automatically fetches and resets the worktree to the latest default branch (main/master). You start with a clean, up-to-date codebase.
+
+**All subsequent file operations must stay inside the worktree path.** Do not `cd ..` to the parent repo. Do not read or write files outside the worktree.
 
 ---
 
@@ -31,7 +45,7 @@ Context gathering happens in a fixed order. Do not skip steps — each layer inf
 ### Step 1: Read the bead
 
 ```
-bd show <id> --json
+show(id="<id>")
 ```
 
 Read the full bead details: title, description, acceptance criteria, affected modules, parent epic, priority. Understand exactly what is being asked before reading any code.
@@ -201,12 +215,11 @@ After the PR is created, link it to the bead and create a gate so the orchestrat
 
 ```
 # Link PR to bead
-bd update <id> --external-ref "gh-<pr-number>"
+update(id="<id>", external_ref="gh-<pr-number>")
 
 # Create a gate that auto-resolves when the PR merges.
-# Use --parent to link the gate back to the implementation bead.
-bd create --type=gate --title="Wait for PR #<pr-number>" \
-  --await-type=gh:pr --await-id=<pr-number> --parent <id>
+# Use parent to link the gate back to the implementation bead.
+create(type="gate", title="Wait for PR #<pr-number>", await_type="gh:pr", await_id="<pr-number>", parent="<id>")
 ```
 
 The bead is NOT closed yet. The gate tracks the PR lifecycle:
@@ -215,6 +228,14 @@ The bead is NOT closed yet. The gate tracks the PR lifecycle:
 - **Review feedback** → orchestrator dispatches an engineer with the `respond-review` skill
 
 The gate's `--parent` flag links it back to the implementation bead so the orchestrator knows which bead to close when the gate resolves.
+
+### Exit the worktree
+
+All work has been pushed and the PR is open. Clean up the local worktree:
+
+```
+ExitWorktree action: "remove"
+```
 
 ---
 
@@ -227,15 +248,13 @@ You escalate instead of self-resolving in two situations:
 If your implementation requires violating a KG `decision` or `constraint` entity — stop. Do not self-authorize the violation. Create a block bead:
 
 ```
-bd create "Block: <bead-id> conflicts with <contract name>" \
-  --description="Engineering <bead-id> requires violating <constraint/decision>. Specific conflict: <explain>. Options: <list alternatives>." \
-  -t task -p urgent --parent <epic-id>
+create(title="Block: <bead-id> conflicts with <contract name>", description="Engineering <bead-id> requires violating <constraint/decision>. Specific conflict: <explain>. Options: <list alternatives>.", type="task", priority="urgent", parent="<epic-id>")
 ```
 
 Update your bead to blocked:
 
 ```
-bd update <id> --state blocked --reason "Requires violating KG contract <name>. Block bead: <block-bead-id>."
+update(id="<id>", status="blocked", comment="Requires violating KG contract <name>. Block bead: <block-bead-id>.")
 ```
 
 ### Bead is ambiguous beyond what you can resolve

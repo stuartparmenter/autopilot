@@ -22,7 +22,7 @@ You receive from the Staff Engineer:
 Fetch the full bead details for each:
 
 ```
-bd show <bead-id> --json
+show(id="<bead-id>")
 ```
 
 ---
@@ -44,7 +44,7 @@ For each shared file:
 
 Review the dependency chain the Staff Engineer defined. For each pair of beads where one produces output the other consumes:
 
-- Is there a `bd dep` relation between them?
+- Is there a `dep` relation between them (check via the beads MCP `dep` tool)?
 - Could an Engineer start bead B before bead A completes and still have the codebase compile and tests pass?
 
 If the answer to the second question is "no" and there is no dependency relation, that is a missing dependency.
@@ -81,7 +81,7 @@ If the KG has a documented pattern that one of the beads appears to violate, fla
 
 ## Phase 4: Check for Cross-Project Conflicts
 
-If multiple projects are currently in flight (check with the Director or via `bd list --status in_progress`):
+If multiple projects are currently in flight (check with the Director or via the beads MCP `list(status="in_progress")`):
 
 - Does this batch touch modules that another project's beads are also modifying?
 - Could the changes in this batch invalidate assumptions that in-flight beads in other projects are relying on?
@@ -116,10 +116,10 @@ Batch: [list bead IDs]
 The following issues require resolution before this batch is promoted to ready:
 
 ### Conflicting Changes
-- Beads <A> and <B> both modify <file> in the <section> section, and neither is blocked by the other. [Recommended resolution: add bd dep add B A, or restructure so A absorbs the full change.]
+- Beads <A> and <B> both modify <file> in the <section> section, and neither is blocked by the other. [Recommended resolution: add dep(child="B", parent="A") via the beads MCP, or restructure so A absorbs the full change.]
 
 ### Missing Dependencies
-- Bead <B> uses <type/function> that is created by bead <A>, but no dependency relation exists. [Recommended resolution: bd dep add B A]
+- Bead <B> uses <type/function> that is created by bead <A>, but no dependency relation exists. [Recommended resolution: dep(child="B", parent="A") via the beads MCP]
 
 ### Pattern Inconsistency
 - Bead <A> handles errors by <approach X>; bead <B> handles errors by <approach Y>. Both are in the same module. The KG documents <X> as the project pattern. [Recommended resolution: align bead B's description to use approach X.]

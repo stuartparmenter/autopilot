@@ -11,6 +11,8 @@ import { AppState } from "./state";
 
 type RunAgentFn = typeof import("./lib/agent-runner").runAgent;
 const mockRunAgent = mock<RunAgentFn>();
+const mockAcquireMergeSlot = mock<(holder: string) => Promise<boolean>>();
+const mockReleaseMergeSlot = mock<(holder: string) => Promise<void>>();
 
 // --- Helpers ---
 
@@ -47,6 +49,8 @@ function makeOpts(
     shutdownSignal: controller.signal,
     controller,
     runAgent: mockRunAgent,
+    acquireMergeSlot: mockAcquireMergeSlot,
+    releaseMergeSlot: mockReleaseMergeSlot,
   };
 }
 
@@ -60,8 +64,12 @@ async function flush(): Promise<void> {
 describe("wireDispatcher — beadReady routing", () => {
   beforeEach(() => {
     mockRunAgent.mockReset();
+    mockAcquireMergeSlot.mockReset();
+    mockReleaseMergeSlot.mockReset();
 
     mockRunAgent.mockResolvedValue(defaultResult());
+    mockAcquireMergeSlot.mockResolvedValue(true);
+    mockReleaseMergeSlot.mockResolvedValue(undefined);
   });
 
   test("initiative → director/own-project (planner slot)", async () => {
@@ -168,16 +176,14 @@ describe("wireDispatcher — beadReady routing", () => {
     expect(inv.skill).toBe("implement-bead");
   });
 
-  test("defaults to task when beadType is undefined", async () => {
+  test("skips dispatch when beadType is undefined", async () => {
     const opts = makeOpts();
     wireDispatcher(opts);
 
     opts.bus.emit("beadReady", { id: "bd-7", title: "No type" });
     await flush();
 
-    const inv = mockRunAgent.mock.calls[0][0];
-    expect(inv.persona).toBe("engineer");
-    expect(inv.skill).toBe("implement-bead");
+    expect(mockRunAgent).not.toHaveBeenCalled();
   });
 
   test("unknown type skips dispatch", async () => {
@@ -198,8 +204,12 @@ describe("wireDispatcher — beadReady routing", () => {
 describe("wireDispatcher — PR events", () => {
   beforeEach(() => {
     mockRunAgent.mockReset();
+    mockAcquireMergeSlot.mockReset();
+    mockReleaseMergeSlot.mockReset();
 
     mockRunAgent.mockResolvedValue(defaultResult());
+    mockAcquireMergeSlot.mockResolvedValue(true);
+    mockReleaseMergeSlot.mockResolvedValue(undefined);
   });
 
   test("prFailed → engineer/fix-pr (builder slot)", async () => {
@@ -223,8 +233,12 @@ describe("wireDispatcher — PR events", () => {
 describe("wireDispatcher — planning events", () => {
   beforeEach(() => {
     mockRunAgent.mockReset();
+    mockAcquireMergeSlot.mockReset();
+    mockReleaseMergeSlot.mockReset();
 
     mockRunAgent.mockResolvedValue(defaultResult());
+    mockAcquireMergeSlot.mockResolvedValue(true);
+    mockReleaseMergeSlot.mockResolvedValue(undefined);
   });
 
   test("backlogLow → cto/planning-cycle (planner slot)", async () => {
@@ -270,8 +284,12 @@ describe("wireDispatcher — planning events", () => {
 describe("wireDispatcher — slot management", () => {
   beforeEach(() => {
     mockRunAgent.mockReset();
+    mockAcquireMergeSlot.mockReset();
+    mockReleaseMergeSlot.mockReset();
 
     mockRunAgent.mockResolvedValue(defaultResult());
+    mockAcquireMergeSlot.mockResolvedValue(true);
+    mockReleaseMergeSlot.mockResolvedValue(undefined);
   });
 
   test("skips dispatch when no builder slots available", async () => {
@@ -358,8 +376,12 @@ describe("wireDispatcher — slot management", () => {
 describe("wireDispatcher — agentDone emission", () => {
   beforeEach(() => {
     mockRunAgent.mockReset();
+    mockAcquireMergeSlot.mockReset();
+    mockReleaseMergeSlot.mockReset();
 
     mockRunAgent.mockResolvedValue(defaultResult());
+    mockAcquireMergeSlot.mockResolvedValue(true);
+    mockReleaseMergeSlot.mockResolvedValue(undefined);
   });
 
   test("emits agentDone with completed status on success", async () => {
@@ -425,13 +447,41 @@ describe("wireDispatcher — agentDone emission", () => {
     expect(doneEvents).toHaveLength(1);
     expect(doneEvents[0].status).toBe("timed_out");
   });
+
+  test("emits agentDone with timed_out status on inactivity timeout", async () => {
+    mockRunAgent.mockResolvedValue({
+      ...defaultResult(),
+      inactivityTimedOut: true,
+    });
+
+    const opts = makeOpts();
+    wireDispatcher(opts);
+    const doneEvents: Array<{ status: string }> = [];
+    opts.bus.on("agentDone", (e) => {
+      doneEvents.push(e);
+    });
+
+    opts.bus.emit("beadReady", {
+      id: "bd-inact",
+      title: "Inactivity test",
+      beadType: "task",
+    });
+    await flush();
+
+    expect(doneEvents).toHaveLength(1);
+    expect(doneEvents[0].status).toBe("timed_out");
+  });
 });
 
 describe("wireDispatcher — dashboard state", () => {
   beforeEach(() => {
     mockRunAgent.mockReset();
+    mockAcquireMergeSlot.mockReset();
+    mockReleaseMergeSlot.mockReset();
 
     mockRunAgent.mockResolvedValue(defaultResult());
+    mockAcquireMergeSlot.mockResolvedValue(true);
+    mockReleaseMergeSlot.mockResolvedValue(undefined);
   });
 
   test("registers agent in AppState on dispatch", async () => {
@@ -473,8 +523,12 @@ describe("wireDispatcher — dashboard state", () => {
 describe("wireDispatcher — teardown", () => {
   beforeEach(() => {
     mockRunAgent.mockReset();
+    mockAcquireMergeSlot.mockReset();
+    mockReleaseMergeSlot.mockReset();
 
     mockRunAgent.mockResolvedValue(defaultResult());
+    mockAcquireMergeSlot.mockResolvedValue(true);
+    mockReleaseMergeSlot.mockResolvedValue(undefined);
   });
 
   test("unsubscribe-all prevents further dispatch", async () => {
