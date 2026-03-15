@@ -204,11 +204,44 @@ describe("Orchestrator", () => {
     expect(orch.isWaiting).toBe(true);
   });
 
-  test("up from vision returns null and stays at vision", () => {
+  test("up from vision stays at vision and does not set pending", () => {
     const orch = new Orchestrator("vision", "/tmp/project");
     orch.handleNextAction({ action: "up", reason: "test" });
-    // Should stay at vision since there's nowhere to go
     expect(orch.currentLevel).toBe("vision");
+    expect(orch.hasPendingCycle).toBe(false); // nowhere to go — don't auto-retry
+  });
+
+  test("down from task stays at task and does not set pending", () => {
+    const orch = new Orchestrator("task", "/tmp/project");
+    orch.handleNextAction({ action: "down", reason: "test" });
+    expect(orch.currentLevel).toBe("task");
+    expect(orch.hasPendingCycle).toBe(false); // leaf level — don't auto-retry
+  });
+
+  test("checkWaitCondition resolves tasks_complete", () => {
+    const orch = new Orchestrator("epic", "/tmp/project");
+    orch.handleNextAction({
+      action: "wait",
+      until: { type: "tasks_complete", taskIds: ["T1", "T2"] },
+      reason: "test",
+    });
+    expect(orch.checkWaitCondition(["T1"], [])).toBe(false); // partial
+    expect(orch.isWaiting).toBe(true);
+    expect(orch.checkWaitCondition(["T1", "T2"], [])).toBe(true); // complete
+    expect(orch.isWaiting).toBe(false);
+    expect(orch.hasPendingCycle).toBe(true);
+  });
+
+  test("checkWaitCondition resolves epic_complete", () => {
+    const orch = new Orchestrator("epic", "/tmp/project");
+    orch.handleNextAction({
+      action: "wait",
+      until: { type: "epic_complete", epicId: "E1" },
+      reason: "test",
+    });
+    expect(orch.checkWaitCondition([], [])).toBe(false);
+    expect(orch.checkWaitCondition([], ["E1"])).toBe(true);
+    expect(orch.hasPendingCycle).toBe(true);
   });
 });
 ```
@@ -256,9 +289,13 @@ export class Orchestrator {
     const resolved = resolveNextLevel(this.currentLevel, next.action);
     if (resolved !== null) {
       this.currentLevel = resolved;
+      this.pendingCycle = true;
+    } else {
+      // up from vision or down from task — nowhere to go
+      // Don't set pendingCycle; the orchestrator should wait for builder completions
+      // or surface to human (logged by the main loop)
+      this.pendingCycle = false;
     }
-    // If resolved is null (up from vision, down from task), stay at current level
-    this.pendingCycle = true;
   }
 
   clearNextAction(): void {
@@ -286,10 +323,9 @@ export class Orchestrator {
         return false;
 
       case "all_tasks_dispatched":
-        // This is checked by the loop when no more ready tasks exist
-        this.waitCondition = null;
-        this.pendingCycle = true;
-        return true;
+        // Handled by the main loop — when it detects no ready tasks remain,
+        // it calls clearWaitCondition() directly. Should not auto-resolve here.
+        return false;
 
       default:
         return false;
@@ -353,6 +389,7 @@ const builderManager = new BuilderManager({
   maxParallel: config.builder.maxParallel,
   projectPath: resolvedPath,
   timeoutMs: config.builder.timeoutMinutes * 60 * 1000,
+  inactivityTimeoutMs: config.builder.inactivityTimeoutMinutes * 60 * 1000,
 });
 
 let running = true;
@@ -392,11 +429,20 @@ function printActivity(entry: ActivityEntry) {
         console.log(`${prefix}${tag}<< ${entry.summary}`);
       }
       break;
+    case "progress":
+      console.log(`${prefix}${tag}.. ${entry.summary}`);
+      break;
     case "error":
       console.error(`${prefix}${tag}!! ${entry.summary}`);
       break;
   }
 }
+```
+
+Note: `printActivity` is duplicated from `src/index.ts`. The implementer should extract it into a shared module (e.g., `src/output.ts`) and import it in both `index.ts` and `run.ts` to avoid divergence.
+
+```typescript
+// Continue src/run.ts
 
 log(`Starting at ${startLevel} level for ${resolvedPath}`);
 if (seed) log(`Seed: ${seed}`);
