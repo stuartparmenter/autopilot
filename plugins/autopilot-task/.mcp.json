@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "bun",
+      "args": ["x", "@upstash/context7-mcp"]
+    }
+  }
+}
