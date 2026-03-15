@@ -104,6 +104,17 @@ The `next` field is not constrained to "one level down." A cycle can recommend a
 - Strategy planner → "vision thesis invalidated" (up to vision)
 - Epic planner → "tasks created, wait until they're built" (wait condition)
 
+### Scoping: One Epic Per Task Cycle
+
+Each task-level cycle focuses on **one epic**, not all open epics. This is enforced in the task planner's prompt, not in the orchestrator or type system.
+
+The task planner's agent prompt instructs it to:
+1. Query beads for open epics that need task decomposition (no tasks yet, or tasks completed and epic still open)
+2. Pick one epic to focus on (highest priority, most recently created, or most actionable)
+3. Plan tasks exclusively for that epic — do not mix concerns across epics
+
+The orchestrator stays dumb — it just runs `cycle(task)` when recommended. The task planner uses its judgment and beads access to scope itself. Subsequent epics get their own task cycles later, triggered by the next planning recommendation.
+
 ### Loop
 
 ```
@@ -382,6 +393,7 @@ knowledge_graph:
 
 ### `plugins/autopilot-task/agents/planner.md`
 - Add beads MCP to tools (read epic, write tasks)
+- Add prompt constraint: pick one open epic from beads per cycle, plan tasks exclusively for that epic, do not mix across epics
 
 ### New Files
 - `src/orchestrator.ts` — thin event loop
