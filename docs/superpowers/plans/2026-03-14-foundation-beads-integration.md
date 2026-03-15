@@ -488,7 +488,7 @@ After completing your structured output, evaluate what should happen next. Check
 - Prior work completed, need to re-evaluate and potentially create more work at this level
 
 ### WAIT signals (need results before meaningful re-evaluation)
-- Work dispatched to builders, need outcomes before this level can make informed decisions
+- Work dispatched to executors, need outcomes before this level can make informed decisions
 - Insufficient new information to justify re-running any level right now
 
 Based on which signals are present, add a `next` field to your JSON output:
@@ -583,7 +583,7 @@ Update step 5 (currently "Use `/create-task` for each task") to also write to be
    - Include acceptance criteria (machine-verifiable)
    - Include dependencies referencing other task IDs
 
-   Continue to use `/create-task` for structured output in the conversation log (useful for debugging and run history), but the beads entry is the durable artifact that the builder will pick up. This dual-write is intentional for the transition period — `/create-task` may be deprecated once beads is confirmed as the long-term tracker.
+   Continue to use `/create-task` for structured output in the conversation log (useful for debugging and run history), but the beads entry is the durable artifact that the executor will pick up. This dual-write is intentional for the transition period — `/create-task` may be deprecated once beads is confirmed as the long-term tracker.
 ```
 
 - [ ] **Step 3: Commit**

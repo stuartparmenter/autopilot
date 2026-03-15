@@ -10,7 +10,7 @@
 
 **Independent:** This plan can be built in parallel with Plans 2 and 3. It reads from beads (CLI), gk (SQLite), and the `runs/` directory.
 
-**Security note:** The dashboard is localhost-only and renders data from trusted internal sources (beads, gk, runs/). All data originates from ap3's own planning cycles and builders — there is no user-supplied or external untrusted content. DOM updates use `textContent` for plain text values; server-rendered HTML for structured layouts (tables, stats) is built from trusted internal data only.
+**Security note:** The dashboard is localhost-only and renders data from trusted internal sources (beads, gk, runs/). All data originates from ap3's own planning cycles and executors — there is no user-supplied or external untrusted content. DOM updates use `textContent` for plain text values; server-rendered HTML for structured layouts (tables, stats) is built from trusted internal data only.
 
 ---
 
@@ -92,15 +92,79 @@ git commit -m "feat: add dashboard Hono server skeleton with health endpoint"
 
 The data layer reads from runs/ directory (filesystem) for now. Beads and gk integration will be added once the beads CLI patterns are confirmed.
 
-- [ ] **Step 1: Create data gathering module**
+- [ ] **Step 1: Write tests for data gathering**
+
+```typescript
+// src/dashboard-data.test.ts
+import { describe, expect, test, afterAll } from "bun:test";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
+import { getRecentRuns, getTotalCost } from "./dashboard-data";
+
+const TMP = `/tmp/ap3-dashboard-test-${Date.now()}`;
+
+afterAll(() => { rmSync(TMP, { recursive: true, force: true }); });
+
+describe("getRecentRuns", () => {
+  test("returns empty array when runs dir does not exist", () => {
+    expect(getRecentRuns("/nonexistent")).toEqual([]);
+  });
+
+  test("returns empty array when runs dir is empty", () => {
+    mkdirSync(resolve(TMP, "empty-runs"), { recursive: true });
+    expect(getRecentRuns(resolve(TMP, "empty-runs"))).toEqual([]);
+  });
+
+  test("parses run with metrics.json", () => {
+    const runDir = resolve(TMP, "runs", "2026-01-01T00-00-00");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(resolve(runDir, "metrics.json"), JSON.stringify({
+      level: "task", costUsd: 1.5, durationMs: 60000, timestamp: "2026-01-01T00-00-00",
+    }));
+    const runs = getRecentRuns(resolve(TMP, "runs"));
+    expect(runs.length).toBe(1);
+    expect(runs[0].level).toBe("task");
+    expect(runs[0].costUsd).toBe(1.5);
+  });
+
+  test("handles missing metrics.json gracefully", () => {
+    const runDir = resolve(TMP, "runs2", "2026-01-02T00-00-00");
+    mkdirSync(runDir, { recursive: true });
+    const runs = getRecentRuns(resolve(TMP, "runs2"));
+    expect(runs.length).toBe(1);
+    expect(runs[0].level).toBe("unknown");
+  });
+});
+
+describe("getTotalCost", () => {
+  test("sums costs", () => {
+    expect(getTotalCost([
+      { timestamp: "a", level: "task", costUsd: 1.5, durationMs: 0 },
+      { timestamp: "b", level: "epic", costUsd: 2.5, durationMs: 0 },
+    ])).toBe(4.0);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `bun test src/dashboard-data.test.ts`
+Expected: FAIL — module doesn't exist.
+
+- [ ] **Step 3: Create data gathering module**
 
 Create `src/dashboard-data.ts` with:
-- `getRecentRuns(runsDir, limit)` — reads `runs/` directory, parses `metrics.json` and `summary.json` from each, returns `RunSummary[]` sorted by most recent first
+- `getRecentRuns(runsDir, limit)` — reads `runs/` directory, parses `metrics.json` and `summary.json` from each, returns `RunSummary[]` sorted by most recent first. Handle missing directories and malformed JSON gracefully (return defaults).
 - `getTotalCost(runs)` — sums `costUsd` across runs
 - `renderRunsTable(runs)` — returns an HTML table string showing level, direction title, cost, and duration for each run (all data from trusted internal `metrics.json` / `summary.json` files)
 - `renderOverviewHtml(runs)` — returns HTML with total cost stat and latest direction
 
-- [ ] **Step 2: Add /api/state endpoint to dashboard**
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `bun test src/dashboard-data.test.ts`
+Expected: PASS — all 5 tests pass.
+
+- [ ] **Step 5: Add /api/state endpoint to dashboard**
 
 In `src/dashboard.ts`, add a `GET /api/state` endpoint that:
 - Calls `getRecentRuns()` for the runs directory
@@ -128,7 +192,33 @@ git commit -m "feat: add dashboard REST API for runs and overview data"
 
 Bun's native websocket support via `Bun.serve` with the `websocket` handler.
 
-- [ ] **Step 1: Update dashboard to support websockets**
+- [ ] **Step 1: Write websocket integration test**
+
+```typescript
+// Add to src/dashboard.test.ts
+describe("Dashboard WebSocket", () => {
+  test("accepts websocket upgrade on /ws", async () => {
+    const dashboard = createDashboard({ port: 0, projectPath: "/tmp" });
+    const server = dashboard.start(); // start() should return the Bun.serve Server instance
+    const port = server.port;
+
+    const ws = new WebSocket(`ws://localhost:${port}/ws`);
+    const opened = await new Promise<boolean>((resolve) => {
+      ws.onopen = () => resolve(true);
+      ws.onerror = () => resolve(false);
+      setTimeout(() => resolve(false), 2000);
+    });
+    expect(opened).toBe(true);
+
+    ws.close();
+    server.stop();
+  });
+});
+```
+
+Note: `start()` should return the `Bun.serve` `Server` instance so tests can get the assigned port and call `server.stop()` for cleanup. Also add a `stop()` method to the `Dashboard` interface for graceful shutdown by the orchestrator.
+
+- [ ] **Step 2: Update dashboard to support websockets**
 
 Replace the `start()` method to use `Bun.serve` with both HTTP fetch and websocket handlers:
 - Track connected clients in a `Set`
@@ -136,8 +226,15 @@ Replace the `start()` method to use `Bun.serve` with both HTTP fetch and websock
 - Route all other requests through Hono's `app.fetch`
 - `broadcast(event)` sends JSON to all connected clients
 - `open(ws)` adds to the set, `close(ws)` removes from the set
+- `start()` returns the `Server` instance and logs the actual port
+- Add `stop()` method that closes the server
 
-- [ ] **Step 2: Run typecheck**
+- [ ] **Step 3: Run tests**
+
+Run: `bun test src/dashboard.test.ts`
+Expected: All tests pass including the websocket test.
+
+- [ ] **Step 4: Run typecheck**
 
 Run: `bunx tsc --noEmit`
 
@@ -182,5 +279,5 @@ git commit -m "chore: fix lint/format issues from dashboard implementation"
 
 - **Beads integration:** The epics and tasks views currently show placeholder text. Once beads CLI patterns are confirmed, add data gathering functions that query beads for epic/task state and render them.
 - **gk integration:** The knowledge view (predictions, principles) needs gk SQLite queries against `.autopilot.db`. This can read directly from the SQLite file or use the gk CLI.
-- **Orchestrator integration:** The orchestrator (Plan 3's `src/run.ts`) should create the dashboard, start it, and call `dashboard.broadcast()` after each cycle completion and builder status change.
+- **Orchestrator integration:** The orchestrator (Plan 3's `src/run.ts`) should create the dashboard, start it, and call `dashboard.broadcast()` after each cycle completion and executor status change.
 - **Styling refinements:** The initial CSS is functional but minimal. Can be improved iteratively without a build step.

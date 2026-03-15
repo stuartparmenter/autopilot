@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Create the thin orchestrator loop that follows `cycle()`'s `NextAction` recommendations, manages builder concurrency, handles wait conditions, and provides a CLI entry point to run the full autonomous loop.
+**Goal:** Create the thin orchestrator loop that follows `cycle()`'s `NextAction` recommendations, manages executor concurrency, handles wait conditions, and provides a CLI entry point to run the full autonomous loop.
 
-**Architecture:** `src/orchestrator.ts` implements the main loop: run planning cycles following `NextAction` directions, spawn builders for ready tasks via `BuilderManager`, register and check wait conditions, and handle errors/shutdown. `src/config.ts` loads YAML configuration. A new CLI entry point (`src/run.ts`) starts the orchestrator.
+**Architecture:** `src/orchestrator.ts` implements the main loop: run planning cycles following `NextAction` directions, spawn executors for ready tasks via `ExecutorManager`, register and check wait conditions, and handle errors/shutdown. `src/config.ts` loads YAML configuration. A new CLI entry point (`src/run.ts`) starts the orchestrator.
 
 **Tech Stack:** Bun, TypeScript, Claude Agent SDK, beads CLI (for orchestrator state queries), yaml (new dependency)
 
-**Depends on:** Plan 1 (Foundation) and Plan 2 (Builder) must be completed first.
+**Depends on:** Plan 1 (Foundation) and Plan 2 (Executor) must be completed first.
 
 ---
 
@@ -34,9 +34,9 @@ import { loadConfig, type AutopilotConfig } from "./config";
 describe("loadConfig", () => {
   test("returns defaults when no config file exists", () => {
     const config = loadConfig("/nonexistent/path");
-    expect(config.builder.maxParallel).toBe(5);
-    expect(config.builder.timeoutMinutes).toBe(60);
-    expect(config.builder.inactivityTimeoutMinutes).toBe(10);
+    expect(config.executor.maxParallel).toBe(5);
+    expect(config.executor.timeoutMinutes).toBe(60);
+    expect(config.executor.inactivityTimeoutMinutes).toBe(10);
     expect(config.planning.model).toBe("opus");
     expect(config.dashboard.port).toBe(3000);
     expect(config.sandbox.enabled).toBe(true);
@@ -47,11 +47,11 @@ describe("loadConfig", () => {
     const tmpDir = `/tmp/ap3-test-${Date.now()}`;
     const { mkdirSync, writeFileSync } = require("node:fs");
     mkdirSync(tmpDir, { recursive: true });
-    writeFileSync(`${tmpDir}/.autopilot.yml`, "builder:\n  maxParallel: 10\n");
+    writeFileSync(`${tmpDir}/.autopilot.yml`, "executor:\n  maxParallel: 10\n");
 
     const config = loadConfig(tmpDir);
-    expect(config.builder.maxParallel).toBe(10);
-    expect(config.builder.timeoutMinutes).toBe(60); // default preserved
+    expect(config.executor.maxParallel).toBe(10);
+    expect(config.executor.timeoutMinutes).toBe(60); // default preserved
   });
 });
 ```
@@ -70,7 +70,7 @@ import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 export interface AutopilotConfig {
-  builder: {
+  executor: {
     maxParallel: number;
     timeoutMinutes: number;
     inactivityTimeoutMinutes: number;
@@ -91,7 +91,7 @@ export interface AutopilotConfig {
 }
 
 const DEFAULTS: AutopilotConfig = {
-  builder: {
+  executor: {
     maxParallel: 5,
     timeoutMinutes: 60,
     inactivityTimeoutMinutes: 10,
@@ -292,7 +292,7 @@ export class Orchestrator {
       this.pendingCycle = true;
     } else {
       // up from vision or down from task — nowhere to go
-      // Don't set pendingCycle; the orchestrator should wait for builder completions
+      // Don't set pendingCycle; the orchestrator should wait for executor completions
       // or surface to human (logged by the main loop)
       this.pendingCycle = false;
     }
@@ -362,7 +362,7 @@ This is the new CLI entry point that replaces manual `bun run src/index.ts <leve
 import { resolve } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { ActivityEntry } from "./activity";
-import { BuilderManager } from "./builder";
+import { ExecutorManager } from "./executor";
 import { loadConfig } from "./config";
 import { cycle } from "./cycle";
 import { Orchestrator } from "./orchestration";
@@ -385,11 +385,11 @@ const resolvedPath = resolve(projectPath);
 const config = loadConfig(resolvedPath);
 
 const orchestrator = new Orchestrator(startLevel, resolvedPath);
-const builderManager = new BuilderManager({
-  maxParallel: config.builder.maxParallel,
+const executorManager = new ExecutorManager({
+  maxParallel: config.executor.maxParallel,
   projectPath: resolvedPath,
-  timeoutMs: config.builder.timeoutMinutes * 60 * 1000,
-  inactivityTimeoutMs: config.builder.inactivityTimeoutMinutes * 60 * 1000,
+  timeoutMs: config.executor.timeoutMinutes * 60 * 1000,
+  inactivityTimeoutMs: config.executor.inactivityTimeoutMinutes * 60 * 1000,
 });
 
 let running = true;
@@ -398,11 +398,11 @@ let running = true;
 process.on("SIGINT", () => {
   console.log("\nShutting down gracefully...");
   running = false;
-  builderManager.abortAll();
+  executorManager.abortAll();
 });
 process.on("SIGTERM", () => {
   running = false;
-  builderManager.abortAll();
+  executorManager.abortAll();
 });
 
 function log(msg: string) {
@@ -446,7 +446,7 @@ Note: `printActivity` is duplicated from `src/index.ts`. The implementer should 
 
 log(`Starting at ${startLevel} level for ${resolvedPath}`);
 if (seed) log(`Seed: ${seed}`);
-log(`Builder slots: ${config.builder.maxParallel}`);
+log(`Executor slots: ${config.executor.maxParallel}`);
 
 while (running) {
   // 1. Run pending planning cycle
@@ -481,7 +481,7 @@ while (running) {
         log(`Next action: ${result.output.next.action} — ${result.output.next.reason}`);
         orchestrator.handleNextAction(result.output.next);
       } else {
-        log("No next action recommended — waiting for builder completions");
+        log("No next action recommended — waiting for executor completions");
         orchestrator.clearNextAction();
       }
     } catch (error) {
@@ -490,10 +490,10 @@ while (running) {
     }
   }
 
-  // 2. Spawn builders for ready tasks
+  // 2. Spawn executors for ready tasks
   // TODO: Query beads for ready tasks (status=open, no blockers, not claimed)
-  // For each ready task, if builderManager.hasAvailableSlot(), spawn a builder
-  // Builder completions update beads status and write gk observations
+  // For each ready task, if executorManager.hasAvailableSlot(), spawn a executor
+  // Executor completions update beads status and write gk observations
   // For now, this is a placeholder — beads CLI integration is needed
 
   // 3. Check wait conditions
@@ -503,7 +503,7 @@ while (running) {
   // 4. If nothing to do, wait before re-checking
   if (!orchestrator.hasPendingCycle && !orchestrator.isWaiting) {
     log("Nothing pending — orchestrator idle");
-    break; // For now, exit. Future: poll beads for builder completions
+    break; // For now, exit. Future: poll beads for executor completions
   }
 
   // Small delay to prevent tight loop
@@ -531,7 +531,7 @@ Expected: No errors.
 
 ```bash
 git add src/run.ts package.json
-git commit -m "feat: add orchestrator main loop with planning/building lifecycle"
+git commit -m "feat: add orchestrator main loop with planning/execution lifecycle"
 ```
 
 ---
@@ -570,6 +570,6 @@ The orchestrator loop has two `TODO` sections for beads CLI integration:
 1. **Query beads for ready tasks** — needs beads CLI commands to list open, unblocked, unclaimed tasks
 2. **Check wait conditions** — needs beads CLI commands to check task/epic completion status
 
-These will be filled in once beads CLI patterns are confirmed. The orchestrator's core logic (level transitions, wait conditions, builder spawning) is testable without beads.
+These will be filled in once beads CLI patterns are confirmed. The orchestrator's core logic (level transitions, wait conditions, executor spawning) is testable without beads.
 
-The builder spawning in the orchestrator loop should be non-blocking — `spawnBuilder()` returns a promise, and multiple builders run concurrently. The orchestrator should track builder promises and handle their completions (updating beads, checking wait conditions). This will be refined as the beads integration matures.
+The executor spawning in the orchestrator loop should be non-blocking — `spawnExecutor()` returns a promise, and multiple executors run concurrently. The orchestrator should track executor promises and handle their completions (updating beads, checking wait conditions). This will be refined as the beads integration matures.

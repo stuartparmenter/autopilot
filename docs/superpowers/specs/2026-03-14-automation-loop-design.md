@@ -1,4 +1,4 @@
-# Automation Loop Design: Orchestrator, Builder, Tracker, Dashboard
+# Automation Loop Design: Orchestrator, Executor, Tracker, Dashboard
 
 **Date:** 2026-03-14
 **Status:** Draft
@@ -10,17 +10,17 @@ ap3's planning phases (vision, strategy, epic, task) are working end-to-end. Eac
 
 Four pieces are needed:
 
-1. **Orchestrator** — decides when to run which planning level and when to dispatch builders
+1. **Orchestrator** — decides when to run which planning level and when to dispatch executors
 2. **Tracker** — durable artifacts for epics and tasks (not vision/strategy, which stay in gk)
-3. **Builder** — takes a task and implements it (code, tests, PR)
+3. **Executor** — takes a task and implements it (code, tests, PR)
 4. **Dashboard** — local web UI for visibility into project state
 
 ## Design Principles
 
 - **Keep orchestration thin.** The core thesis is that `cycle()` with MADE handles planning at any level. The orchestrator follows instructions, it doesn't make decisions.
-- **Planning and building run in parallel.** They sync through the tracker (beads) and knowledge graph (gk), not through direct coordination.
-- **Observations flow up naturally.** The builder writes findings to gk. When a planning cycle next runs, its explorer/researcher reads the latest gk state. No special triggers needed.
-- **Use "builder" terminology** in v3 (not "executor").
+- **Planning and execution run in parallel.** They sync through the tracker (beads) and knowledge graph (gk), not through direct coordination.
+- **Observations flow up naturally.** The executor writes findings to gk. When a planning cycle next runs, its explorer/researcher reads the latest gk state. No special triggers needed.
+- **Use "executor" terminology** in v3 (not "executor").
 
 ## Architecture Overview
 
@@ -36,7 +36,7 @@ Four pieces are needed:
 │         │ spawns                                        │
 │         ▼                                               │
 │  ┌──────────────┐         ┌──────────────┐             │
-│  │   Builders    │────────▶│ Agent SDK    │             │
+│  │   Executors    │────────▶│ Agent SDK    │             │
 │  │ (task runner) │         │  query()     │             │
 │  └──────────────┘         └──────────────┘             │
 │                                                         │
@@ -54,7 +54,7 @@ Four pieces are needed:
     └───────────┘          └───────────┘
 ```
 
-**One Bun process** runs the orchestrator, manages builder slots, and serves the dashboard.
+**One Bun process** runs the orchestrator, manages executor slots, and serves the dashboard.
 
 ### Data Flow by Level
 
@@ -64,7 +64,7 @@ Four pieces are needed:
 | Strategy planner | gk | gk |
 | Epic planner | gk + beads | gk + beads (creates/updates epics) |
 | Task planner | gk + beads | gk + beads (creates tasks against epics) |
-| Builder | gk + beads | gk (observations) + beads (status updates) + GitHub (PRs) |
+| Executor | gk + beads | gk (observations) + beads (status updates) + GitHub (PRs) |
 
 Vision and strategy don't interact with beads — gk gets updated with summary knowledge along the way. Epic planner needs beads MCP for both reading (query existing epics, check status of prior work) and writing (create new epics). Task planner reads the epic from beads and creates tasks against it.
 
@@ -135,7 +135,7 @@ loop:
     handle result.next (queue next cycle or register wait condition)
 
   if ready tasks in beads with no blockers:
-    spawn builders (up to slot limit)
+    spawn executors (up to slot limit)
 
   if wait condition met:
     unblock pending cycle
@@ -143,33 +143,33 @@ loop:
   broadcast state to dashboard via websocket
 ```
 
-The orchestrator is purely reactive — it follows the cycle's recommendations and manages builder concurrency. It does not make planning decisions.
+The orchestrator is purely reactive — it follows the cycle's recommendations and manages executor concurrency. It does not make planning decisions.
 
 ### Error Handling
 
 The orchestrator is a long-running process, so errors must not be fatal:
 
-- **`cycle()` fails or returns no output** — log the error, skip the `next` recommendation, continue the loop. The orchestrator can retry the same level on the next iteration or wait for builder completions to change state.
-- **`cycle()` returns no `next` field** — treat as implicit "wait for builders to change state." The orchestrator continues dispatching ready tasks and re-evaluates after builder completions.
-- **Builder crashes or times out** — update beads status to `blocked` with error context. The task becomes visible for retry (manually or by a future planning cycle that decides to re-attempt).
-- **Beads MCP unavailable** — orchestrator degrades: planning cycles that need beads (epic, task) are skipped, builders can't be dispatched. Vision/strategy cycles and the dashboard (reading from gk/runs) continue. Log the issue and retry beads connection on next loop iteration.
-- **Graceful shutdown** — on SIGINT/SIGTERM, stop accepting new work, signal running builders via `abortController`, wait for in-progress builders to complete (with a hard timeout), then exit.
+- **`cycle()` fails or returns no output** — log the error, skip the `next` recommendation, continue the loop. The orchestrator can retry the same level on the next iteration or wait for executor completions to change state.
+- **`cycle()` returns no `next` field** — treat as implicit "wait for executors to change state." The orchestrator continues dispatching ready tasks and re-evaluates after executor completions.
+- **Executor crashes or times out** — update beads status to `blocked` with error context. The task becomes visible for retry (manually or by a future planning cycle that decides to re-attempt).
+- **Beads MCP unavailable** — orchestrator degrades: planning cycles that need beads (epic, task) are skipped, executors can't be dispatched. Vision/strategy cycles and the dashboard (reading from gk/runs) continue. Log the issue and retry beads connection on next loop iteration.
+- **Graceful shutdown** — on SIGINT/SIGTERM, stop accepting new work, signal running executors via `abortController`, wait for in-progress executors to complete (with a hard timeout), then exit.
 
-### Planning/Building Parallelism
+### Planning/Execution Parallelism
 
-Planning and building run as two parallel streams that sync through beads and gk:
+Planning and execution run as two parallel streams that sync through beads and gk:
 
 ```
-Planning stream                    Building stream
+Planning stream                    Execution stream
 ──────────────                     ────────────────
-cycle(epic) → creates tasks   ──▶  builder picks up task T1
-cycle(task) for next epic          builder picks up task T2
-cycle(epic) re-evaluates           builder picks up task T3
+cycle(epic) → creates tasks   ──▶  executor picks up task T1
+cycle(task) for next epic          executor picks up task T2
+cycle(epic) re-evaluates           executor picks up task T3
   (reads gk observations from       (writes observations to gk,
    completed T1, T2)                  updates beads status)
 ```
 
-Planning may sometimes wait for building (via `WaitCondition`) — e.g., "wait until all tasks for this epic are done before re-evaluating." But the orchestrator can still dispatch other builders and run cycles for other epics during the wait. The streams are independent in the sense that neither blocks the other's progress on unrelated work.
+Planning may sometimes wait for execution (via `WaitCondition`) — e.g., "wait until all tasks for this epic are done before re-evaluating." But the orchestrator can still dispatch other executors and run cycles for other epics during the wait. The streams are independent in the sense that neither blocks the other's progress on unrelated work.
 
 ### MADE Skill Addition: Phase 8
 
@@ -199,7 +199,7 @@ Check these signals against what you've observed in this cycle, then recommend a
 - Prior work completed, need to re-evaluate and potentially create more work at this level
 
 ### WAIT signals (need results before meaningful re-evaluation)
-- Work dispatched to builders, need outcomes before this level can make informed decisions
+- Work dispatched to executors, need outcomes before this level can make informed decisions
 - Insufficient new information to justify re-running any level right now
 
 Based on which signals are present, add a `next` field to your JSON output:
@@ -216,7 +216,7 @@ The `parseOutput` function in `cycle.ts` already extracts JSON from the planner'
 
 ## 2. Tracker: Beads
 
-Beads is the tracker for epics and tasks. It's a known quantity from v2 (already integrated via MCP), and while it may not be the long-term solution, it works now and avoids building a tracker from scratch.
+Beads is the tracker for epics and tasks. It's a known quantity from v2 (already integrated via MCP), and while it may not be the long-term solution, it works now and avoids execution a tracker from scratch.
 
 ### Interface
 
@@ -249,31 +249,31 @@ The design intentionally keeps beads interaction behind well-defined patterns. I
 - Agent prompts that reference beads tools (thin — they're mostly in skills)
 - Dashboard data queries
 
-## 3. Builder: `autopilot-builder` Plugin
+## 3. Executor: `autopilot-executor` Plugin
 
 ### Plugin Structure
 
 ```
-plugins/autopilot-builder/
+plugins/autopilot-executor/
   .claude-plugin/plugin.json
   agents/
-    builder.md
+    executor.md
   skills/
     implement-task/SKILL.md
 ```
 
-### Builder Agent
+### Executor Agent
 
 ```yaml
-name: builder
+name: executor
 model: sonnet
 skills: [gk-conventions]
 tools: [Read, Write, Edit, Grep, Glob, Bash, Skill, EnterWorktree, ExitWorktree]
 ```
 
-Tools follow the existing agent patterns: `Skill` is included for skill invocation, MCP tools (beads, gk, github) are provided by their MCP servers and don't need listing. `Agent` is omitted since the builder has no sub-agents.
+Tools follow the existing agent patterns: `Skill` is included for skill invocation, MCP tools (beads, gk, github) are provided by their MCP servers and don't need listing. `Agent` is omitted since the executor has no sub-agents.
 
-The builder preloads `gk-conventions` from `autopilot-core` (same pattern as all other agents). No separate kg-extraction agent — the builder writes observations to gk as part of its normal workflow using the conventions skill.
+The executor preloads `gk-conventions` from `autopilot-core` (same pattern as all other agents). No separate kg-extraction agent — the executor writes observations to gk as part of its normal workflow using the conventions skill.
 
 ### Agent SDK Query Options
 
@@ -283,10 +283,10 @@ Carried forward from v2's `agent-runner.ts`:
 query({
   prompt: taskPrompt,
   options: {
-    agent: "autopilot-builder:builder",
+    agent: "autopilot-executor:executor",
     plugins: [
       { type: "local", path: "plugins/autopilot-core" },
-      { type: "local", path: "plugins/autopilot-builder" },
+      { type: "local", path: "plugins/autopilot-executor" },
     ],
     mcpServers: {
       gk: buildGkServer(projectPath),
@@ -317,7 +317,7 @@ query({
 })
 ```
 
-### Builder Lifecycle (`implement-task` skill)
+### Executor Lifecycle (`implement-task` skill)
 
 1. **Claim task** in beads (atomic, prevents double-pickup)
 2. **`EnterWorktree`** — isolated git branch
@@ -331,11 +331,11 @@ query({
 
 ### Concurrency
 
-Slot-based — configurable max parallel builders. The orchestrator manages the pool, spawning new builders as slots free up and ready tasks exist in beads.
+Slot-based — configurable max parallel executors. The orchestrator manages the pool, spawning new executors as slots free up and ready tasks exist in beads.
 
 ### Timeouts
 
-- **Absolute timeout** (e.g., 60 min) — hard cap on builder session
+- **Absolute timeout** (e.g., 60 min) — hard cap on executor session
 - **Inactivity watchdog** (e.g., 10 min) — catches stuck agents
 
 ### Sandbox
@@ -353,7 +353,7 @@ Slot-based — configurable max parallel builders. The orchestrator manages the 
 - **REST endpoints** for initial page load (`/api/epics`, `/api/tasks`, `/api/runs`)
 - **No build step** — vanilla HTML + JS, possibly Alpine.js or htmx via CDN if helpful
 
-The orchestrator emits events as state changes (builder completes, planning cycle finishes, task claimed). The dashboard broadcasts these to connected websocket clients.
+The orchestrator emits events as state changes (executor completes, planning cycle finishes, task claimed). The dashboard broadcasts these to connected websocket clients.
 
 ### Views
 
@@ -379,8 +379,8 @@ The orchestrator emits events as state changes (builder completes, planning cycl
 Following v2's pattern, a YAML config file (`.autopilot.yml` in the target project or ap3 root):
 
 ```yaml
-builder:
-  parallel: 5                    # max concurrent builders
+executor:
+  parallel: 5                    # max concurrent executors
   timeout_minutes: 60            # absolute timeout
   inactivity_timeout_minutes: 10 # inactivity watchdog
   model: "sonnet"
@@ -426,15 +426,15 @@ knowledge_graph:
 
 ### New Files
 - `src/orchestrator.ts` — thin event loop
-- `src/builder.ts` — builder spawn/management (adapted from v2's `agent-runner.ts`)
+- `src/executor.ts` — executor spawn/management (adapted from v2's `agent-runner.ts`)
 - `src/dashboard.ts` — Hono server + websocket
-- `plugins/autopilot-builder/` — builder plugin (agent + skill)
+- `plugins/autopilot-executor/` — executor plugin (agent + skill)
 - Config schema and loader
 
 ## Open Questions
 
 1. **Beads long-term** — beads works now but may not be the permanent solution. The abstraction boundary is designed to make swapping tractable.
-2. **Builder skill detail** — the `implement-task` skill needs detailed phase definitions (adapted from v2's `implement-bead`). Left for implementation planning.
-3. **Context7 MCP for builder** — v2's task explorer uses context7 for library docs. Should the builder also get it?
-4. **Merge coordination** — v2 has merge slots to prevent concurrent PR merge conflicts. Needed here too if multiple builders target the same repo.
+2. **Executor skill detail** — the `implement-task` skill needs detailed phase definitions (adapted from v2's `implement-bead`). Left for implementation planning.
+3. **Context7 MCP for executor** — v2's task explorer uses context7 for library docs. Should the executor also get it?
+4. **Merge coordination** — v2 has merge slots to prevent concurrent PR merge conflicts. Needed here too if multiple executors target the same repo.
 5. **Dashboard design** — specific layouts, styling, and interaction patterns are implementation details. The spec defines data sources and views.
