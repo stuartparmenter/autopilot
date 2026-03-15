@@ -72,7 +72,7 @@ Vision and strategy don't interact with beads — gk gets updated with summary k
 
 ### CycleOutput Extension
 
-`CycleOutput` gains a `next` field. The planner at each level recommends what should happen next — go deeper, go higher, or wait for a condition:
+`CycleOutput` gains a `next` field. The planner recommends a directional action — up, down, stay, or wait — without needing to know the level hierarchy:
 
 ```typescript
 interface CycleOutput {
@@ -86,7 +86,9 @@ interface CycleOutput {
 }
 
 type NextAction =
-  | { action: "cycle"; level: Level; reason: string; seed?: string }
+  | { action: "up"; reason: string }
+  | { action: "down"; reason: string }
+  | { action: "stay"; reason: string }
   | { action: "wait"; until: WaitCondition; reason: string }
 
 type WaitCondition =
@@ -95,14 +97,21 @@ type WaitCondition =
   | { type: "all_tasks_dispatched" }
 ```
 
-The `next` field is not constrained to "one level down." A cycle can recommend any level:
+The orchestrator resolves directional actions to concrete levels:
 
-- Task planner → "epic X needs more tasks" (same level, different epic)
-- Task planner → "epic X goals are wrong" (up to epic)
-- Epic planner → "strategic bet isn't paying off" (up to strategy)
-- Epic planner → "ready to plan tasks for epic Y" (down to task)
-- Strategy planner → "vision thesis invalidated" (up to vision)
-- Epic planner → "tasks created, wait until they're built" (wait condition)
+| Current Level | "up" | "down" | "stay" |
+|---------------|------|--------|--------|
+| vision | (nowhere — surface to human) | strategy | vision |
+| strategy | vision | epic | strategy |
+| epic | strategy | task | epic |
+| task | epic | (nowhere — tasks are the leaf for planning) | task |
+
+Examples:
+- Task planner → `up` ("epic X goals are wrong, need re-evaluation")
+- Epic planner → `down` ("created epics, ready for task decomposition")
+- Epic planner → `stay` ("other epics still need planning at this level")
+- Strategy planner → `up` ("vision thesis invalidated by market findings")
+- Epic planner → `wait` ("tasks created, wait until they're built")
 
 ### Scoping: One Epic Per Task Cycle
 
@@ -168,19 +177,39 @@ The `/planning` skill gains a new phase after the existing Phase 7 (structured o
 
 **Phase 8: Recommend Next Action**
 
-After producing the structured `CycleOutput` JSON, the planner evaluates what should happen next. It already has gk observations, beads state (for epic/task levels), and prediction outcomes in context. It adds a `next` field to the JSON output:
+After producing the structured `CycleOutput` JSON, the planner evaluates what should happen next. Rather than open-ended judgment, the planner checks specific signals — binary indicators grounded in the research on discriminator accuracy (concrete checks beat holistic assessment).
 
 ```
 ## Phase 8: What's Next?
 
-Review what you've just decided and recommend the next action:
+Check these signals against what you've observed in this cycle, then recommend a direction.
 
-- If you created work items that need further decomposition → `{ "action": "cycle", "level": "<lower-level>", "reason": "..." }`
-- If you see signals that a higher level needs re-evaluation (predictions failing, assumptions invalidated) → `{ "action": "cycle", "level": "<higher-level>", "reason": "..." }`
-- If you created tasks and they should be built before the next planning cycle → `{ "action": "wait", "until": { "type": "epic_complete", "epicId": "..." }, "reason": "..." }`
-- If there's nothing actionable right now → omit the `next` field
+### Go UP signals (something at the parent level needs re-evaluation)
+- Predictions from a prior parent-level cycle have been falsified by what you found
+- Observations contradict assumptions the parent direction was based on
+- The work at this level reveals the parent's framing was wrong or incomplete
+- All work at this level is complete and the parent needs to re-evaluate its thesis
 
-Add the `next` field to your JSON output alongside direction, candidates, rubrics, etc.
+### Go DOWN signals (you produced work that needs decomposition)
+- New work items created that need child-level planning
+- Current direction is actionable and ready for more specific decomposition
+
+### STAY signals (more to do at this level)
+- Other work items at this level still need attention (e.g., other epics need task planning)
+- Prior work completed, need to re-evaluate and potentially create more work at this level
+
+### WAIT signals (need results before meaningful re-evaluation)
+- Work dispatched to builders, need outcomes before this level can make informed decisions
+- Insufficient new information to justify re-running any level right now
+
+Based on which signals are present, add a `next` field to your JSON output:
+- `{ "action": "up", "reason": "<which signal and why>" }`
+- `{ "action": "down", "reason": "<which signal and why>" }`
+- `{ "action": "stay", "reason": "<which signal and why>" }`
+- `{ "action": "wait", "until": { "type": "epic_complete", "epicId": "..." }, "reason": "..." }`
+- If no signals are clearly present, omit the `next` field.
+
+You do not need to know which specific level is "up" or "down" — the orchestrator resolves that.
 ```
 
 The `parseOutput` function in `cycle.ts` already extracts JSON from the planner's fenced output — it will pick up the `next` field naturally since `CycleOutput` makes it optional.
