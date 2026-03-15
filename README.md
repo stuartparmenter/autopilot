@@ -20,7 +20,7 @@ Given a project and an optional seed direction, Autopilot runs a planning cycle 
 | **Vision** | Product identity and market position | "What kind of product is this?" |
 | **Strategy** | Investment themes | "Where should we focus effort?" |
 | **Epic** | Concrete initiatives (1-4 weeks) | "What specific work advances the strategy?" |
-| **Task** | Individual work items | (not yet built) |
+| **Task** | Structured implementation tasks | "How should we implement this epic?" |
 
 Each level reads its parent's direction from gk and writes its own results back. Principles accumulate across cycles.
 
@@ -35,6 +35,9 @@ bun run src/index.ts strategy ~/path/to/project
 
 # Run epic (reads strategy direction from gk)
 bun run src/index.ts epic ~/path/to/project
+
+# Run task (reads epic direction from gk, decomposes into implementable tasks)
+bun run src/index.ts task ~/path/to/project
 ```
 
 Output is stored in `runs/<timestamp>/`:
@@ -51,9 +54,11 @@ plugins/
   autopilot-core/              # shared across all levels
     skills/planning/            # MADE methodology (level-agnostic)
     skills/gk-conventions/      # gk workflow guidance
+    skills/create-task/         # structured task creation
   autopilot-vision/            # vision-level agents
   autopilot-strategy/          # strategy-level agents
   autopilot-epic/              # epic-level agents
+  autopilot-task/              # task-level agents + context7 MCP
 ```
 
 Each level plugin has a **planner** (Opus) and supporting **sub-agents** (Sonnet):
@@ -68,6 +73,8 @@ Each level plugin has a **planner** (Opus) and supporting **sub-agents** (Sonnet
 2. Dispatches explorer/researcher sub-agents
 3. Invokes `/planning` skill (MADE methodology)
 4. Stores results in gk with validation
+
+At the task level, the planner adds a decomposition phase after MADE: it breaks the winning implementation approach into structured tasks using `/create-task`, with consolidation, coverage, and second-order effects checks.
 
 ### Knowledge Graph (gk)
 

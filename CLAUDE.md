@@ -27,9 +27,11 @@ Autonomous planning system using the MADE evaluation methodology at four levels:
 plugins/
   autopilot-core/skills/planning/      — MADE methodology (level-agnostic)
   autopilot-core/skills/gk-conventions/ — gk workflow + guide pointers
+  autopilot-core/skills/create-task/   — structured task creation template
   autopilot-vision/agents/              — planner, explorer, researcher
   autopilot-strategy/agents/            — planner, explorer, researcher
   autopilot-epic/agents/                — planner, explorer
+  autopilot-task/agents/                — planner, explorer (+context7 MCP)
 ```
 
 ## Critical SDK Patterns
