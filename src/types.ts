@@ -13,6 +13,7 @@ export interface CycleOutput {
   predictions: Prediction[];
   principles: Principle[];
   observations: Observation[];
+  next?: NextAction;
 }
 
 export interface Direction {
@@ -53,3 +54,14 @@ export interface Observation {
   source: "codebase" | "market";
   relevance: string;
 }
+
+export type NextAction =
+  | { action: "up"; reason: string }
+  | { action: "down"; reason: string }
+  | { action: "stay"; reason: string }
+  | { action: "wait"; until: WaitCondition; reason: string };
+
+export type WaitCondition =
+  | { type: "tasks_complete"; taskIds: string[] }
+  | { type: "epic_complete"; epicId: string }
+  | { type: "all_tasks_dispatched" };
