@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { loadConfig } from "./config";
 
 describe("loadConfig", () => {
@@ -16,10 +16,7 @@ describe("loadConfig", () => {
   test("merges partial config over defaults", () => {
     const tmpDir = `/tmp/ap3-test-${Date.now()}`;
     mkdirSync(tmpDir, { recursive: true });
-    writeFileSync(
-      `${tmpDir}/.autopilot.yml`,
-      "executor:\n  maxParallel: 10\n",
-    );
+    writeFileSync(`${tmpDir}/.autopilot.yml`, "executor:\n  maxParallel: 10\n");
 
     const config = loadConfig(tmpDir);
     expect(config.executor.maxParallel).toBe(10);
