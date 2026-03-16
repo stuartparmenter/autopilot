@@ -144,9 +144,47 @@ After completing all phases, output the final result as a JSON block wrapped in 
       "source": "codebase" | "market",
       "relevance": string
     }
-  ]
+  ],
+  "next": {
+    "action": "up" | "down" | "stay" | "wait",
+    "reason": string,
+    "until": { "type": string, ... }  // only for "wait"
+  }
 }
 ```
+
+The `next` field is optional. Include it if you have a clear recommendation based on Phase 8.
+
+## Phase 8: What's Next?
+
+After completing your structured output, evaluate what should happen next. Check these specific signals — don't guess, check against evidence you gathered during this cycle.
+
+### Go UP signals (something at the parent level needs re-evaluation)
+- Predictions from a prior parent-level cycle have been falsified by what you found
+- Observations contradict assumptions the parent direction was based on
+- The work at this level reveals the parent's framing was wrong or incomplete
+- All work at this level is complete and the parent needs to re-evaluate its thesis
+
+### Go DOWN signals (you produced work that needs decomposition)
+- New work items created that need child-level planning
+- Current direction is actionable and ready for more specific decomposition
+
+### STAY signals (more to do at this level)
+- Other work items at this level still need attention (e.g., other epics need task planning)
+- Prior work completed, need to re-evaluate and potentially create more work at this level
+
+### WAIT signals (need results before meaningful re-evaluation)
+- Work dispatched to executors, need outcomes before this level can make informed decisions
+- Insufficient new information to justify re-running any level right now
+
+Based on which signals are present, add a `next` field to your JSON output:
+- `{ "action": "up", "reason": "<which signal and evidence>" }`
+- `{ "action": "down", "reason": "<which signal and evidence>" }`
+- `{ "action": "stay", "reason": "<which signal and evidence>" }`
+- `{ "action": "wait", "until": { "type": "epic_complete", "epicId": "..." }, "reason": "..." }`
+- If no signals are clearly present, omit the `next` field.
+
+You do not need to know which specific level is "up" or "down" — the orchestrator resolves that. Focus on the evidence.
 
 ## Quality Standards
 
