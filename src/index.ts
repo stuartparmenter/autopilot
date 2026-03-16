@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ActivityEntry } from "./activity";
 import { run } from "./hierarchy";
+import { printActivity } from "./output";
 import type { Level } from "./types";
 
 const VALID_LEVELS = new Set(["vision", "strategy", "epic", "task"]);
@@ -27,35 +27,6 @@ console.log(`Project: ${resolvedPath}`);
 if (seed) console.log(`Seed: ${seed}`);
 console.log(`Run dir: ${runDir}`);
 console.log(`\n─── ${level} cycle ───\n`);
-
-function printActivity(entry: ActivityEntry) {
-  const prefix = entry.isSubagent ? "  " : "";
-  const tag = entry.subagentName ? `[${entry.subagentName}] ` : "";
-  switch (entry.type) {
-    case "status":
-      console.log(`${prefix}>> ${entry.summary}`);
-      break;
-    case "tool_use":
-      console.log(`${prefix}${tag}[tool] ${entry.summary}`);
-      break;
-    case "text":
-      if (entry.detail) {
-        process.stdout.write(`${prefix}${tag}${entry.detail}`);
-      }
-      break;
-    case "result":
-      if (entry.isSubagent) {
-        console.log(`${prefix}${tag}<< ${entry.summary}`);
-      }
-      break;
-    case "progress":
-      console.log(`${prefix}${tag}.. ${entry.summary}`);
-      break;
-    case "error":
-      console.error(`${prefix}${tag}!! ${entry.summary}`);
-      break;
-  }
-}
 
 const result = await run(level, resolvedPath, seed, printActivity);
 

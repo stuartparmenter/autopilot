@@ -5,6 +5,7 @@
   "description": "Strategy-driven autonomous development",
   "scripts": {
     "start": "bun run src/index.ts",
+    "run": "bun run src/run.ts",
     "test": "bun test",
     "check": "bunx biome check ./src",
     "typecheck": "bunx tsc --noEmit"
