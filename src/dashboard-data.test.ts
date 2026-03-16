@@ -1,6 +1,6 @@
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterAll, describe, expect, test } from "bun:test";
 import { getRecentRuns, getTotalCost } from "./dashboard-data";
 
 const TMP = `/tmp/ap3-dashboard-test-${Date.now()}`;

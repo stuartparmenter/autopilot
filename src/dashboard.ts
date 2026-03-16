@@ -29,8 +29,7 @@ export function createDashboard(config: DashboardConfig): Dashboard {
   });
 
   app.get("/api/state", (c) => {
-    const runsDir =
-      config.runsDir ?? resolve(import.meta.dir, "../runs");
+    const runsDir = config.runsDir ?? resolve(import.meta.dir, "../runs");
     const runs = getRecentRuns(runsDir);
     const totalCost = getTotalCost(runs);
     const latestDirection = runs[0]?.directionTitle ?? null;
