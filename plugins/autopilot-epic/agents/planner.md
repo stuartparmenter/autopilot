@@ -54,9 +54,19 @@ The gk-conventions skill should be preloaded. If you do not have gk guide instru
 
 1. **Read the gk guides** (`gk://guides/query`, `gk://guides/extraction`) using ReadMcpResourceTool, then read the current strategy direction, prior epic outcomes, and predictions from gk. Do this BEFORE dispatching sub-agents.
 
-2. **Dispatch sub-agents** — use the Agent tool with `subagent_type`:
+2. **Check existing epics in beads** — use beads `list` or `search` tools to see what epics already exist, their status, and their tasks. This prevents creating duplicate epics and gives you context on what work is already in progress or completed.
+
+3. **Dispatch sub-agents** — use the Agent tool with `subagent_type`:
    - `subagent_type: "autopilot-epic:explorer"` to assess what specifically needs to change in the codebase to execute the strategy
 
-3. **Run /planning** — candidates must be concrete initiatives along the diversity axes above
+4. **Run /planning** — candidates must be concrete initiatives along the diversity axes above
 
-4. **Store results** in gk following the extraction guide — then run `validate_graph` and fix any issues before completing. Link epic direction to the parent strategy direction.
+5. **Store results** in gk following the extraction guide — then run `validate_graph` and fix any issues before completing. Link epic direction to the parent strategy direction.
+
+6. **Create epics in beads** — for each epic from your selected direction, use the beads `create` tool:
+   - Type: `epic`
+   - Title: the epic name
+   - Description: scope and deliverables
+   - Include acceptance criteria that define "done"
+
+   Only create new epics — do not duplicate epics that already exist in beads from prior cycles.
