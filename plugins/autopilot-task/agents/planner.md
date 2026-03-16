@@ -45,12 +45,19 @@ The gk-conventions skill should be preloaded. If you do not have gk guide instru
 
 1. **Read the gk guides** (`gk://guides/query`, `gk://guides/extraction`) using ReadMcpResourceTool, then read the current epic direction, prior task outcomes, observations, and predictions from gk. Do this BEFORE dispatching sub-agents.
 
-2. **Dispatch sub-agents** — use the Agent tool with `subagent_type`:
+2. **Pick one epic to focus on** — query beads for open epics that need task decomposition. Look for epics with:
+   - Status `open` and no tasks yet (needs initial decomposition)
+   - Status `open` with all tasks `done` (may need re-evaluation or additional tasks)
+   - Prioritize the most recently created or highest-priority epic
+
+   **You must focus on exactly one epic per cycle.** Do not plan tasks across multiple epics — this prevents blurring concerns and keeps each cycle's output coherent. If multiple epics need attention, recommend `stay` in Phase 8 so the orchestrator runs another task cycle for the next one.
+
+3. **Dispatch sub-agents** — use the Agent tool with `subagent_type`:
    - `subagent_type: "autopilot-task:explorer"` to investigate the specific files, functions, patterns, and constraints in the areas the epic touches
 
-3. **Run /planning** — candidates must be implementation approaches along the diversity axes above
+4. **Run /planning** — candidates must be implementation approaches along the diversity axes above
 
-4. **Decompose into tasks** — decompose from the explorer's **change map**, not just the abstract approach. Every primary change, ripple effect, and pre-existing issue the explorer identified should map to at least one task or be explicitly noted as out-of-scope.
+5. **Decompose into tasks** — decompose from the explorer's **change map**, not just the abstract approach. Every primary change, ripple effect, and pre-existing issue the explorer identified should map to at least one task or be explicitly noted as out-of-scope.
 
    Before writing tasks, plan the full decomposition:
    - Walk through the explorer's findings section by section — primary changes, ripple effects, pre-existing issues
@@ -72,10 +79,20 @@ The gk-conventions skill should be preloaded. If you do not have gk guide instru
    - Could this task's changes conflict with another task modifying the same files?
    If you find unacknowledged downstream effects, either expand the task's scope, add a dependency, or create a new task to handle them.
 
-   Then use `/create-task` **for each task** — you MUST create ALL tasks before moving to step 5. Do not stop after creating one task. Assign each task an ID (T1, T2, T3...) and use these IDs in dependency references so the full task graph is clear.
+   Then use `/create-task` **for each task** — you MUST create ALL tasks before moving to step 6. Do not stop after creating one task. Assign each task an ID (T1, T2, T3...) and use these IDs in dependency references so the full task graph is clear.
 
    For each task, set the appropriate fields:
    - **Owner** — `agent` (executor can implement autonomously) or `human` (requires human action like account signups, naming decisions, secret provisioning). The rest of the plan should still be complete — other tasks depend on the human task's output, not on skipping the decomposition.
    - **Category** — `task` (implementation work), `bug` (fix something broken), `feature` (new user-facing capability), or `chore` (setup, config, provisioning, housekeeping).
 
-5. **Store results** in gk following the extraction guide — then run `validate_graph` and fix any issues before completing. Link task direction to the parent epic direction.
+6. **Create tasks in beads** — for each task from your decomposition, use the beads `create` tool:
+   - Type: `task` (or `feature`, `bug`, `chore` as appropriate)
+   - Title: the task name
+   - Description: goal and constraints
+   - Parent: the epic's beads ID
+   - Include acceptance criteria (machine-verifiable)
+   - Include dependencies referencing other task IDs
+
+   Continue to use `/create-task` for structured output in the conversation log (useful for debugging and run history), but the beads entry is the durable artifact that the executor will pick up. This dual-write is intentional for the transition period — `/create-task` may be deprecated once beads is confirmed as the long-term tracker.
+
+7. **Store results** in gk following the extraction guide — then run `validate_graph` and fix any issues before completing. Link task direction to the parent epic direction.
