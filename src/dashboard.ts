@@ -1,4 +1,6 @@
+import { resolve } from "node:path";
 import { Hono } from "hono";
+import { getRecentRuns, getTotalCost } from "./dashboard-data";
 
 export interface DashboardConfig {
   port: number;
@@ -27,22 +29,27 @@ export function createDashboard(config: DashboardConfig): Dashboard {
   });
 
   app.get("/api/state", (c) => {
+    const runsDir =
+      config.runsDir ?? resolve(import.meta.dir, "../runs");
+    const runs = getRecentRuns(runsDir);
+    const totalCost = getTotalCost(runs);
+    const latestDirection = runs[0]?.directionTitle ?? null;
+
     return c.json({
-      overview: { totalCost: 0, latestDirection: null },
-      runs: [],
+      overview: { totalCost, latestDirection },
+      runs,
       epics: "Beads integration pending",
       tasks: "Beads integration pending",
     });
   });
 
   function start() {
-    server = Bun.serve({
+    server = Bun.serve<undefined>({
       port: config.port,
-      fetch(req) {
+      fetch(req, srv) {
         const url = new URL(req.url);
         if (url.pathname === "/ws") {
-          const upgraded = server?.upgrade(req);
-          if (upgraded) return undefined as unknown as Response;
+          if (srv.upgrade(req)) return undefined as unknown as Response;
           return new Response("WebSocket upgrade failed", { status: 400 });
         }
         return app.fetch(req);
