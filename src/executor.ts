@@ -118,7 +118,10 @@ export class ExecutorManager {
       `Claim task \`${taskId}\` in beads, then follow the skill's phases.`,
     ].join("\n");
 
-    const mcpServers: Record<string, import("@anthropic-ai/claude-agent-sdk").McpServerConfig> = {
+    const mcpServers: Record<
+      string,
+      import("@anthropic-ai/claude-agent-sdk").McpServerConfig
+    > = {
       gk: buildGkServer(projectPath),
       beads: { command: "uvx", args: ["beads-mcp"] },
     };
