@@ -87,7 +87,7 @@ export async function cycle(
   return { output, costUsd, durationMs, rawLog };
 }
 
-function parseOutput(text: string): CycleOutput | null {
+export function parseOutput(text: string): CycleOutput | null {
   const match = text.match(/```json\n([\s\S]*?)\n```/);
   if (!match) return null;
 
