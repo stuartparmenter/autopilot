@@ -1,0 +1,5 @@
+{
+  "name": "autopilot-executor",
+  "version": "0.3.0",
+  "description": "Executor agent for implementing tasks — claims from beads, works in worktrees, creates PRs"
+}
