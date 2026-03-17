@@ -2,6 +2,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig } from "./config";
 import { cycle } from "./cycle";
+import { createDashboard } from "./dashboard";
+import { getRecentRuns, getTotalCost } from "./dashboard-data";
 import { ExecutorManager } from "./executor";
 import { Orchestrator } from "./orchestration";
 import { printActivity } from "./output";
@@ -33,6 +35,33 @@ const executorManager = new ExecutorManager({
   inactivityTimeoutMs: config.executor.inactivityTimeoutMinutes * 60 * 1000,
 });
 
+const runsDir = resolve(import.meta.dir, "../runs");
+const dashboard = createDashboard({
+  port: config.dashboard.port,
+  projectPath: resolvedPath,
+  runsDir,
+});
+dashboard.start();
+
+function broadcastState() {
+  const runs = getRecentRuns(runsDir);
+  dashboard.broadcast({
+    type: "state",
+    data: {
+      overview: {
+        totalCost: getTotalCost(runs),
+        latestDirection: runs[0]?.directionTitle ?? null,
+      },
+      runs,
+      currentLevel: orchestrator.currentLevel,
+      isWaiting: orchestrator.isWaiting,
+      hasPendingCycle: orchestrator.hasPendingCycle,
+      activeExecutors: executorManager.activeCount,
+      availableSlots: executorManager.availableSlots,
+    },
+  });
+}
+
 let running = true;
 
 // Graceful shutdown
@@ -40,10 +69,12 @@ process.on("SIGINT", () => {
   console.log("\nShutting down gracefully...");
   running = false;
   executorManager.abortAll();
+  dashboard.stop();
 });
 process.on("SIGTERM", () => {
   running = false;
   executorManager.abortAll();
+  dashboard.stop();
 });
 
 function log(msg: string) {
@@ -53,6 +84,8 @@ function log(msg: string) {
 log(`Starting at ${startLevel} level for ${resolvedPath}`);
 if (seed) log(`Seed: ${seed}`);
 log(`Executor slots: ${config.executor.maxParallel}`);
+log(`Dashboard at http://localhost:${config.dashboard.port}`);
+broadcastState();
 
 while (running) {
   // 1. Run pending planning cycle
@@ -110,9 +143,12 @@ while (running) {
         log("No next action recommended — waiting for executor completions");
         orchestrator.clearNextAction();
       }
+
+      broadcastState();
     } catch (error) {
       log(`Cycle failed: ${error}`);
       orchestrator.clearNextAction();
+      broadcastState();
     }
   }
 
