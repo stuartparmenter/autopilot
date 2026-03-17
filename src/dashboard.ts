@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { Hono } from "hono";
 import { getRecentRuns, getTotalCost } from "./dashboard-data";
+import { DashboardState } from "./dashboard-state";
 
 export interface DashboardConfig {
   port: number;
@@ -10,6 +11,7 @@ export interface DashboardConfig {
 
 export interface Dashboard {
   app: Hono;
+  state: DashboardState;
   start(): ReturnType<typeof Bun.serve>;
   stop(): void;
   broadcast(event: { type: string; data: unknown }): void;
@@ -17,6 +19,7 @@ export interface Dashboard {
 
 export function createDashboard(config: DashboardConfig): Dashboard {
   const app = new Hono();
+  const state = new DashboardState();
   const clients = new Set<{ send(data: string): void }>();
   let server: ReturnType<typeof Bun.serve> | null = null;
 
@@ -56,6 +59,12 @@ export function createDashboard(config: DashboardConfig): Dashboard {
       websocket: {
         open(ws) {
           clients.add(ws);
+          ws.send(
+            JSON.stringify({
+              type: "snapshot",
+              data: state.getSnapshot(),
+            }),
+          );
         },
         close(ws) {
           clients.delete(ws);
@@ -79,7 +88,7 @@ export function createDashboard(config: DashboardConfig): Dashboard {
     }
   }
 
-  return { app, start, stop, broadcast };
+  return { app, state, start, stop, broadcast };
 }
 
 function renderPage(): string {

@@ -43,6 +43,27 @@ describe("Dashboard WebSocket", () => {
     }
   });
 
+  test("sends snapshot on WebSocket connect", async () => {
+    const dashboard = createDashboard({ port: 0, projectPath: "/tmp" });
+    dashboard.state.agentStarted("test:1", "test:agent", "planner");
+    const server = dashboard.start();
+    const port = server.port;
+
+    try {
+      const ws = new WebSocket(`ws://localhost:${port}/ws`);
+      const msg = await new Promise<string>((resolve) => {
+        ws.onmessage = (e) => resolve(e.data as string);
+      });
+      const parsed = JSON.parse(msg);
+      expect(parsed.type).toBe("snapshot");
+      expect(parsed.data.agents.length).toBe(1);
+      expect(parsed.data.agents[0].agentId).toBe("test:1");
+      ws.close();
+    } finally {
+      dashboard.stop();
+    }
+  });
+
   test("broadcast sends to connected clients", async () => {
     const dashboard = createDashboard({ port: 0, projectPath: "/tmp" });
     const server = dashboard.start();
@@ -50,8 +71,9 @@ describe("Dashboard WebSocket", () => {
 
     try {
       const ws = new WebSocket(`ws://localhost:${port}/ws`);
+      // Wait for snapshot (sent on connect), then listen for broadcast
       await new Promise<void>((resolve) => {
-        ws.onopen = () => resolve();
+        ws.onmessage = () => resolve();
       });
 
       const received = new Promise<string>((resolve) => {
