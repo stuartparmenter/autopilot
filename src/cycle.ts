@@ -44,7 +44,7 @@ export async function cycle(
       settingSources: [],
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
-      agentProgressSummaries: false,
+      agentProgressSummaries: true,
       cwd: input.projectPath,
       sandbox: {
         enabled: true,
