@@ -152,6 +152,7 @@ function renderPage(): string {
     .subagent-header .sub-name { font-weight: 500; color: #bc8cff; }
     .subagent-header .meta { color: #8b949e; font-size: 10px; }
     .parent-section { padding: 6px 12px; border-bottom: 1px solid #21262d; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; color: #8b949e; max-height: 120px; overflow-y: auto; flex-shrink: 0; }
+    .panel-footer { padding: 3px 8px; background: #161b22; border-top: 1px solid #30363d; font-size: 10px; color: #6e7681; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
     .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: #484f58; font-size: 14px; }
   </style>
 </head>
@@ -377,6 +378,10 @@ function renderPage(): string {
             stream.appendChild(renderActivityLine(e, true));
           });
           panel.appendChild(stream);
+          var footer = document.createElement('div');
+          footer.className = 'panel-footer';
+          footer.setAttribute('data-footer', subName);
+          panel.appendChild(footer);
           splits.appendChild(panel);
         });
         content.appendChild(splits);
@@ -387,16 +392,32 @@ function renderPage(): string {
         agent.entries.forEach(function(e) { stream.appendChild(renderActivityLine(e)); });
         content.appendChild(stream);
         stream.scrollTop = stream.scrollHeight;
+        var footer = document.createElement('div');
+        footer.className = 'panel-footer';
+        footer.id = 'main-footer';
+        content.appendChild(footer);
       }
     }
 
     function appendActivity(entry) {
       var agent = agents[selectedAgent];
       if (!agent) return;
+
+      // Progress entries update the footer status bar, not the stream
+      if (entry.type === 'progress') {
+        if (entry.isSubagent && entry.subagentName) {
+          var footer = document.querySelector('[data-footer="' + entry.subagentName + '"]');
+          if (footer) footer.textContent = entry.summary;
+        } else {
+          var mainFooter = document.getElementById('main-footer');
+          if (mainFooter) mainFooter.textContent = entry.summary;
+        }
+        return;
+      }
+
       var activeSubagents = getActiveSubagents(agent);
 
       if (activeSubagents.length > 0) {
-        // Check if we need to re-render (new subagent appeared that we don't have a panel for)
         var panels = document.querySelectorAll('.subagent-panel');
         var panelNames = [];
         panels.forEach(function(p) {
@@ -407,7 +428,6 @@ function renderPage(): string {
         if (needsRebuild) { renderMainPanel(); return; }
 
         if (entry.isSubagent && entry.subagentName) {
-          // Append to the correct subagent stream
           var idx = activeSubagents.indexOf(entry.subagentName);
           if (idx >= 0 && panels[idx]) {
             var stream = panels[idx].querySelector('.activity-stream');
@@ -418,7 +438,6 @@ function renderPage(): string {
             }
           }
         } else {
-          // Parent entry — append to parent section
           var parentSection = document.querySelector('.parent-section');
           if (parentSection) {
             parentSection.appendChild(renderActivityLine(entry));
@@ -441,6 +460,8 @@ function renderPage(): string {
     }
 
     function renderActivityLine(entry, inPanel) {
+      if (entry.type === 'progress') return document.createTextNode('');
+
       var div = document.createElement('div');
       div.className = 'activity-line ' + entry.type;
       if (entry.isSubagent && !inPanel) div.className += ' subagent';
