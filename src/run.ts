@@ -1,9 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { ActivityEntry } from "./activity";
 import { loadConfig } from "./config";
 import { cycle } from "./cycle";
 import { createDashboard } from "./dashboard";
-import { getRecentRuns, getTotalCost } from "./dashboard-data";
 import { ExecutorManager } from "./executor";
 import { Orchestrator } from "./orchestration";
 import { printActivity } from "./output";
@@ -43,22 +43,16 @@ const dashboard = createDashboard({
 });
 dashboard.start();
 
-function broadcastState() {
-  const runs = getRecentRuns(runsDir);
+function broadcastOrchestratorStatus() {
+  const status = orchestrator.hasPendingCycle
+    ? "running"
+    : orchestrator.isWaiting
+      ? "waiting"
+      : "idle";
+  dashboard.state.setOrchestratorStatus(status, orchestrator.currentLevel);
   dashboard.broadcast({
-    type: "state",
-    data: {
-      overview: {
-        totalCost: getTotalCost(runs),
-        latestDirection: runs[0]?.directionTitle ?? null,
-      },
-      runs,
-      currentLevel: orchestrator.currentLevel,
-      isWaiting: orchestrator.isWaiting,
-      hasPendingCycle: orchestrator.hasPendingCycle,
-      activeExecutors: executorManager.activeCount,
-      availableSlots: executorManager.availableSlots,
-    },
+    type: "orchestrator:status",
+    data: { status, currentLevel: orchestrator.currentLevel },
   });
 }
 
@@ -85,7 +79,7 @@ log(`Starting at ${startLevel} level for ${resolvedPath}`);
 if (seed) log(`Seed: ${seed}`);
 log(`Executor slots: ${config.executor.maxParallel}`);
 log(`Dashboard at http://localhost:${config.dashboard.port}`);
-broadcastState();
+broadcastOrchestratorStatus();
 
 while (running) {
   // 1. Run pending planning cycle
@@ -97,6 +91,25 @@ while (running) {
     const runDir = resolve(import.meta.dir, `../runs/${timestamp}`);
     mkdirSync(runDir, { recursive: true });
 
+    // Set up tagged activity broadcasting for this cycle
+    const agentId = `planner:${level}:${Date.now()}`;
+    const agentLabel = `${level}:planner`;
+    const cycleStartTime = Date.now();
+    dashboard.state.agentStarted(agentId, agentLabel, "planner");
+    dashboard.broadcast({
+      type: "agent:start",
+      data: { agentId, agentLabel, agentType: "planner" },
+    });
+
+    const onActivity = (entry: ActivityEntry) => {
+      printActivity(entry);
+      dashboard.state.addActivity(agentId, entry);
+      dashboard.broadcast({
+        type: "activity",
+        data: { agentId, agentLabel, agentType: "planner", entry },
+      });
+    };
+
     try {
       const result = await cycle(
         {
@@ -104,7 +117,7 @@ while (running) {
           projectPath: resolvedPath,
           seed: level === startLevel ? seed : undefined,
         },
-        printActivity,
+        onActivity,
       );
 
       // Save run artifacts
@@ -133,6 +146,23 @@ while (running) {
         `${level} cycle complete — $${result.costUsd.toFixed(4)}, ${(result.durationMs / 1000).toFixed(1)}s`,
       );
 
+      // Agent completed
+      dashboard.state.agentEnded(
+        agentId,
+        "success",
+        result.costUsd,
+        result.durationMs,
+      );
+      dashboard.broadcast({
+        type: "agent:end",
+        data: {
+          agentId,
+          result: "success",
+          costUsd: result.costUsd,
+          durationMs: result.durationMs,
+        },
+      });
+
       // Handle next action
       if (result.output?.next) {
         log(
@@ -144,11 +174,28 @@ while (running) {
         orchestrator.clearNextAction();
       }
 
-      broadcastState();
+      broadcastOrchestratorStatus();
     } catch (error) {
       log(`Cycle failed: ${error}`);
+
+      dashboard.state.agentEnded(
+        agentId,
+        "error",
+        0,
+        Date.now() - cycleStartTime,
+      );
+      dashboard.broadcast({
+        type: "agent:end",
+        data: {
+          agentId,
+          result: "error",
+          costUsd: 0,
+          durationMs: Date.now() - cycleStartTime,
+        },
+      });
+
       orchestrator.clearNextAction();
-      broadcastState();
+      broadcastOrchestratorStatus();
     }
   }
 
@@ -156,6 +203,7 @@ while (running) {
   // TODO: Query beads for ready tasks (status=open, no blockers, not claimed)
   // For each ready task, if executorManager.hasAvailableSlot(), spawn an executor
   // Executor completions update beads status and write gk observations
+  // (Executor tagging will follow the same pattern as planner tagging above)
 
   // 3. Check wait conditions
   // TODO: Query beads for completed tasks/epics to check against wait conditions
@@ -164,6 +212,7 @@ while (running) {
   // 4. If nothing to do, wait before re-checking
   if (!orchestrator.hasPendingCycle && !orchestrator.isWaiting) {
     log("Nothing pending — orchestrator idle");
+    broadcastOrchestratorStatus();
     break; // For now, exit. Future: poll beads for executor completions
   }
 
