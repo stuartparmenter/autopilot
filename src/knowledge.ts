@@ -11,7 +11,7 @@ export function buildGkServer(projectPath: string): McpServerConfig {
     args: ["run", GK_PATH],
     env: {
       GK_DB_PATH: resolve(projectPath, ".autopilot.db"),
-      GK_OLLAMA_URL: "http://host.docker.internal:11434",
+      GK_OLLAMA_URL: process.env.OLLAMA_HOST ?? "http://localhost:11434",
     },
   };
 }

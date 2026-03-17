@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type { SdkPluginConfig } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -45,6 +46,19 @@ export async function cycle(
       allowDangerouslySkipPermissions: true,
       agentProgressSummaries: false,
       cwd: input.projectPath,
+      sandbox: {
+        enabled: true,
+        autoAllowBashIfSandboxed: false,
+        allowUnsandboxedCommands: false,
+        network: {
+          allowManagedDomainsOnly: false,
+        },
+        filesystem: {
+          allowWrite: [tmpdir()],
+          allowRead: [input.projectPath, tmpdir()],
+          allowManagedReadPathsOnly: true,
+        },
+      },
     },
   });
 
