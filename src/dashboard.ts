@@ -131,8 +131,9 @@ function renderPage(): string {
     .dot.error { background: #f85149; }
     .name-planner { color: #58a6ff; }
     .name-executor { color: #3fb950; }
-    #main-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-    #main-header { padding: 6px 12px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 8px; font-size: 12px; min-height: 30px; }
+    #main-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    #main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    #main-header { padding: 6px 12px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 8px; font-size: 12px; min-height: 30px; flex-shrink: 0; }
     #main-header .agent-label { font-weight: 600; }
     #main-header .meta { color: #8b949e; font-size: 11px; }
     .activity-stream { flex: 1; overflow-y: auto; padding: 8px 12px; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 12px; line-height: 1.6; }
@@ -145,12 +146,12 @@ function renderPage(): string {
     .activity-line.progress { color: #8b949e; }
     .activity-line.subagent { padding-left: 16px; }
     .subagent-label { color: #bc8cff; font-weight: 500; }
-    .subagent-splits { flex: 1; display: flex; gap: 1px; background: #30363d; overflow: hidden; }
-    .subagent-panel { flex: 1; background: #0d1117; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+    .subagent-splits { flex: 1; display: flex; gap: 1px; background: #30363d; overflow: hidden; min-height: 0; }
+    .subagent-panel { flex: 1; background: #0d1117; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
     .subagent-header { padding: 4px 8px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 6px; font-size: 11px; }
     .subagent-header .sub-name { font-weight: 500; color: #bc8cff; }
     .subagent-header .meta { color: #8b949e; font-size: 10px; }
-    .parent-section { padding: 6px 12px; border-bottom: 1px solid #21262d; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; color: #8b949e; max-height: 120px; overflow-y: auto; }
+    .parent-section { padding: 6px 12px; border-bottom: 1px solid #21262d; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 11px; color: #8b949e; max-height: 120px; overflow-y: auto; flex-shrink: 0; }
     .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: #484f58; font-size: 14px; }
   </style>
 </head>
@@ -205,7 +206,8 @@ function renderPage(): string {
     function handleAgentStart(data) {
       agents[data.agentId] = {
         info: { agentId: data.agentId, agentLabel: data.agentLabel, agentType: data.agentType, state: 'running', startedAt: Date.now(), subagents: [] },
-        entries: []
+        entries: [],
+        toolUses: 0
       };
       renderSidebar();
       if (!selectedAgent) selectAgent(data.agentId);
@@ -227,7 +229,7 @@ function renderPage(): string {
       if (!agent) return;
       agent.entries.push(data.entry);
       if (agent.entries.length > 2000) agent.entries.splice(0, agent.entries.length - 2000);
-      agent.info.lastActivity = data.entry.summary;
+      if (data.entry.type === 'tool_use') agent.toolUses = (agent.toolUses || 0) + 1;
       if (data.entry.isSubagent && data.entry.subagentName) {
         if (agent.info.subagents.indexOf(data.entry.subagentName) === -1) {
           agent.info.subagents.push(data.entry.subagentName);
@@ -309,14 +311,9 @@ function renderPage(): string {
       div.appendChild(nameRow);
       var meta = document.createElement('div');
       meta.className = 'agent-meta';
-      meta.textContent = formatDuration(agent.info.startedAt, agent.info.endedAt);
+      var turns = agent.toolUses || 0;
+      meta.textContent = formatDuration(agent.info.startedAt, agent.info.endedAt) + (turns > 0 ? ' \\u00b7 ' + turns + ' tools' : '');
       div.appendChild(meta);
-      if (agent.info.lastActivity) {
-        var last = document.createElement('div');
-        last.className = 'agent-last';
-        last.textContent = agent.info.lastActivity;
-        div.appendChild(last);
-      }
       if (agent.info.subagents && agent.info.subagents.length > 0 && agent.info.state === 'running') {
         var subs = document.createElement('div');
         subs.className = 'agent-last';
@@ -377,7 +374,7 @@ function renderPage(): string {
           var stream = document.createElement('div');
           stream.className = 'activity-stream';
           agent.entries.filter(function(e) { return e.isSubagent && e.subagentName === subName; }).forEach(function(e) {
-            stream.appendChild(renderActivityLine(e));
+            stream.appendChild(renderActivityLine(e, true));
           });
           panel.appendChild(stream);
           splits.appendChild(panel);
@@ -416,7 +413,7 @@ function renderPage(): string {
             var stream = panels[idx].querySelector('.activity-stream');
             if (stream) {
               var atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 50;
-              stream.appendChild(renderActivityLine(entry));
+              stream.appendChild(renderActivityLine(entry, true));
               if (atBottom) stream.scrollTop = stream.scrollHeight;
             }
           }
@@ -443,11 +440,11 @@ function renderPage(): string {
       return agent.info.subagents || [];
     }
 
-    function renderActivityLine(entry) {
+    function renderActivityLine(entry, inPanel) {
       var div = document.createElement('div');
       div.className = 'activity-line ' + entry.type;
-      if (entry.isSubagent) div.className += ' subagent';
-      if (entry.isSubagent && entry.subagentName) {
+      if (entry.isSubagent && !inPanel) div.className += ' subagent';
+      if (entry.isSubagent && entry.subagentName && !inPanel) {
         var labelSpan = document.createElement('span');
         labelSpan.className = 'subagent-label';
         labelSpan.textContent = '[' + entry.subagentName + '] ';
