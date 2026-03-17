@@ -146,7 +146,7 @@ function renderPage(): string {
     .activity-line.subagent { padding-left: 16px; }
     .subagent-label { color: #bc8cff; font-weight: 500; }
     .subagent-splits { flex: 1; display: flex; gap: 1px; background: #30363d; overflow: hidden; }
-    .subagent-panel { flex: 1; background: #0d1117; display: flex; flex-direction: column; min-width: 0; }
+    .subagent-panel { flex: 1; background: #0d1117; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
     .subagent-header { padding: 4px 8px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 6px; font-size: 11px; }
     .subagent-header .sub-name { font-weight: 500; color: #bc8cff; }
     .subagent-header .meta { color: #8b949e; font-size: 10px; }
@@ -396,7 +396,41 @@ function renderPage(): string {
     function appendActivity(entry) {
       var agent = agents[selectedAgent];
       if (!agent) return;
-      if (getActiveSubagents(agent).length > 0) { renderMainPanel(); return; }
+      var activeSubagents = getActiveSubagents(agent);
+
+      if (activeSubagents.length > 0) {
+        // Check if we need to re-render (new subagent appeared that we don't have a panel for)
+        var panels = document.querySelectorAll('.subagent-panel');
+        var panelNames = [];
+        panels.forEach(function(p) {
+          var nameEl = p.querySelector('.sub-name');
+          if (nameEl) panelNames.push(nameEl.textContent);
+        });
+        var needsRebuild = activeSubagents.some(function(s) { return panelNames.indexOf(s) === -1; });
+        if (needsRebuild) { renderMainPanel(); return; }
+
+        if (entry.isSubagent && entry.subagentName) {
+          // Append to the correct subagent stream
+          var idx = activeSubagents.indexOf(entry.subagentName);
+          if (idx >= 0 && panels[idx]) {
+            var stream = panels[idx].querySelector('.activity-stream');
+            if (stream) {
+              var atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 50;
+              stream.appendChild(renderActivityLine(entry));
+              if (atBottom) stream.scrollTop = stream.scrollHeight;
+            }
+          }
+        } else {
+          // Parent entry — append to parent section
+          var parentSection = document.querySelector('.parent-section');
+          if (parentSection) {
+            parentSection.appendChild(renderActivityLine(entry));
+            parentSection.scrollTop = parentSection.scrollHeight;
+          }
+        }
+        return;
+      }
+
       var stream = document.getElementById('activity-stream');
       if (!stream) { renderMainPanel(); return; }
       var atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 50;
