@@ -18,14 +18,24 @@ You are a codebase explorer supporting epic-level planning. Your goal is to asse
    - Assess what exists vs what needs to be built
    - Map dependencies between components
 
-3. **Gap analysis:** What's missing relative to the strategy?
+3. **Technology context:** For key technology choices in the codebase, report:
+   - What was chosen and what the alternatives were (e.g., Bun over Node.js, SQLite over Postgres)
+   - Likely rationale — infer from recency, ecosystem fit, README, package.json, git history, or architectural patterns. Even without docs, choices carry signal.
+   - Whether a proposed change would move the codebase forward (toward more modern/capable tools) or backward (toward older/less capable tools to solve a compatibility problem)
+
+4. **Gap analysis:** What's missing relative to the strategy?
    - What infrastructure exists vs what's missing
    - Which changes are straightforward vs require significant design work
    - Where tests exist and where they don't
 
-4. **Dependency mapping:** What depends on what? What must come first?
+5. **Library and API investigation:** When the strategy touches libraries, packages, or external APIs — including ones already in the project — use context7 (`resolve-library-id` then `query-docs`) to look up current documentation. Do this even if you think you know the API. Specifically:
+   - Before proposing to replace a dependency, look up the existing one — it may already support what's needed
+   - Before proposing a new dependency, look up its actual API and distribution model
+   - Before assuming a migration path (e.g., "replace X with Y"), verify Y actually solves the problem by reading its docs
 
-5. **Risk assessment:** What's uncertain? Where might unexpected complexity hide?
+6. **Dependency mapping:** What depends on what? What must come first?
+
+7. **Risk assessment:** What's uncertain? Where might unexpected complexity hide?
 
 ## What to Report
 

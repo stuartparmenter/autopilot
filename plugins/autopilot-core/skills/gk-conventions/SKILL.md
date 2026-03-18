@@ -32,3 +32,11 @@ After every gk write session, run these checks. Do not skip this step.
 3. Fix all issues before completing the cycle
 
 See **`references/workflow.md`** for the full autopilot read → write → validate workflow.
+
+## Gotchas
+
+- **Creating duplicate entities.** Always search before creating. A second "vision-direction" entity for the same cycle fragments knowledge and confuses future queries. Use `search` with the entity name before calling `add_entities`.
+- **Missing cross-level links.** Creating entities at this level without linking to the parent direction. Every cycle's output must connect to the mandate it was produced under, or the graph becomes a collection of disconnected snapshots.
+- **Entities without observations.** Creating entity shells and moving on. An entity with no observations is invisible to search and useless to future cycles. `get_stats` → `entities_without_observations` must be 0.
+- **Wrong observation tier.** Using detail-tier for high-level strategic insights or overview-tier for implementation specifics. Follow `gk://guides/pyramid` — the tiers exist to control what surfaces at different query depths.
+- **Skipping validation.** Assuming writes are correct without running `validate_graph`. Islands and orphans accumulate silently and degrade query results for every subsequent cycle.

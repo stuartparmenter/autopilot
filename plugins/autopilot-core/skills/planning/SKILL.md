@@ -99,61 +99,7 @@ Generate at least 2 guiding and 1 cautionary principle.
 
 ## Phase 7: Structured Output
 
-After completing all phases, output the final result as a JSON block wrapped in a ```json fence. The JSON must conform to this schema:
-
-```
-{
-  "direction": {
-    "title": string,
-    "description": string,
-    "rationale": string,
-    "score": number
-  },
-  "candidates": [
-    {
-      "title": string,
-      "description": string,
-      "scores": { "R1": true/false, "R2": true/false, ... },
-      "fitness": number,
-      "selected": boolean
-    }
-  ],
-  "rubrics": [
-    {
-      "id": string,
-      "criterion": string,
-      "discriminative": boolean
-    }
-  ],
-  "predictions": [
-    {
-      "claim": string,
-      "timeframe": string
-    }
-  ],
-  "principles": [
-    {
-      "type": "guiding" | "cautionary",
-      "description": string,
-      "source": string
-    }
-  ],
-  "observations": [
-    {
-      "finding": string,
-      "source": "codebase" | "market",
-      "relevance": string
-    }
-  ],
-  "next": {
-    "action": "up" | "down" | "stay" | "wait",
-    "reason": string,
-    "until": { "type": string, ... }  // only for "wait"
-  }
-}
-```
-
-The `next` field is optional. Include it if you have a clear recommendation based on Phase 8.
+After completing all phases, output the final result as a JSON block wrapped in a ```json fence. The JSON must conform to the schema in **`references/output-schema.md`**.
 
 ## Phase 8: What's Next?
 
@@ -186,10 +132,19 @@ Based on which signals are present, add a `next` field to your JSON output:
 
 You do not need to know which specific level is "up" or "down" — the orchestrator resolves that. Focus on the evidence.
 
+## Gotchas
+
+These are the most common failure modes, grounded in the research papers this methodology is built on.
+
+- **Diversity collapse.** Generating 5 candidates that are variations of the same core idea. Verify candidates span the diversity axes — don't just check that titles differ. (QDAIF: diversity requires explicit axis enforcement, not implicit variety.)
+- **Non-discriminative rubrics.** Creating rubrics where every candidate scores YES. RRD showed naively generated rubrics *degraded* judgment by 12.7 points vs. no rubrics at all. The discrimination filter in Phase 3 exists for this reason — do not skip it.
+- **Correlated rubrics inflating scores.** Two rubrics testing the same underlying trait (e.g., "technically feasible?" and "implementable with current tools?") give double credit. Check the >70% overlap rule.
+- **Abstraction drift.** Candidates start at the right level but drift toward implementation details in their descriptions. This is the single most common failure mode. The abstraction check in Phase 2 catches it — run it honestly.
+- **Unjustified scores.** Writing YES without a real justification, or tautological justifications ("meets criterion because it satisfies the requirement"). MADE's reliability depends on each binary judgment being independently accurate (~95%+). A score without justification is a guess.
+- **Holistic coherence loss.** A candidate scores well on individual rubrics but is internally contradictory. This is MADE's own documented limitation: optimizing binary sub-requirements can lose overall coherence. After scoring, re-read the winning candidate as a whole — does it still make sense?
+- **Unfalsifiable predictions.** "This approach will improve things" is not a prediction. Each prediction must include a specific observable outcome and a timeframe that a future cycle can verify against.
+
 ## Quality Standards
 
-- **Do not satisfice.** Generate genuinely different candidates, not variations of the same idea.
 - **Binary means binary.** If you find yourself wanting to say "partially" for a rubric score, the criterion is too coarse. Decompose it.
-- **Justify every score.** A score without justification is a guess.
-- **Predictions must be falsifiable.** "This will be successful" is not a prediction. "Monthly active users will exceed 1000 within 6 months" is.
 - **Principles must be actionable.** "The market is competitive" is not a principle. "Competing on features alone is insufficient because incumbents have 3+ year head starts; differentiation must come from workflow integration" is.

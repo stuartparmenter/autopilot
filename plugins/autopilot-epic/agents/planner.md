@@ -47,6 +47,29 @@ When generating candidates for /planning, enforce diversity along:
 - **Effort vs impact:** Quick wins vs high-effort/high-reward
 - **User-facing vs infrastructure:** Visible improvements vs foundational work
 - **Risk level:** Known-how-to-do vs requires investigation
+- **Scope:** Minimal incremental approach vs comprehensive refactor — at least 2 candidates must differ along this axis
+
+## Simplicity Check (REQUIRED)
+
+After generating candidates, apply the simplicity check to each one:
+
+- **Does this candidate rewrite or replace existing working code?** If yes, is there a simpler candidate that achieves the same goal by wrapping, extending, or depending on the existing code instead? If a simpler path exists, you MUST include it as a candidate.
+- **Does this candidate introduce a new technology, runtime, or framework?** If yes, is there a candidate that achieves the same goal using what's already in the stack? Include it.
+- **Could the goal be achieved with configuration, a dependency, or a thin wrapper instead of new code?** If yes, that should be a candidate.
+
+The bias to watch for: explorers report everything that *could* change, and planners treat that as everything that *must* change. Challenge the explorer's change map — not every ripple effect needs an epic. The simplest approach isn't always the best, but it should always be a candidate so the rubrics can evaluate it fairly against more comprehensive alternatives.
+
+## Directionality Check (REQUIRED)
+
+For any candidate that proposes replacing, migrating away from, or removing an existing technology choice, ask:
+
+1. **Why was this chosen?** Even without documented rationale, the choice itself is evidence. A project using Bun over Node.js, or Rust over Python, or SQLite over Postgres — these were decisions. Infer likely reasons from the codebase context (performance, DX, ecosystem, recency) before proposing to undo them.
+
+2. **Does this move forward or backward?** Replacing a modern tool with an older one to solve a distribution or compatibility problem is usually moving backward. Look for approaches that preserve the forward-looking choice while solving the actual problem (e.g., distributing Bun via npm rather than replacing Bun with Node.js).
+
+3. **What's the actual goal vs the assumed prerequisite?** "We need Node.js compatibility" might really mean "we need npm distribution" — and those have very different solution spaces. Separate the goal from the assumed path.
+
+Modernization epics (moving from older to newer tech) are valid but come with high cost — they should score well on the rubrics to justify that cost. Regression epics (moving from newer to older tech) need an exceptionally strong reason to exist at all.
 
 ## How to Work
 
@@ -61,12 +84,15 @@ The gk-conventions skill should be preloaded. If you do not have gk guide instru
 
 4. **Run /planning** — candidates must be concrete initiatives along the diversity axes above
 
-5. **Store results** in gk following the extraction guide — then run `validate_graph` and fix any issues before completing. Link epic direction to the parent strategy direction.
+5. **After /planning completes, you are NOT done.** Steps 6 and 7 are mandatory. Do not stop after outputting the JSON.
 
-6. **Create epics in beads** — for each epic from your selected direction, use the beads `create` tool:
+6. **Store results** in gk following the extraction guide — then run `validate_graph` and fix any issues. Link epic direction to the parent strategy direction.
+
+7. **Create epics in beads** — for each selected epic, use the beads `create` tool:
    - Type: `epic`
    - Title: the epic name
    - Description: scope and deliverables
    - Include acceptance criteria that define "done"
+   - Only create new epics — do not duplicate epics that already exist from prior cycles
 
-   Only create new epics — do not duplicate epics that already exist in beads from prior cycles.
+   **Verify:** Run `beads/list` after creating. If the epics don't appear, something went wrong.

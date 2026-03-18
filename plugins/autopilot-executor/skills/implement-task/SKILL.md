@@ -141,6 +141,15 @@ ExitWorktree action: "remove"
 
 ---
 
+## Gotchas
+
+- **Reading code before claiming.** If the claim fails, all that context gathering was wasted tokens. Always claim first (Phase 1), then read.
+- **Writing outside the worktree.** Especially when running commands that reference absolute paths from gk or the task description. After entering the worktree, verify all file operations target the worktree root.
+- **Not rebasing before push.** Other executors may have merged PRs since the worktree was created. Always `git fetch origin && git rebase origin/main` before pushing, or the PR will have avoidable merge conflicts.
+- **Retry loops on the same approach.** If a test or build fails twice with the same fix strategy, step back and reconsider. The escalation rule is 3 attempts — don't waste them on the same idea.
+- **Tentative observations never finalized.** Phase 5 exists because this commonly gets skipped under pressure to finish. Observations left at confidence 0.5 are unreliable context for future cycles.
+- **Fixing unrelated code.** The executor's scope is the task's acceptance criteria, nothing else. Noticing a nearby bug doesn't mean fixing it — that's a separate task. Scope creep causes unexpected conflicts with other executors.
+
 ## Escalation
 
 **Block instead of guessing** in these situations:
