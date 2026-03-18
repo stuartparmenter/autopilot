@@ -3,3 +3,7 @@ dist/
 runs/
 .gk/
 TODO.md
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db

@@ -3,7 +3,8 @@ import { resolve } from "node:path";
 import type { SdkPluginConfig } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { type ActivityEntry, MessageProcessor } from "./activity";
-import { buildMcpServers, gatherContext } from "./knowledge";
+import { gatherContext } from "./knowledge";
+import { buildMcpServers } from "./mcps";
 import type { CycleInput, CycleOutput } from "./types";
 
 const AUTOPILOT_ROOT = resolve(import.meta.dir, "..");

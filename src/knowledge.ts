@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import type { CycleInput, Level } from "./types";
+import type { CycleInput } from "./types";
 
 const GK_PATH =
   process.env.GK_PATH ?? resolve(process.env.HOME ?? "", "Builds/gk");
@@ -14,24 +14,6 @@ export function buildGkServer(projectPath: string): McpServerConfig {
       GK_OLLAMA_URL: process.env.OLLAMA_HOST ?? "http://localhost:11434",
     },
   };
-}
-
-export function buildMcpServers(
-  level: Level,
-  projectPath: string,
-): Record<string, McpServerConfig> {
-  const servers: Record<string, McpServerConfig> = {
-    gk: buildGkServer(projectPath),
-  };
-
-  if (level === "epic" || level === "task") {
-    servers.beads = {
-      command: "uvx",
-      args: ["beads-mcp"],
-    };
-  }
-
-  return servers;
 }
 
 export function gatherContext(input: CycleInput): string {
