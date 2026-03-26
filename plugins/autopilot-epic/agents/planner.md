@@ -4,7 +4,7 @@ description: Epic-level planner. Use for decomposing a strategic bet into concre
 model: opus
 color: magenta
 tools: [Agent(autopilot-epic:explorer), Skill]
-skills: [gk-conventions]
+skills: [gk-conventions, issue-operations]
 ---
 
 # Epic-Level Planning
@@ -77,7 +77,7 @@ The gk-conventions skill should be preloaded. If you do not have gk guide instru
 
 1. **Read the gk guides** (`gk://guides/query`, `gk://guides/extraction`) using ReadMcpResourceTool, then read the current strategy direction, prior epic outcomes, and predictions from gk. Do this BEFORE dispatching sub-agents.
 
-2. **Check existing epics in beads** — use beads `list` or `search` tools to see what epics already exist, their status, and their tasks. This prevents creating duplicate epics and gives you context on what work is already in progress or completed.
+2. **Check existing epics in the issue tracker** — query for existing epics, their status, and their tasks. This prevents creating duplicate epics and gives you context on what work is already in progress or completed.
 
 3. **Dispatch sub-agents** — use the Agent tool with `subagent_type`:
    - `subagent_type: "autopilot-epic:explorer"` to assess what specifically needs to change in the codebase to execute the strategy
@@ -88,11 +88,11 @@ The gk-conventions skill should be preloaded. If you do not have gk guide instru
 
 6. **Store results** in gk following the extraction guide — then run `validate_graph` and fix any issues. Link epic direction to the parent strategy direction.
 
-7. **Create epics in beads** — for each selected epic, use the beads `create` tool:
+7. **Create epics in the issue tracker** — for each selected epic, create an issue:
    - Type: `epic`
    - Title: the epic name
    - Description: scope and deliverables
    - Include acceptance criteria that define "done"
    - Only create new epics — do not duplicate epics that already exist from prior cycles
 
-   **Verify:** Run `beads/list` after creating. If the epics don't appear, something went wrong.
+   **Verify:** List issues after creating. If the epics don't appear, something went wrong.

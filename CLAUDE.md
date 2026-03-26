@@ -17,6 +17,7 @@ Autonomous planning system using the MADE evaluation methodology at four levels:
 - `src/activity.ts` — `MessageProcessor` class, handles all SDK message types
 - `src/index.ts` — CLI: `bun run src/index.ts <level> <project-path> [seed]`
 - `src/knowledge.ts` — gk MCP server config, context gathering
+- `src/issues.ts` — `IssueTracker` type, plugin/deny-path mappings
 - `src/hierarchy.ts` — thin wrapper calling `cycle()`
 - `src/types.ts` — Level, CycleInput, CycleOutput, etc.
 - `plugins/` — plugin architecture (see below)
@@ -32,7 +33,17 @@ plugins/
   autopilot-strategy/agents/            — planner, explorer, researcher
   autopilot-epic/agents/                — planner, explorer
   autopilot-task/agents/                — planner, explorer (+context7 MCP)
+  issues-beads/                         — beads tracker plugin (.mcp.json + issue-operations skill)
+  issues-linear/                        — Linear tracker plugin (.mcp.json + issue-operations skill)
 ```
+
+## Issue Tracker
+
+Configurable via `issueTracker` in `.autopilot.yml` (default: `"beads"`). Each tracker is a plugin in `plugins/issues-<tracker>/` that provides:
+- `.mcp.json` — declares the tracker's MCP server (auto-loaded by SDK)
+- `issue-operations` skill — teaches agents the tracker-specific tool names, field mappings, and workflows
+
+Agent prompts are tracker-agnostic. The `issue-operations` skill is preloaded via agent frontmatter and provides tracker-specific instructions at runtime.
 
 ## Critical SDK Patterns
 

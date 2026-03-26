@@ -1,9 +1,12 @@
+import type { IssueTracker } from "./issues";
+
 export type Level = "vision" | "strategy" | "epic" | "task";
 
 export interface CycleInput {
   level: Level;
   projectPath: string;
   seed?: string;
+  issueTracker?: IssueTracker;
 }
 
 export interface CycleOutput {

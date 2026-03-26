@@ -3,7 +3,7 @@ name: create-task
 description: >-
   Create a structured task definition from planning output. Use when decomposing
   an implementation approach into individual tasks with acceptance criteria.
-  Invoke once per task. Outputs JSON for the parent agent to persist to beads.
+  Invoke once per task. Outputs JSON for the parent agent to persist to the issue tracker.
 user-invocable: true
 ---
 
@@ -18,7 +18,7 @@ Output a structured task as JSON using the template in **`references/task-templa
 
 ## Output Order
 
-**Output tasks that are depended on first, then the tasks that depend on them.** The parent agent will create beads in this order to ensure the dependency graph is always valid for concurrent executors.
+**Output tasks that are depended on first, then the tasks that depend on them.** The parent agent will create issues in this order to ensure the dependency graph is always valid for concurrent executors.
 
 ## Gotchas
 

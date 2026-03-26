@@ -2,6 +2,11 @@ import { resolve } from "node:path";
 import type { SdkPluginConfig } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { type ActivityEntry, MessageProcessor } from "./activity";
+import {
+  type IssueTracker,
+  TRACKER_DENY_PATHS,
+  TRACKER_PLUGINS,
+} from "./issues";
 import { buildGkServer } from "./knowledge";
 
 const AUTOPILOT_ROOT = resolve(import.meta.dir, "..");
@@ -9,6 +14,7 @@ const AUTOPILOT_ROOT = resolve(import.meta.dir, "..");
 export interface ExecutorConfig {
   maxParallel: number;
   projectPath: string;
+  issueTracker: IssueTracker;
   timeoutMs?: number;
   inactivityTimeoutMs?: number;
 }
@@ -98,6 +104,7 @@ export class ExecutorManager {
     const startTime = Date.now();
     const projectPath = this.config.projectPath;
 
+    const trackerPlugin = TRACKER_PLUGINS[this.config.issueTracker];
     const plugins: SdkPluginConfig[] = [
       {
         type: "local",
@@ -107,6 +114,10 @@ export class ExecutorManager {
         type: "local",
         path: resolve(AUTOPILOT_ROOT, "plugins/autopilot-executor"),
       },
+      {
+        type: "local",
+        path: resolve(AUTOPILOT_ROOT, `plugins/${trackerPlugin}`),
+      },
     ];
 
     const prompt = [
@@ -115,7 +126,7 @@ export class ExecutorManager {
       `You are an executor agent. Your task ID is \`${taskId}\`.`,
       "",
       "Run /implement-task to start the full build lifecycle.",
-      `Claim task \`${taskId}\` in beads, then follow the skill's phases.`,
+      `Claim task \`${taskId}\`, then follow the skill's phases.`,
     ].join("\n");
 
     const mcpServers: Record<
@@ -123,7 +134,6 @@ export class ExecutorManager {
       import("@anthropic-ai/claude-agent-sdk").McpServerConfig
     > = {
       gk: buildGkServer(projectPath),
-      beads: { command: "uvx", args: ["beads-mcp"] },
     };
 
     if (process.env.GITHUB_TOKEN) {
@@ -154,7 +164,7 @@ export class ExecutorManager {
           autoAllowBashIfSandboxed: true,
           filesystem: {
             allowWrite: [projectPath, "/tmp"],
-            denyWrite: [".beads"],
+            denyWrite: TRACKER_DENY_PATHS[this.config.issueTracker],
           },
         },
         abortController: controller,

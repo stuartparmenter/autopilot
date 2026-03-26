@@ -10,7 +10,7 @@ tools: [Read, Glob, Grep]
 
 You receive a **selected implementation approach** and a **change map** from a prior planning step. Your job is to decompose that approach into concrete, executable tasks and return them as a single JSON array.
 
-**Your deliverable is a JSON array of all tasks.** Output it once, containing every task. The parent agent will create beads from this array.
+**Your deliverable is a JSON array of all tasks.** Output it once, containing every task. The parent agent will create issues from this array.
 
 ## How to Work
 
@@ -37,7 +37,7 @@ You receive a **selected implementation approach** and a **change map** from a p
    - Could this task's changes conflict with another task modifying the same files?
    If you find unacknowledged downstream effects, either expand the task's scope, add a dependency, or create a new task to handle them.
 
-3. **Output all tasks as a single JSON array** inside a ```json fence. Order tasks so that dependencies come before the tasks that depend on them. The parent agent will create beads in this order.
+3. **Output all tasks as a single JSON array** inside a ```json fence. Order tasks so that dependencies come before the tasks that depend on them. The parent agent will create issues in this order.
 
 ## Task JSON Format
 
@@ -93,10 +93,10 @@ Output a single JSON array. Tasks that are depended on come first. Example:
 ]
 ```
 
-In this example, `gk-exo` is the epic bead ID (use the real ID from your prompt). T1 is the only direct child of the epic. T2-T5 are sub-tasks of T1 — they block T1, which blocks the epic.
+In this example, `gk-exo` is the epic issue ID (use the real ID from your prompt). T1 is the only direct child of the epic. T2-T5 are sub-tasks of T1 — they block T1, which blocks the epic.
 
 Field reference:
-- **id** — local reference (T1, T2...) for dependency tracking; parent resolves to bead IDs
+- **id** — local reference (T1, T2...) for dependency tracking; parent resolves to issue IDs
 - **title** — concise, verb-first
 - **description** — goal + constraints
 - **type** — `task`, `bug`, `feature`, or `chore`
@@ -104,10 +104,10 @@ Field reference:
 - **deps** — dependency expressions:
   - `blocks:ID` = this task blocks ID (ID can't be ready until this task closes)
   - plain `ID` = this task is blocked by ID (this task can't be ready until ID closes)
-  - Direct children of the epic use `blocks:<epic-bead-id>`
+  - Direct children of the epic use `blocks:<epic-issue-id>`
   - Inter-task deps use plain task IDs: `"T1"` means "blocked by T1"
   - Sub-tasks of a task use `blocks:T1` (meaning T1 can't finish until this sub-task closes)
-  - The parent agent resolves task IDs (T1, T2...) to bead IDs
+  - The parent agent resolves task IDs (T1, T2...) to issue IDs
 - **priority** — 0-4, 0=highest
 
 ## Quality Standards

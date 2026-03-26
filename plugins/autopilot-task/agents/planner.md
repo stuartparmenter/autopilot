@@ -4,7 +4,7 @@ description: Task-level planner. Use for selecting an implementation approach fo
 model: opus
 color: magenta
 tools: [Agent(autopilot-task:explorer, autopilot-task:decomposer), Skill]
-skills: [gk-conventions]
+skills: [gk-conventions, issue-operations]
 ---
 
 # Task-Level Planning
@@ -45,32 +45,32 @@ The gk-conventions skill should be preloaded. If you do not have gk guide instru
 
 1. **Read the gk guides** (`gk://guides/query`, `gk://guides/extraction`) using ReadMcpResourceTool, then read the current epic direction, prior task outcomes, observations, and predictions from gk. Do this BEFORE dispatching sub-agents.
 
-2. **Pick one epic to focus on** — use `beads ready` to find issues that are unblocked (open with no blocking dependencies). Filter the results to epics only. This surfaces work whose prerequisites are satisfied — tackling these first maximizes throughput across the project.
+2. **Pick one epic to focus on** — query the issue tracker for unblocked issues (open with no blocking dependencies). Filter the results to epics only. This surfaces work whose prerequisites are satisfied — tackling these first maximizes throughput across the project.
 
    If no epics are ready (all blocked), report this and recommend `ascend` so the orchestrator can address blockers at the epic level.
 
    **You must focus on exactly one epic per cycle.** Do not plan tasks across multiple epics — this prevents blurring concerns and keeps each cycle's output coherent. If multiple epics are ready, pick the one that blocks the most other work and recommend `stay` in Phase 8 so the orchestrator runs another task cycle for the next one.
 
-   **Check beads for existing tasks** — use `beads show` on the selected epic to see if it already has child tasks. If it does, skip decomposition and recommend `stay` to plan the next epic. Do not rely on gk observations for this — beads is the source of truth for whether tasks exist.
+   **Check for existing tasks** — read the selected epic's details to see if it already has child tasks. If it does, skip decomposition and recommend `stay` to plan the next epic. Do not rely on gk observations for this — the issue tracker is the source of truth for whether tasks exist.
 
 3. **Dispatch explorer** — use the Agent tool with `subagent_type: "autopilot-task:explorer"` to investigate the specific files, functions, patterns, and constraints in the areas the epic touches.
 
 4. **Run /planning** — candidates must be implementation approaches along the diversity axes above.
 
 5. **Dispatch decomposer** — after /planning selects an approach, dispatch the decomposer agent with `subagent_type: "autopilot-task:decomposer"`. Pass it:
-   - The epic's beads ID and title
+   - The epic's issue ID and title
    - The selected implementation approach (title + description)
    - The explorer's change map summary
    - The project path
 
    The decomposer returns a JSON array of tasks. It does not have MCP access.
 
-6. **Create beads** — parse the decomposer's JSON array and create a bead for each task using the beads `create` tool. For each task:
-   - Map fields to beads parameters: title, description, type (`issue_type`), acceptance, priority
-   - Resolve `deps` — replace task IDs (T1, T2...) with the corresponding bead IDs from your map. The epic bead ID is already set by the decomposer.
-   - Set all dependencies at creation time using the `deps` parameter — do not add them after the fact
-   - Maintain a map of task ID (T1, T2...) → bead ID as you create them
+6. **Create issues** — parse the decomposer's JSON array and create an issue for each task. For each task:
+   - Map fields to tracker parameters: title, description, type, acceptance, priority
+   - Resolve dependencies — replace task IDs (T1, T2...) with the corresponding issue IDs from your map
+   - Set all dependencies at creation time — do not add them after the fact
+   - Maintain a map of task ID (T1, T2...) → issue ID as you create them
 
-   Create tasks in array order — the decomposer orders dependencies first — so every `deps` reference resolves to an already-created bead ID.
+   Create tasks in array order — the decomposer orders dependencies first — so every dependency reference resolves to an already-created issue ID.
 
 7. **Store results** in gk following the extraction guide — then run `validate_graph` and fix any issues before completing. Link task direction to the parent epic direction.

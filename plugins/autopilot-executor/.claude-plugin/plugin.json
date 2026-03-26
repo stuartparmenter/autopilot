@@ -1,5 +1,5 @@
 {
   "name": "autopilot-executor",
   "version": "0.3.0",
-  "description": "Executor agent for implementing tasks — claims from beads, works in worktrees, creates PRs"
+  "description": "Executor agent for implementing tasks — claims from the issue tracker, works in worktrees, creates PRs"
 }

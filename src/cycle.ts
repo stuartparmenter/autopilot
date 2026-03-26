@@ -3,22 +3,33 @@ import { resolve } from "node:path";
 import type { SdkPluginConfig } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { type ActivityEntry, MessageProcessor } from "./activity";
+import { type IssueTracker, TRACKER_PLUGINS } from "./issues";
 import { gatherContext } from "./knowledge";
 import { buildMcpServers } from "./mcps";
 import type { CycleInput, CycleOutput } from "./types";
 
 const AUTOPILOT_ROOT = resolve(import.meta.dir, "..");
 
-function getPluginsForLevel(level: string): SdkPluginConfig[] {
-  const core: SdkPluginConfig = {
-    type: "local",
-    path: resolve(AUTOPILOT_ROOT, "plugins/autopilot-core"),
-  };
-  const levelPlugin: SdkPluginConfig = {
-    type: "local",
-    path: resolve(AUTOPILOT_ROOT, `plugins/autopilot-${level}`),
-  };
-  return [core, levelPlugin];
+function getPluginsForLevel(
+  level: string,
+  issueTracker?: IssueTracker,
+): SdkPluginConfig[] {
+  const plugins: SdkPluginConfig[] = [
+    { type: "local", path: resolve(AUTOPILOT_ROOT, "plugins/autopilot-core") },
+    {
+      type: "local",
+      path: resolve(AUTOPILOT_ROOT, `plugins/autopilot-${level}`),
+    },
+  ];
+
+  if ((level === "epic" || level === "task") && issueTracker) {
+    plugins.push({
+      type: "local",
+      path: resolve(AUTOPILOT_ROOT, `plugins/${TRACKER_PLUGINS[issueTracker]}`),
+    });
+  }
+
+  return plugins;
 }
 
 export interface CycleResult {
@@ -40,7 +51,7 @@ export async function cycle(
     options: {
       model: "opus",
       agent: `autopilot-${input.level}:planner`,
-      plugins: getPluginsForLevel(input.level),
+      plugins: getPluginsForLevel(input.level, input.issueTracker),
       mcpServers: buildMcpServers(input.level, input.projectPath),
       settingSources: [],
       permissionMode: "bypassPermissions",

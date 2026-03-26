@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { loadConfig, validateConfig } from "./config";
 import { run } from "./hierarchy";
 import { printActivity } from "./output";
 import type { Level } from "./types";
@@ -18,6 +19,8 @@ if (!levelArg || !projectPath || !VALID_LEVELS.has(levelArg)) {
 const level = levelArg as Level;
 const seed = process.argv.slice(4).join(" ") || undefined;
 const resolvedPath = resolve(projectPath);
+const config = loadConfig(resolvedPath);
+validateConfig(config);
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 const runDir = resolve(import.meta.dir, `../runs/${timestamp}`);
 mkdirSync(runDir, { recursive: true });
@@ -28,7 +31,13 @@ if (seed) console.log(`Seed: ${seed}`);
 console.log(`Run dir: ${runDir}`);
 console.log(`\n─── ${level} cycle ───\n`);
 
-const result = await run(level, resolvedPath, seed, printActivity);
+const result = await run(
+  level,
+  resolvedPath,
+  seed,
+  printActivity,
+  config.issueTracker,
+);
 
 console.log("\n\n─── Complete ───\n");
 console.log(`Cost: $${result.costUsd.toFixed(4)}`);

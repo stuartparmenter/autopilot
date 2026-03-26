@@ -12,22 +12,14 @@ describe("buildMcpServers", () => {
     expect(Object.keys(servers)).toEqual(["gk"]);
   });
 
-  test("epic level gets gk, beads, and context7", () => {
+  test("epic level gets gk and context7", () => {
     const servers = buildMcpServers("epic", "/tmp/project");
-    expect(Object.keys(servers).sort()).toEqual(["beads", "context7", "gk"]);
+    expect(Object.keys(servers).sort()).toEqual(["context7", "gk"]);
   });
 
-  test("task level gets gk, beads, and context7", () => {
+  test("task level gets gk and context7", () => {
     const servers = buildMcpServers("task", "/tmp/project");
-    expect(Object.keys(servers).sort()).toEqual(["beads", "context7", "gk"]);
-  });
-
-  test("beads server uses uvx command", () => {
-    const servers = buildMcpServers("epic", "/tmp/project");
-    expect(servers.beads).toMatchObject({
-      command: "uvx",
-      args: ["beads-mcp"],
-    });
+    expect(Object.keys(servers).sort()).toEqual(["context7", "gk"]);
   });
 
   test("context7 server uses bun x", () => {

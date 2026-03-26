@@ -1,0 +1,5 @@
+{
+  "name": "issues-linear",
+  "version": "0.3.0",
+  "description": "Linear issue tracker integration for autopilot planning and execution"
+}

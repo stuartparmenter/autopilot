@@ -1,6 +1,6 @@
 # Task Template
 
-Output each task as a JSON object inside a ```json fence. The parent agent will use this to create beads.
+Output each task as a JSON object inside a ```json fence. The parent agent will use this to create issues in the tracker.
 
 ```json
 {
@@ -19,10 +19,10 @@ Output each task as a JSON object inside a ```json fence. The parent agent will 
 
 Field notes:
 - **id** — local reference (T1, T2...) for dependency tracking within this decomposition
-- **title** — maps to beads `title`
-- **description** — maps to beads `description`
-- **type** — maps to beads `issue_type`: bug, feature, task, chore
-- **acceptance** — maps to beads `acceptance`
-- **dependencies** — task IDs (T1, T2...) this task depends on; the parent agent resolves these to bead IDs
+- **title** — issue title
+- **description** — issue description
+- **type** — issue type: bug, feature, task, chore
+- **acceptance** — acceptance criteria
+- **dependencies** — task IDs (T1, T2...) this task depends on; the parent agent resolves these to issue IDs
 - **priority** — 0-4, 0=highest (default 2)
-- **constraints** — included in the description when creating the bead
+- **constraints** — included in the description when creating the issue

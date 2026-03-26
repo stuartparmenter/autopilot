@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ActivityEntry } from "./activity";
-import { loadConfig } from "./config";
+import { loadConfig, validateConfig } from "./config";
 import { cycle } from "./cycle";
 import { createDashboard } from "./dashboard";
 import { ExecutorManager } from "./executor";
@@ -26,11 +26,13 @@ const startLevel = levelArg as Level;
 const seed = process.argv.slice(4).join(" ") || undefined;
 const resolvedPath = resolve(projectPath);
 const config = loadConfig(resolvedPath);
+validateConfig(config);
 
 const orchestrator = new Orchestrator(startLevel, resolvedPath);
 const executorManager = new ExecutorManager({
   maxParallel: config.executor.maxParallel,
   projectPath: resolvedPath,
+  issueTracker: config.issueTracker,
   timeoutMs: config.executor.timeoutMinutes * 60 * 1000,
   inactivityTimeoutMs: config.executor.inactivityTimeoutMinutes * 60 * 1000,
 });
@@ -116,6 +118,7 @@ while (running) {
           level,
           projectPath: resolvedPath,
           seed: level === startLevel ? seed : undefined,
+          issueTracker: config.issueTracker,
         },
         onActivity,
       );
@@ -200,20 +203,20 @@ while (running) {
   }
 
   // 2. Spawn executors for ready tasks
-  // TODO: Query beads for ready tasks (status=open, no blockers, not claimed)
+  // TODO: Query issue tracker for ready tasks (status=open, no blockers, not claimed)
   // For each ready task, if executorManager.hasAvailableSlot(), spawn an executor
-  // Executor completions update beads status and write gk observations
+  // Executor completions update issue tracker status and write gk observations
   // (Executor tagging will follow the same pattern as planner tagging above)
 
   // 3. Check wait conditions
-  // TODO: Query beads for completed tasks/epics to check against wait conditions
+  // TODO: Query issue tracker for completed tasks/epics to check against wait conditions
   // orchestrator.checkWaitCondition(completedTaskIds, completedEpicIds)
 
   // 4. If nothing to do, wait before re-checking
   if (!orchestrator.hasPendingCycle && !orchestrator.isWaiting) {
     log("Nothing pending — orchestrator idle");
     broadcastOrchestratorStatus();
-    break; // For now, exit. Future: poll beads for executor completions
+    break; // For now, exit. Future: poll issue tracker for executor completions
   }
 
   // Small delay to prevent tight loop

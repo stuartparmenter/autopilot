@@ -1,26 +1,22 @@
 ---
 name: implement-task
 description: >-
-  Full lifecycle for implementing a task from beads. Use when an executor agent
-  starts work on a claimed task. Covers claim, worktree setup, context
-  gathering, implementation, validation, gk observations, PR creation, and
-  beads status update.
+  Full lifecycle for implementing a task from the issue tracker. Use when an
+  executor agent starts work on a claimed task. Covers claim, worktree setup,
+  context gathering, implementation, validation, gk observations, PR creation,
+  and issue status update.
 user-invocable: true
 ---
 
 # Implement Task
 
-You are implementing a task tracked in beads. This skill walks you through the full lifecycle.
+You are implementing a task tracked in the issue tracker. This skill walks you through the full lifecycle.
 
 ---
 
 ## Phase 1: Claim the Task
 
-Before reading anything or writing any code, claim the task atomically:
-
-```
-claim(id="<task-id>")
-```
+Before reading anything or writing any code, claim the task atomically.
 
 If the claim fails, **stop immediately**. The task belongs to another executor.
 
@@ -44,7 +40,7 @@ Context gathering happens in order. Each layer informs the next.
 
 ### Step 1: Read the task
 
-Use beads `get` to read the full task details: title, description, acceptance criteria, parent epic, dependencies. Understand exactly what is being asked.
+Read the full task details from the issue tracker: title, description, acceptance criteria, parent epic, dependencies. Understand exactly what is being asked.
 
 ### Step 2: Query gk for relevant knowledge
 
@@ -128,11 +124,11 @@ Use GitHub MCP tools or `gh pr create` via Bash.
 
 ---
 
-## Phase 7: Update Beads and Exit
+## Phase 7: Update Issue Status and Exit
 
-Update the task status in beads:
-- If everything succeeded: `update(id="<task-id>", status="done")`
-- If blocked (ambiguity, missing dependency, unresolvable issue): `update(id="<task-id>", status="blocked", comment="<explanation>")`
+Update the task status in the issue tracker:
+- If everything succeeded: mark as done
+- If blocked (ambiguity, missing dependency, unresolvable issue): mark as blocked with an explanation
 
 Exit the worktree:
 ```
@@ -159,4 +155,4 @@ ExitWorktree action: "remove"
 - A dependency is missing that you cannot resolve
 - You've hit 3 failed attempts at the same problem
 
-Update beads to `blocked` with a clear explanation of what's wrong and what's needed to unblock.
+Update the issue to `blocked` with a clear explanation of what's wrong and what's needed to unblock.

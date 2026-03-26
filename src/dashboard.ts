@@ -40,8 +40,8 @@ export function createDashboard(config: DashboardConfig): Dashboard {
     return c.json({
       overview: { totalCost, latestDirection },
       runs,
-      epics: "Beads integration pending",
-      tasks: "Beads integration pending",
+      epics: "Issue tracker integration pending",
+      tasks: "Issue tracker integration pending",
     });
   });
 
