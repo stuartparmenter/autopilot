@@ -6,6 +6,7 @@ describe("ExecutorManager", () => {
     const manager = new ExecutorManager({
       maxParallel: 3,
       projectPath: "/tmp",
+      issueTracker: "beads",
     });
     expect(manager.availableSlots).toBe(3);
     expect(manager.activeCount).toBe(0);
@@ -15,6 +16,7 @@ describe("ExecutorManager", () => {
     const manager = new ExecutorManager({
       maxParallel: 2,
       projectPath: "/tmp",
+      issueTracker: "beads",
     });
     expect(manager.hasAvailableSlot()).toBe(true);
   });
@@ -23,6 +25,7 @@ describe("ExecutorManager", () => {
     const manager = new ExecutorManager({
       maxParallel: 2,
       projectPath: "/tmp",
+      issueTracker: "beads",
     });
     expect(manager.activeCount).toBe(0);
     expect(manager.availableSlots).toBe(2);
@@ -32,6 +35,7 @@ describe("ExecutorManager", () => {
     const manager = new ExecutorManager({
       maxParallel: 0,
       projectPath: "/tmp",
+      issueTracker: "beads",
     });
     const result = await manager.spawnExecutor("T1");
     expect(result.success).toBe(false);
@@ -42,6 +46,7 @@ describe("ExecutorManager", () => {
     const manager = new ExecutorManager({
       maxParallel: 2,
       projectPath: "/tmp",
+      issueTracker: "beads",
     });
     // abortAll on empty should not throw
     expect(() => manager.abortAll()).not.toThrow();
@@ -51,6 +56,7 @@ describe("ExecutorManager", () => {
     const manager = new ExecutorManager({
       maxParallel: 1,
       projectPath: "/tmp",
+      issueTracker: "beads",
     });
     expect(manager.timeoutMs).toBe(60 * 60 * 1000);
   });
@@ -59,6 +65,7 @@ describe("ExecutorManager", () => {
     const manager = new ExecutorManager({
       maxParallel: 1,
       projectPath: "/tmp",
+      issueTracker: "beads",
       timeoutMs: 30 * 60 * 1000,
     });
     expect(manager.timeoutMs).toBe(30 * 60 * 1000);
